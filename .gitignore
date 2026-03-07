@@ -1,0 +1,28 @@
+# Zencoder & Zenflow
+.zencoder/
+.zenflow/
+
+# Kombai
+.kombai/
+kombai/
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+venv/
+.venv/
+env/
+.env/
+
+# PyInstaller / EXE
+build/
+dist/
+*.spec
+cbc_student_app.exe
+
+# Local Data/Exports
+*.pdf
+*.xlsx
+*.csv
+run_log.txt
