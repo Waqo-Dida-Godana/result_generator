@@ -2,6 +2,7 @@ import tkinter as tk
 from tkinter import ttk, messagebox, filedialog
 import customtkinter as ctk
 import pandas as pd
+import openpyxl
 from reportlab.pdfgen import canvas
 from reportlab.lib.pagesizes import A4
 from reportlab.lib import colors
@@ -13,8 +14,80 @@ import os
 import shutil
 
 # ─── System Configuration ─────────────────────────────────────────────────────
+# Theme colors inspired by the Mt Olives Adventist School logo
+# Using green (olives/nature) and blue (trust/education) theme
 ctk.set_appearance_mode("Light")
-ctk.set_default_color_theme("blue")
+ctk.set_default_color_theme("green")
+
+# Primary Theme Colors - School Logo Inspired
+PRIMARY_GREEN = "#2E7D32"       # Forest green - main brand color (olives)
+PRIMARY_GREEN_DARK = "#1B5E20"  # Darker green for hover states
+PRIMARY_BLUE = "#1565C0"        # Blue - trust and education
+PRIMARY_BG = "#F5F7FA"          # Light gray-blue background
+
+# Sidebar Colors
+SIDEBAR_BG = "#1B3A2B"          # Dark green - sidebar background
+SIDEBAR_HOVER = "#2D5A45"       # Lighter green for hover
+SIDEBAR_ACTIVE = "#3D7A5F"      # Active nav highlight
+SIDEBAR_TEXT = "#E8F5E9"        # Light green text
+SIDEBAR_TEXT_MUTED = "#A5D6A7" # Muted green text
+
+# Card Colors
+CARD_BG = "#FFFFFF"
+CARD_BORDER = "#E0E7FF"
+CARD_SHADOW = "#E2E8F0"
+
+# Accent Colors
+ACCENT = "#1565C0"              # Blue accent
+ACCENT_LIGHT = "#42A5F5"        # Light blue
+ACCENT_GREEN = "#4CAF50"       # Green accent
+GOLD = "#FFB300"               # Gold for highlights/trophies
+
+# Button Colors
+BUTTON_BG = "#2E7D32"           # Green button
+BUTTON_HOVER = "#1B5E20"       # Darker green hover
+BUTTON_SECONDARY = "#1565C0"   # Blue secondary button
+
+# Text Colors
+LABEL_COLOR = "#1E3A5F"        # Dark blue-gray
+TEXT_PRIMARY = "#1A1A2E"       # Near black
+TEXT_SECONDARY = "#64748B"     # Gray
+TEXT_LIGHT = "#FFFFFF"         # White text
+
+# Dashboard Stats Colors
+STAT_TOTAL = "#2E7D32"         # Green
+STAT_AVG = "#1565C0"            # Blue
+STAT_TOP = "#FFB300"           # Gold
+STAT_SUBJECTS = "#7B1FA2"      # Purple
+
+# Footer Colors
+FOOTER_BG = "#1B3A2B"          # Match sidebar
+FOOTER_TEXT = "#A5D6A7"        # Muted green
+
+# Grade Colors
+GRADE_EE = "#4CAF50"          # Green
+GRADE_ME = "#8BC34A"           # Light green
+GRADE_AE = "#FFC107"          # Amber
+GRADE_BE = "#FF9800"          # Orange
+GRADE_IE = "#F44336"           # Red
+
+# Load logo (place a file named logo.png/jpg in the project folder)
+# Also try loading from Downloads folder if not in project
+LOGO_IMAGE = None
+LOGO_SMALL = None
+for logo_path in ("logo.png", "logo.jpg", "logo.jpeg", "logo.gif", 
+                  "C:/Users/WDG/Downloads/mos.jpg", "C:\\Users\\WDG\\Downloads\\mos.jpg"):
+    if os.path.exists(logo_path):
+        try:
+            _img = Image.open(logo_path).convert("RGBA")
+            _img_resized = _img.resize((100, 100), Image.LANCZOS)
+            LOGO_IMAGE = ImageTk.PhotoImage(_img_resized)
+            # Smaller version for dashboard
+            _img_small = _img.resize((60, 60), Image.LANCZOS)
+            LOGO_SMALL = ImageTk.PhotoImage(_img_small)
+            break
+        except Exception:
+            pass
 
 PHOTOS_DIR = "photos"
 if not os.path.exists(PHOTOS_DIR):
@@ -37,12 +110,14 @@ def connect_db():
         cursor.execute("""
             CREATE TABLE IF NOT EXISTS students (
                 id INT AUTO_INCREMENT PRIMARY KEY,
+                admission_no VARCHAR(50),
                 name VARCHAR(100),
                 class VARCHAR(20),
                 term VARCHAR(20),
                 math INT, eng INT, kisw INT, sci INT, soc INT,
                 total INT, avg FLOAT, level VARCHAR(10), rank_no INT,
-                photo_path VARCHAR(255)
+                photo_path VARCHAR(255),
+                gender VARCHAR(20)
             )
         """)
     except:
@@ -86,22 +161,21 @@ def select_photo():
         photo_label.configure(image=photo_img, text="")
         photo_label.image = photo_img
 
-def add_student():
+def add_student_from_form(admission_no: str, name: str, cls: str, term: str, gender: str, math: str="0", eng: str="0", kisw: str="0", sci: str="0", soc: str="0", photo_path: str=""):
     global current_photo_path
-    name = name_entry.get().strip()
-    cls = class_cb.get()
-    trm = term_cb.get()
-    
-    if not name:
-        messagebox.showerror("Error", "Student name is required!")
+
+    admission_no = admission_no.strip()
+    name = name.strip()
+    if not name or not admission_no:
+        messagebox.showerror("Error", "Admission No and Student Name are required!")
         return
-        
+
     try:
-        m = int(math_entry.get())
-        e = int(eng_entry.get())
-        k = int(kisw_entry.get())
-        s = int(sci_entry.get())
-        so = int(soc_entry.get())
+        m = int(math)
+        e = int(eng)
+        k = int(kisw)
+        s = int(sci)
+        so = int(soc)
     except:
         messagebox.showerror("Error", "Marks must be numeric!")
         return
@@ -109,48 +183,325 @@ def add_student():
     total = m + e + k + s + so
     avg = round(total / 5, 2)
     lvl = get_level(avg)
-    
-    dest_path = ""
-    if current_photo_path:
-        dest_path = os.path.join(PHOTOS_DIR, f"{name}_{cls}_{trm}.jpg").replace(" ", "_")
-        shutil.copy(current_photo_path, dest_path)
 
-    new_id = len(students) + 1
-    students.append([new_id, name, cls, trm, m, e, k, s, so, total, avg, lvl, 0, dest_path])
-    
+    dest_path = ""
+    if photo_path:
+        dest_path = os.path.join(PHOTOS_DIR, f"{name}_{cls}_{term}.jpg").replace(" ", "_")
+        try:
+            shutil.copy(photo_path, dest_path)
+        except Exception:
+            dest_path = ""
+
+    students.append([admission_no, name, cls, term, m, e, k, s, so, total, avg, lvl, 0, dest_path, gender])
+
     calculate_rank()
     refresh_table()
     save_to_db()
-    clear_inputs()
     messagebox.showinfo("Success", f"Added {name} successfully!")
+
+def import_from_excel():
+    """Import students from an Excel file"""
+    file_path = filedialog.askopenfilename(
+        title="Select Excel File",
+        filetypes=[("Excel files", "*.xlsx *.xls")]
+    )
+    if not file_path:
+        return
+    
+    try:
+        df = pd.read_excel(file_path)
+        
+        # Expected columns: admission_no, name, class, term, gender, math, eng, kisw, sci, soc, photo_path
+        required_cols = ['admission_no', 'name', 'class']
+        missing_cols = [col for col in required_cols if col not in df.columns]
+        
+        if missing_cols:
+            messagebox.showerror("Error", f"Missing required columns: {', '.join(missing_cols)}")
+            return
+        
+        imported_count = 0
+        for _, row in df.iterrows():
+            admission_no = str(row.get('admission_no', '')).strip()
+            name = str(row.get('name', '')).strip()
+            cls = str(row.get('class', row.get('Class', 'Grade 1'))).strip()
+            term = str(row.get('term', row.get('Term', 'Term 1'))).strip()
+            gender = str(row.get('gender', row.get('Gender', 'Male'))).strip()
+            photo_path = str(row.get('photo_path', row.get('photo', ''))).strip()
+            
+            # Get marks (default to 0 if not present)
+            math = int(row.get('math', row.get('Math', 0)))
+            eng = int(row.get('eng', row.get('Eng', 0)))
+            kisw = int(row.get('kisw', row.get('Kisw', 0)))
+            sci = int(row.get('sci', row.get('Sci', 0)))
+            soc = int(row.get('soc', row.get('Soc', 0)))
+            
+            if not name or not admission_no:
+                continue
+            
+            # Copy photo if path exists
+            dest_path = ""
+            if photo_path and os.path.exists(photo_path):
+                dest_path = os.path.join(PHOTOS_DIR, f"{name}_{cls}_{term}.jpg").replace(" ", "_")
+                try:
+                    shutil.copy(photo_path, dest_path)
+                except Exception:
+                    dest_path = ""
+            
+            total = math + eng + kisw + sci + soc
+            avg = round(total / 5, 2) if (math + eng + kisw + sci + soc) > 0 else 0
+            lvl = get_level(avg)
+            
+            students.append([admission_no, name, cls, term, math, eng, kisw, sci, soc, total, avg, lvl, 0, dest_path, gender])
+            imported_count += 1
+        
+        calculate_rank()
+        refresh_table()
+        save_to_db()
+        messagebox.showinfo("Import Complete", f"Successfully imported {imported_count} students!")
+        
+    except Exception as e:
+        messagebox.showerror("Import Error", f"Failed to import Excel file: {str(e)}")
+
+def download_template():
+    """Download an Excel template for adding students"""
+    file_path = filedialog.asksaveasfilename(
+        title="Save Template",
+        defaultextension=".xlsx",
+        filetypes=[("Excel files", "*.xlsx")],
+        initialfile="student_template.xlsx"
+    )
+    if not file_path:
+        return
+    
+    try:
+        # Create template DataFrame
+        template_data = {
+            'admission_no': ['001', '002', '003'],
+            'name': ['John Doe', 'Jane Smith', 'Michael Johnson'],
+            'class': ['Grade 1', 'Grade 2', 'Grade 3'],
+            'term': ['Term 1', 'Term 1', 'Term 1'],
+            'gender': ['Male', 'Female', 'Male'],
+            'photo_path': ['', '', ''],
+            'math': [0, 0, 0],
+            'eng': [0, 0, 0],
+            'kisw': [0, 0, 0],
+            'sci': [0, 0, 0],
+            'soc': [0, 0, 0]
+        }
+        df = pd.DataFrame(template_data)
+        df.to_excel(file_path, index=False)
+        messagebox.showinfo("Template Created", f"Template saved to: {file_path}")
+    except Exception as e:
+        messagebox.showerror("Error", f"Failed to create template: {str(e)}")
+
+def export_student_list():
+    """Export all students to an Excel file"""
+    file_path = filedialog.asksaveasfilename(
+        title="Export Students",
+        defaultextension=".xlsx",
+        filetypes=[("Excel files", "*.xlsx")],
+        initialfile="students_list.xlsx"
+    )
+    if not file_path:
+        return
+    
+    try:
+        export_data = []
+        for s in students:
+            export_data.append({
+                'admission_no': s[0],
+                'name': s[1],
+                'class': s[2],
+                'term': s[3],
+                'gender': s[14] if len(s) > 14 else '-',
+                'photo_path': s[13] if len(s) > 13 else '',
+                'math': s[4],
+                'eng': s[5],
+                'kisw': s[6],
+                'sci': s[7],
+                'soc': s[8],
+                'total': s[9],
+                'average': s[10],
+                'level': s[11],
+                'rank': s[12]
+            })
+        
+        df = pd.DataFrame(export_data)
+        df.to_excel(file_path, index=False)
+        messagebox.showinfo("Export Complete", f"Exported {len(students)} students to: {file_path}")
+    except Exception as e:
+        messagebox.showerror("Error", f"Failed to export: {str(e)}")
 
 def refresh_table():
     for row in table.get_children():
         table.delete(row)
     for s in students:
-        # Filter logic can go here
-        table.insert("", "end", values=s[:13])
+        # Display only the columns we need for the students view
+        student_id = s[0]
+        name = s[1]
+        cls = s[2]
+        gender = s[14] if len(s) > 14 else "-"
+        table.insert("", "end", values=(student_id, name, cls, gender, "Delete"))
+
+
+def delete_selected_student():
+    selected = table.selection()
+    if not selected:
+        messagebox.showwarning("Warning", "Please select a student to delete.")
+        return
+
+    item = table.item(selected[0])
+    s_id = item["values"][0]
+    for i, s in enumerate(students):
+        if s[0] == s_id:
+            del students[i]
+            break
+
+    calculate_rank()
+    refresh_table()
+
+
+def init_add_student_page():
+    for child in add_student_frame.winfo_children():
+        child.destroy()
+    
+    add_student_frame.configure(fg_color=PRIMARY_BG)
+    
+    # Header
+    header_frame = ctk.CTkFrame(add_student_frame, fg_color="transparent")
+    header_frame.pack(fill="x", padx=24, pady=(20, 10))
+    
+    ctk.CTkLabel(header_frame, text="Add New Student", font=("Arial", 28, "bold"), 
+                 text_color=LABEL_COLOR).pack(side="left")
+    
+    form_container = ctk.CTkFrame(add_student_frame, fg_color="transparent")
+    form_container.pack(fill="both", expand=True, padx=24, pady=10)
+
+    def create_field(parent, label_text, placeholder):
+        field_frame = ctk.CTkFrame(parent, fg_color="transparent")
+        field_frame.pack(fill="x", pady=8)
+        
+        ctk.CTkLabel(field_frame, text=label_text, font=("Arial", 14, "bold"), text_color=LABEL_COLOR).pack(anchor="w", pady=(0, 4))
+        entry = ctk.CTkEntry(
+            field_frame, 
+            placeholder_text=placeholder, 
+            height=45, 
+            fg_color="#ffffff", 
+            border_color=CARD_BORDER, 
+            text_color=TEXT_PRIMARY,
+            corner_radius=10
+        )
+        entry.pack(fill="x")
+        return entry
+
+    def create_dropdown(parent, label_text, values):
+        field_frame = ctk.CTkFrame(parent, fg_color="transparent")
+        field_frame.pack(fill="x", pady=8)
+        
+        ctk.CTkLabel(field_frame, text=label_text, font=("Arial", 14, "bold"), text_color=LABEL_COLOR).pack(anchor="w", pady=(0, 4))
+        combo = ctk.CTkComboBox(
+            field_frame, 
+            values=values, 
+            height=45, 
+            fg_color="#ffffff", 
+            border_color=CARD_BORDER, 
+            text_color=TEXT_PRIMARY,
+            button_color="#ffffff",
+            button_hover_color="#f3f4f6",
+            dropdown_fg_color="#ffffff",
+            corner_radius=10
+        )
+        combo.pack(fill="x")
+        return combo
+
+    adm_no_entry = create_field(form_container, "Admission No", "e.g. 001")
+    name_entry = create_field(form_container, "Full Name", "e.g. Desmond Kipchumba")
+    class_cb = create_dropdown(form_container, "Class", ["Grade 1", "Grade 2", "Grade 3", "Grade 4", "Grade 5", "Grade 6", "Grade 7"])
+    gender_cb = create_dropdown(form_container, "Gender", ["Male", "Female", "Other"])
+
+    # Action Buttons
+    btn_frame = ctk.CTkFrame(add_student_frame, fg_color="transparent")
+    btn_frame.pack(fill="x", side="bottom", padx=24, pady=24)
+
+    # Import from Excel button
+    ctk.CTkButton(
+        btn_frame, 
+        text="📥 Import Excel", 
+        command=lambda: [import_from_excel(), show_frame(students_frame)], 
+        fg_color=PRIMARY_BLUE, 
+        hover_color="#0D47A1", 
+        text_color="#ffffff",
+        height=45,
+        width=140,
+        font=("Arial", 13, "bold"),
+        corner_radius=10
+    ).pack(side="left")
+
+    def _save():
+        add_student_from_form(
+            adm_no_entry.get(),
+            name_entry.get(),
+            class_cb.get(),
+            "Term 1", # Default term
+            gender_cb.get()
+        )
+        show_frame(students_frame)
+
+    ctk.CTkButton(
+        btn_frame, 
+        text="Add", 
+        command=_save, 
+        fg_color=PRIMARY_GREEN, 
+        hover_color=PRIMARY_GREEN_DARK, 
+        text_color="#ffffff",
+        height=45,
+        width=120,
+        font=("Arial", 14, "bold"),
+        corner_radius=10
+    ).pack(side="right", padx=(10, 0))
+
+    ctk.CTkButton(
+        btn_frame, 
+        text="Cancel", 
+        command=lambda: show_frame(students_frame), 
+        fg_color="#ffffff", 
+        hover_color="#f3f4f6", 
+        text_color=LABEL_COLOR,
+        border_width=1,
+        border_color=CARD_BORDER,
+        height=45,
+        width=120,
+        font=("Arial", 14, "bold"),
+        corner_radius=10
+    ).pack(side="right")
+
 
 def save_to_db():
     if not DB_CONNECTED: return
     try:
         cursor.execute("DELETE FROM students")
-        sql = "INSERT INTO students (name, class, term, math, eng, kisw, sci, soc, total, avg, level, rank_no, photo_path) VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)"
+        sql = "INSERT INTO students (admission_no, name, class, term, math, eng, kisw, sci, soc, total, avg, level, rank_no, photo_path, gender) VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)"
         for s in students:
-            cursor.execute(sql, tuple(s[1:]))
+            cursor.execute(sql, tuple(s[:15]))
         db.commit()
     except Exception as e: print(f"DB Error: {e}")
 
 def clear_inputs():
     global current_photo_path
-    name_entry.delete(0, 'end')
-    math_entry.delete(0, 'end')
-    eng_entry.delete(0, 'end')
-    kisw_entry.delete(0, 'end')
-    sci_entry.delete(0, 'end')
-    soc_entry.delete(0, 'end')
+    try:
+        name_entry.delete(0, 'end')
+        math_entry.delete(0, 'end')
+        eng_entry.delete(0, 'end')
+        kisw_entry.delete(0, 'end')
+        sci_entry.delete(0, 'end')
+        soc_entry.delete(0, 'end')
+    except NameError:
+        pass
     current_photo_path = None
-    photo_label.configure(image="", text="No Photo")
+    try:
+        photo_label.configure(image="", text="No Photo")
+    except NameError:
+        pass
 
 def generate_report():
     selected = table.selection()
@@ -225,72 +576,621 @@ def generate_report():
 
 # ─── UI Layout ───────────────────────────────────────────────────────────────
 app = ctk.CTk()
-app.title("CBC Advanced Student Management System")
+app.title("MOAS School Management System")
 app.geometry("1200x700")
+app.configure(fg_color=PRIMARY_BG)
 
-# Sidebar
-sidebar = ctk.CTkFrame(app, width=250, corner_radius=0)
-sidebar.pack(side="left", fill="y")
+if LOGO_IMAGE:
+    try:
+        app.iconphoto(False, LOGO_IMAGE)
+    except Exception:
+        pass
 
-ctk.CTkLabel(sidebar, text="ADVANCED CBC", font=("Arial", 20, "bold")).pack(pady=20)
+# --- Login Screen ---
+login_frame = ctk.CTkFrame(app, fg_color=PRIMARY_BG)
+login_frame.pack(fill="both", expand=True)
 
-photo_label = ctk.CTkLabel(sidebar, text="No Photo", width=120, height=120, fg_color="gray80", corner_radius=10)
-photo_label.pack(pady=10)
+# Login content centered
+login_content = ctk.CTkFrame(login_frame, fg_color="transparent")
+login_content.place(relx=0.5, rely=0.5, anchor="center")
 
-ctk.CTkButton(sidebar, text="Upload Photo", command=select_photo, fg_color="#34495e").pack(pady=5, padx=20)
+# Logo at top of login
+if LOGO_IMAGE:
+    login_logo = ctk.CTkLabel(login_content, image=LOGO_IMAGE, text="")
+    login_logo.pack(pady=(0, 20))
 
-# Main Form in Sidebar
-name_entry = ctk.CTkEntry(sidebar, placeholder_text="Student Name")
-name_entry.pack(pady=5, padx=20, fill="x")
+ctk.CTkLabel(login_content, text="MT OLIVES", font=("Arial", 28, "bold"), 
+             text_color=PRIMARY_GREEN).pack()
+ctk.CTkLabel(login_content, text="Adventist School", font=("Arial", 14), 
+             text_color=TEXT_SECONDARY).pack(pady=(0, 30))
 
-class_cb = ctk.CTkComboBox(sidebar, values=["Grade 1", "Grade 2", "Grade 3", "Grade 4", "Grade 5", "Grade 6"])
-class_cb.pack(pady=5, padx=20, fill="x")
+ctk.CTkLabel(login_content, text="MOAS School Management System", font=("Arial", 16, "bold"), 
+             text_color=LABEL_COLOR).pack(pady=(0, 30))
 
-term_cb = ctk.CTkComboBox(sidebar, values=["Term 1", "Term 2", "Term 3"])
-term_cb.pack(pady=5, padx=20, fill="x")
+# Login button - hide main app frames initially
+def show_main_app():
+    login_frame.pack_forget()
+    # Show sidebar and content
+    sidebar.pack(side="left", fill="y")
+    content.pack(side="right", fill="both", expand=True, padx=20, pady=20)
 
-math_entry = ctk.CTkEntry(sidebar, placeholder_text="Math Mark")
-math_entry.pack(pady=5, padx=20, fill="x")
+ctk.CTkButton(login_content, text="Enter System", command=show_main_app,
+              fg_color=PRIMARY_GREEN, hover_color=PRIMARY_GREEN_DARK,
+              text_color="#ffffff", height=50, width=200,
+              font=("Arial", 16, "bold"), corner_radius=12).pack()
 
-eng_entry = ctk.CTkEntry(sidebar, placeholder_text="English Mark")
-eng_entry.pack(pady=5, padx=20, fill="x")
+# --- Main App Layout (hidden initially) ---
+# Sidebar and content will be shown after login
+sidebar = ctk.CTkFrame(app, width=260, corner_radius=0, fg_color=SIDEBAR_BG)
 
-kisw_entry = ctk.CTkEntry(sidebar, placeholder_text="Kiswahili Mark")
-kisw_entry.pack(pady=5, padx=20, fill="x")
+# Sidebar Header with Logo Area
+sidebar_header = ctk.CTkFrame(sidebar, fg_color="transparent")
+sidebar_header.pack(pady=(20, 10), fill="x")
 
-sci_entry = ctk.CTkEntry(sidebar, placeholder_text="Science Mark")
-sci_entry.pack(pady=5, padx=20, fill="x")
+if LOGO_IMAGE:
+    logo_label = ctk.CTkLabel(sidebar_header, image=LOGO_IMAGE, text="")
+    logo_label.pack(pady=(0, 8))
 
-soc_entry = ctk.CTkEntry(sidebar, placeholder_text="Social Mark")
-soc_entry.pack(pady=5, padx=20, fill="x")
+# School Name - styled prominently
+ctk.CTkLabel(sidebar_header, text="MT OLIVES", font=("Arial", 22, "bold"), 
+             text_color="#FFFFFF", fg_color="transparent").pack(pady=(5, 0))
+ctk.CTkLabel(sidebar_header, text="Adventist School", font=("Arial", 13, "bold"), 
+             text_color=SIDEBAR_TEXT_MUTED, fg_color="transparent").pack(pady=(2, 0))
 
-ctk.CTkButton(sidebar, text="Add Student", command=add_student, fg_color="#27ae60").pack(pady=20, padx=20, fill="x")
+# Divider
+ctk.CTkFrame(sidebar, height=2, fg_color=SIDEBAR_HOVER).pack(fill="x", padx=20, pady=(10, 20))
 
-# Content Area
-content = ctk.CTkFrame(app)
-content.pack(side="right", fill="both", expand=True, padx=20, pady=20)
+# Navigation section label
+ctk.CTkLabel(sidebar, text="MAIN MENU", font=("Arial", 10, "bold"), 
+             text_color=SIDEBAR_TEXT_MUTED, fg_color="transparent").pack(anchor="w", padx=24, pady=(0, 8))
 
-top_bar = ctk.CTkFrame(content, height=60)
-top_bar.pack(fill="x", pady=(0, 20))
+nav_btns = []
 
-ctk.CTkButton(top_bar, text="Generate Report Card", command=generate_report, fg_color="#9b59b6").pack(side="left", padx=10, pady=10)
-ctk.CTkButton(top_bar, text="Export Excel", command=lambda: messagebox.showinfo("Export", "Excel Exported"), fg_color="#2ecc71").pack(side="left", padx=10, pady=10)
+def add_nav_button(text, command, icon=""):
+    btn = ctk.CTkButton(
+        sidebar,
+        text=f"  {icon} {text}" if icon else f"  {text}",
+        command=command,
+        width=220,
+        anchor="w",
+        fg_color="transparent",
+        hover_color=SIDEBAR_HOVER,
+        text_color=SIDEBAR_TEXT,
+        border_width=0,
+        corner_radius=8,
+        height=42,
+        font=("Arial", 13, "bold"),
+    )
+    btn.pack(pady=3, padx=16, fill="x")
+    nav_btns.append(btn)
+    return btn
+
+# Pages
+content = ctk.CTkFrame(app, fg_color=PRIMARY_BG)
+content.grid_rowconfigure(0, weight=1)
+content.grid_columnconfigure(0, weight=1)
+
+dashboard_frame = ctk.CTkFrame(content, fg_color=PRIMARY_BG)
+students_frame = ctk.CTkFrame(content, fg_color=PRIMARY_BG)
+add_student_frame = ctk.CTkFrame(content, fg_color=PRIMARY_BG)
+marks_frame = ctk.CTkFrame(content, fg_color=PRIMARY_BG)
+reports_frame = ctk.CTkFrame(content, fg_color=PRIMARY_BG)
+
+for frame in (dashboard_frame, students_frame, add_student_frame, marks_frame, reports_frame):
+    frame.grid(row=0, column=0, sticky="nsew")
+
+
+def show_frame(frame):
+    frame.tkraise()
+    if frame is dashboard_frame:
+        refresh_dashboard()
+    elif frame is marks_frame:
+        refresh_marks_table()
+
+
+# --- Dashboard ---
+stats_vars = {
+    "total_students": tk.StringVar(value="0"),
+    "class_avg": tk.StringVar(value="-"),
+    "top_student": tk.StringVar(value="-"),
+    "subjects": tk.StringVar(value="5"),
+}
+
+def make_stat_card(parent, title, value_var, icon_text=None, accent_color=STAT_TOTAL):
+    card = ctk.CTkFrame(parent, corner_radius=16, fg_color=CARD_BG, border_width=1, border_color=CARD_BORDER)
+    card.grid_propagate(False)
+    card.grid_rowconfigure(0, weight=1)
+    card.grid_columnconfigure(0, weight=1)
+    card.grid_columnconfigure(1, weight=0)
+
+    # Colored accent strip at top
+    accent_strip = ctk.CTkFrame(card, height=4, fg_color=accent_color, corner_radius=0)
+    accent_strip.grid(row=0, column=0, columnspan=2, sticky="ew", padx=0, pady=(0, 0))
+
+    card_title = ctk.CTkLabel(card, text=title, font=("Arial", 12, "bold"), text_color="#64748B")
+    card_title.grid(row=0, column=0, sticky="w", padx=(16, 8), pady=(20, 0))
+
+    card_value = ctk.CTkLabel(card, textvariable=value_var, font=("Arial", 32, "bold"), text_color=accent_color)
+    card_value.grid(row=1, column=0, sticky="w", padx=(16, 8), pady=(0, 12))
+
+    if icon_text:
+        icon = ctk.CTkLabel(card, text=icon_text, font=("Arial", 24))
+        icon.grid(row=0, column=1, rowspan=2, sticky="e", padx=(0, 16), pady=16)
+
+    return card
+
+
+def refresh_dashboard():
+    total = len(students)
+    stats_vars["total_students"].set(str(total))
+
+    if total > 0:
+        avg = round(sum(s[10] for s in students) / total, 2)
+        stats_vars["class_avg"].set(f"{avg}")
+
+        top = max(students, key=lambda s: s[10])
+        stats_vars["top_student"].set(top[1])
+    else:
+        stats_vars["class_avg"].set("-")
+        stats_vars["top_student"].set("-")
+
+    stats_vars["subjects"].set("5")
+
+    # Keep table in sync
+    refresh_table()
+
+# Dashboard layout
+# Header section with welcome message and logo avatar
+dashboard_header = ctk.CTkFrame(dashboard_frame, fg_color="transparent")
+dashboard_header.pack(fill="x")
+
+# Left side - Welcome text
+welcome_text = ctk.CTkFrame(dashboard_header, fg_color="transparent")
+welcome_text.pack(side="left", fill="both", expand=True)
+
+ctk.CTkLabel(welcome_text, text="Welcome Back!", font=("Arial", 32, "bold"), 
+             text_color=PRIMARY_GREEN, anchor="w").pack(anchor="w")
+ctk.CTkLabel(welcome_text, text="School Report Management System overview", 
+             font=("Arial", 14), text_color=TEXT_SECONDARY, anchor="w").pack(anchor="w", pady=(4, 0))
+
+# Right side - Logo Avatar
+if LOGO_SMALL:
+    avatar_frame = ctk.CTkFrame(dashboard_header, fg_color="transparent")
+    avatar_frame.pack(side="right", padx=(0, 10))
+    
+    avatar_container = ctk.CTkFrame(avatar_frame, corner_radius=35, fg_color=CARD_BG, 
+                                     border_width=2, border_color=PRIMARY_GREEN)
+    avatar_container.pack(pady=5)
+    
+    avatar_label = ctk.CTkLabel(avatar_container, image=LOGO_SMALL, text="")
+    avatar_label.pack(padx=5, pady=5)
+
+cards_container = ctk.CTkFrame(dashboard_frame, fg_color="transparent")
+cards_container.pack(fill="x", pady=(0, 20))
+
+cards_container.grid_columnconfigure((0, 1, 2, 3), weight=1, uniform="cards")
+
+make_stat_card(cards_container, "Total Students", stats_vars["total_students"], icon_text="👥", accent_color=STAT_TOTAL).grid(row=0, column=0, padx=8, ipadx=8, ipady=8, sticky="nsew")
+make_stat_card(cards_container, "Class Average", stats_vars["class_avg"], icon_text="📈", accent_color=STAT_AVG).grid(row=0, column=1, padx=8, ipadx=8, ipady=8, sticky="nsew")
+make_stat_card(cards_container, "Top Student", stats_vars["top_student"], icon_text="🏆", accent_color=STAT_TOP).grid(row=0, column=2, padx=8, ipadx=8, ipady=8, sticky="nsew")
+make_stat_card(cards_container, "Subjects", stats_vars["subjects"], icon_text="📚", accent_color=STAT_SUBJECTS).grid(row=0, column=3, padx=8, ipadx=8, ipady=8, sticky="nsew")
+
+# Grading Scale
+grade_frame = ctk.CTkFrame(dashboard_frame, corner_radius=16, fg_color=CARD_BG, border_width=1, border_color=CARD_BORDER)
+grade_frame.pack(fill="x", pady=(20, 0))
+
+ctk.CTkLabel(grade_frame, text="CBC Grading Scale", font=("Arial", 18, "bold"), anchor="w", text_color=LABEL_COLOR).pack(anchor="w", padx=20, pady=(20, 12))
+
+scale_row = ctk.CTkFrame(grade_frame, fg_color="transparent")
+scale_row.pack(fill="x", padx=16, pady=(0, 20))
+
+GRADE_STYLES = [
+    ("EE", "80-100", "Exceeding Expectations", GRADE_EE),
+    ("ME", "65-79", "Meeting Expectations", GRADE_ME),
+    ("AE", "50-64", "Approaching Expectations", GRADE_AE),
+    ("BE", "0-49", "Below Expectations", GRADE_BE),
+    ("IE", "0-49", "Inadequate", GRADE_IE),
+]
+
+for i, (grade, rng, desc, color) in enumerate(GRADE_STYLES):
+    box = ctk.CTkFrame(scale_row, corner_radius=14, fg_color=color)
+    box.grid(row=0, column=i, padx=8, sticky="nsew")
+    scale_row.grid_columnconfigure(i, weight=1)
+    ctk.CTkLabel(box, text=grade, font=("Arial", 18, "bold"), text_color="#ffffff").pack(pady=(12, 4))
+    ctk.CTkLabel(box, text=rng, font=("Arial", 10), text_color="#ffffff").pack()
+    ctk.CTkLabel(box, text=desc, font=("Arial", 9), text_color="#ffffff").pack(pady=(4, 12))
+
+# --- Students Page ---
+header_bar = ctk.CTkFrame(students_frame, fg_color="transparent")
+header_bar.pack(fill="x", pady=(0, 16))
+
+left_header = ctk.CTkFrame(header_bar, fg_color="transparent")
+left_header.pack(side="left", fill="both", expand=True)
+
+ctk.CTkLabel(left_header, text="Students", font=("Arial", 28, "bold"), text_color=LABEL_COLOR, anchor="w").pack(anchor="w")
+ctk.CTkLabel(left_header, text="Manage student registrations", font=("Arial", 12), text_color=TEXT_SECONDARY, anchor="w").pack(anchor="w")
+
+def show_add_student_page():
+    init_add_student_page()
+    show_frame(add_student_frame)
+
+add_student_btn = ctk.CTkButton(header_bar, text="+ Add Student", command=show_add_student_page, 
+                                fg_color=PRIMARY_GREEN, hover_color=PRIMARY_GREEN_DARK, 
+                                text_color="#ffffff", corner_radius=12, font=("Arial", 12, "bold"))
+add_student_btn.pack(side="right", pady=4, padx=(0, 8))
+
+# Template button
+ctk.CTkButton(header_bar, text="📥 Template", command=download_template,
+              fg_color=PRIMARY_BLUE, hover_color="#0D47A1",
+              text_color="#ffffff", corner_radius=12, font=("Arial", 12)).pack(side="right", pady=4, padx=(0, 8))
+
+# Export button
+ctk.CTkButton(header_bar, text="📤 Export", command=export_student_list,
+              fg_color="#FF9800", hover_color="#F57C00",
+              text_color="#ffffff", corner_radius=12, font=("Arial", 12)).pack(side="right", pady=4)
+
+# Table section
+table_card = ctk.CTkFrame(students_frame, corner_radius=16, fg_color=CARD_BG, border_width=1, border_color=CARD_BORDER)
+table_card.pack(fill="both", expand=True)
+
+table_card.grid_rowconfigure(0, weight=1)
+table_card.grid_columnconfigure(0, weight=1)
 
 # Treeview
-tbl_frame = tk.Frame(content)
-tbl_frame.pack(fill="both", expand=True)
+tbl_frame = tk.Frame(table_card, bg=TABLE_BG if 'TABLE_BG' in globals() else CARD_BG)
+tbl_frame.grid(row=0, column=0, sticky="nsew", padx=8, pady=12)
 
-cols = ("ID", "Name", "Class", "Term", "Math", "Eng", "Kisw", "Sci", "Soc", "Total", "Avg", "Level", "Rank")
+cols = ("Adm No", "Name", "Class", "Gender", "Actions")
 table = ttk.Treeview(tbl_frame, columns=cols, show="headings")
 
 for col in cols:
     table.heading(col, text=col)
-    table.column(col, width=70, anchor="center")
-table.column("Name", width=150)
+    table.column(col, width=100, anchor="center")
+
+table.column("Name", width=180)
+
+def _on_select(event):
+    # Optional: future hooks for enabling edit/delete buttons
+    pass
+
+table.bind("<<TreeviewSelect>>", _on_select)
 
 sb = ttk.Scrollbar(tbl_frame, orient="vertical", command=table.yview)
 table.configure(yscrollcommand=sb.set)
 table.pack(side="left", fill="both", expand=True)
 sb.pack(side="right", fill="y")
 
-app.mainloop()
+# Actions below table
+actions_bar = ctk.CTkFrame(table_card, fg_color="transparent")
+actions_bar.grid(row=1, column=0, sticky="ew", padx=16, pady=(0, 16))
+
+ctk.CTkButton(actions_bar, text="Delete Selected", command=delete_selected_student, 
+                    fg_color="#E53935", hover_color="#C62828", text_color="#ffffff").pack(side="left")
+
+# --- Marks Entry Page ---
+marks_header = ctk.CTkFrame(marks_frame, fg_color="transparent")
+marks_header.pack(fill="x", pady=(0, 16))
+
+left_marks_header = ctk.CTkFrame(marks_header, fg_color="transparent")
+left_marks_header.pack(side="left", fill="both", expand=True)
+
+ctk.CTkLabel(left_marks_header, text="Enter Marks", font=("Arial", 28, "bold"), text_color=LABEL_COLOR, anchor="w").pack(anchor="w")
+ctk.CTkLabel(left_marks_header, text="Enter subject marks for each student", font=("Arial", 12), text_color=TEXT_SECONDARY, anchor="w").pack(anchor="w")
+
+marks_controls = ctk.CTkFrame(marks_header, fg_color="transparent")
+marks_controls.pack(side="right", pady=4)
+
+grade_filter_var = tk.StringVar(value="Grade 1")
+ctk.CTkComboBox(marks_controls, values=["Grade 1", "Grade 2", "Grade 3", "Grade 4", "Grade 5", "Grade 6"], variable=grade_filter_var).pack(side="left", padx=(0, 12))
+ctk.CTkButton(marks_controls, text="💾 Save All", command=lambda: save_marks_for_grade(grade_filter_var.get()), 
+              fg_color=PRIMARY_GREEN, hover_color=PRIMARY_GREEN_DARK, 
+              text_color="#ffffff", corner_radius=12).pack(side="left")
+
+# Marks table container
+marks_table_card = ctk.CTkFrame(marks_frame, corner_radius=16, fg_color=CARD_BG, border_width=1, border_color=CARD_BORDER)
+marks_table_card.pack(fill="both", expand=True)
+
+marks_table_card.grid_rowconfigure(0, weight=1)
+marks_table_card.grid_columnconfigure(0, weight=1)
+
+marks_scroll = ctk.CTkScrollableFrame(marks_table_card)
+marks_scroll.grid(row=0, column=0, sticky="nsew", padx=16, pady=12)
+
+marks_rows_container = ctk.CTkFrame(marks_scroll, fg_color="transparent")
+marks_rows_container.pack(fill="both", expand=True)
+
+marks_row_widgets = []
+
+
+def refresh_marks_table():
+    for w in marks_row_widgets:
+        if hasattr(w, 'destroy'):
+            w.destroy()
+    marks_row_widgets.clear()
+
+    grade = grade_filter_var.get()
+    filtered = [s for s in students if s[2] == grade]
+
+    if not filtered:
+        empty_label = ctk.CTkLabel(marks_rows_container, text=f"No students in {grade}", font=("Arial", 12), text_color="#5b5b5b")
+        empty_label.pack(pady=32)
+        marks_row_widgets.append(empty_label)
+        return
+
+    header = ctk.CTkFrame(marks_rows_container, fg_color="transparent")
+    header.pack(fill="x", pady=(0, 8))
+    columns = ["Student", "Math", "Eng", "Kis", "Int Sci", "Agri", "SST", "CRE", "CIA", "Pre-Tech"]
+    widths = [180, 70, 70, 70, 70, 70, 70, 70, 70, 80]
+
+    for c, w in zip(columns, widths):
+        lbl = ctk.CTkLabel(header, text=c, font=("Arial", 10, "bold"), text_color="#4a4a4a")
+        lbl.pack(side="left", padx=(0, 4), ipady=6)
+
+    marks_row_widgets.append(header)
+
+    for s in filtered:
+        row = ctk.CTkFrame(marks_rows_container, fg_color="transparent")
+        row.pack(fill="x", pady=2)
+
+        # make sure we have enough slots in student record for the extra subjects
+        while len(s) < 20:
+            s.append(0)
+
+        name_lbl = ctk.CTkLabel(row, text=s[1], text_color="#2c2c2c")
+        name_lbl.pack(side="left", padx=(0, 4), ipady=6, ipadx=4, fill="x", expand=True)
+
+        entry_values = [s[4], s[5], s[6], s[7], s[15], s[16], s[17], s[18], s[19]]
+        entry_vars = []
+        for val in entry_values:
+            v = tk.StringVar(value=str(val))
+            entry = ctk.CTkEntry(row, width=60, textvariable=v)
+            entry.pack(side="left", padx=(0, 4))
+            entry_vars.append(v)
+
+        marks_row_widgets.append(row)
+
+        # store for saving later
+        row._entry_vars = entry_vars
+        row._student = s
+
+
+def save_marks_for_grade(grade: str):
+    # loop through row widgets and save into student records
+    for w in marks_row_widgets:
+        if not w or not hasattr(w, "_student"):
+            continue
+        s = w._student
+        vars = w._entry_vars
+        try:
+            s[4] = int(vars[0].get())
+            s[5] = int(vars[1].get())
+            s[6] = int(vars[2].get())
+            s[7] = int(vars[3].get())
+            s[15] = int(vars[4].get())
+            s[16] = int(vars[5].get())
+            s[17] = int(vars[6].get())
+            s[18] = int(vars[7].get())
+            s[19] = int(vars[8].get())
+        except ValueError:
+            # ignore invalid input
+            pass
+
+    calculate_rank()
+    refresh_table()
+
+# --- Reports Page ---
+SUBJECT_SCORES = [
+    ("Math", 4),
+    ("Eng", 5),
+    ("Kis", 6),
+    ("Int Sci", 15),
+    ("Agri", 16),
+    ("SST", 17),
+    ("CRE", 18),
+    ("CIA", 19),
+    ("Pre-Tech", 20),
+]
+
+report_filter_var = tk.StringVar(value="All")
+
+
+def get_subject_value(student, idx):
+    return student[idx] if len(student) > idx else 0
+
+
+def calculate_report_summary(filtered_students):
+    summary = {}
+    total_students = len(filtered_students)
+    for subject, idx in SUBJECT_SCORES:
+        if total_students == 0:
+            summary[subject] = 0
+        else:
+            summary[subject] = round(sum(get_subject_value(s, idx) for s in filtered_students) / total_students, 2)
+    return summary
+
+
+def get_grade_from_score(score: float) -> str:
+    # Reuse the existing get_level logic, but convert to level code
+    return get_level(score)
+
+
+def refresh_reports():
+    for child in reports_frame.winfo_children():
+        child.destroy()
+
+    reports_frame.configure(fg_color="#f9fafb")
+
+    header_row = ctk.CTkFrame(reports_frame, fg_color="transparent")
+    header_row.pack(fill="x", padx=24, pady=(20, 24))
+
+    header_left = ctk.CTkFrame(header_row, fg_color="transparent")
+    header_left.pack(side="left", fill="both", expand=True)
+    ctk.CTkLabel(header_left, text="Reports & Rankings", font=("Arial", 32, "bold"), text_color="#111827", anchor="w").pack(anchor="w")
+    ctk.CTkLabel(header_left, text="View student performance and rankings", font=("Arial", 16), text_color="#6b7280", anchor="w").pack(anchor="w")
+
+    header_right = ctk.CTkFrame(header_row, fg_color="transparent")
+    header_right.pack(side="right", pady=10)
+
+    grade_dropdown = ctk.CTkComboBox(
+        header_right, 
+        values=["All", "Grade 1", "Grade 2", "Grade 3", "Grade 4", "Grade 5", "Grade 6", "Grade 7"], 
+        variable=report_filter_var, 
+        width=160,
+        height=45,
+        fg_color="#ffffff",
+        border_color="#d1d5db",
+        text_color="#111827",
+        button_color="#ffffff",
+        button_hover_color="#f3f4f6",
+        dropdown_fg_color="#ffffff",
+        corner_radius=10
+    )
+    grade_dropdown.pack(side="left", padx=(0, 16))
+    grade_dropdown.bind("<<ComboboxSelected>>", lambda e: refresh_reports())
+
+    def export_csv():
+        filename = filedialog.asksaveasfilename(defaultextension=".csv", filetypes=[("CSV files", "*.csv")])
+        if not filename:
+            return
+        filtered = [s for s in students if report_filter_var.get() in ("All", s[2])]
+        with open(filename, "w", encoding="utf-8") as f:
+            headers = ["Pos", "Name", "Class"] + [s[0] for s in SUBJECT_SCORES] + ["Total", "Avg", "Grade"]
+            f.write(",".join(headers) + "\n")
+            for pos, s in enumerate(sorted(filtered, key=lambda x: x[12], reverse=False), start=1):
+                values = [str(pos), s[1], s[2]]
+                for _, idx in SUBJECT_SCORES:
+                    values.append(str(get_subject_value(s, idx)))
+                values.append(str(s[9]))
+                values.append(str(s[10]))
+                values.append(get_grade_from_score(s[10]))
+                f.write(",".join(values) + "\n")
+        messagebox.showinfo("Export Complete", f"Report exported to {filename}")
+
+    ctk.CTkButton(
+        header_right, 
+        text="📥 Export CSV", 
+        command=export_csv, 
+        fg_color="#ffffff", 
+        hover_color="#f3f4f6", 
+        text_color="#374151",
+        border_width=1,
+        border_color="#d1d5db",
+        height=45,
+        width=140,
+        font=("Arial", 14, "bold"),
+        corner_radius=10
+    ).pack(side="left")
+
+    # Subject performance card
+    subject_card = ctk.CTkFrame(reports_frame, corner_radius=16, fg_color="#ffffff", border_width=1, border_color="#e5e7eb")
+    subject_card.pack(fill="x", padx=24, pady=(0, 24))
+
+    ctk.CTkLabel(subject_card, text="Subject Performance", font=("Arial", 18, "bold"), text_color="#111827", anchor="w").pack(anchor="w", padx=24, pady=(24, 20))
+
+    card_row = ctk.CTkFrame(subject_card, fg_color="transparent")
+    card_row.pack(fill="x", padx=16, pady=(0, 24))
+
+    filtered_students = [s for s in students if report_filter_var.get() in ("All", s[2])]
+    summary = calculate_report_summary(filtered_students)
+
+    for subj, _ in SUBJECT_SCORES:
+        score = summary.get(subj, 0)
+        lvl = get_grade_from_score(score)
+
+        card = ctk.CTkFrame(card_row, corner_radius=12, fg_color="#ffffff", border_width=1, border_color="#e5e7eb", width=100, height=130)
+        card.pack(side="left", padx=8, fill="y", expand=True)
+        card.pack_propagate(False)
+
+        ctk.CTkLabel(card, text=subj, font=("Arial", 12), text_color="#6b7280").pack(pady=(16, 4))
+        ctk.CTkLabel(card, text=str(int(score)), font=("Arial", 28, "bold"), text_color="#111827").pack()
+        
+        # Badge color based on grade
+        badge_color = "#ef4444" if lvl in ("BE", "IE") else "#10b981"
+        badge = ctk.CTkLabel(card, text=lvl, font=("Arial", 10, "bold"), fg_color=badge_color, text_color="#ffffff", corner_radius=12, width=32, height=22)
+        badge.pack(pady=(8, 16))
+
+    # Rankings table card
+    ranking_card = ctk.CTkFrame(reports_frame, corner_radius=16, fg_color="#ffffff", border_width=1, border_color="#e5e7eb")
+    ranking_card.pack(fill="both", expand=True, padx=24, pady=(0, 24))
+
+    ctk.CTkLabel(ranking_card, text="Student Rankings", font=("Arial", 18, "bold"), text_color="#111827", anchor="w").pack(anchor="w", padx=24, pady=(24, 20))
+
+    ranking_table_frame = tk.Frame(ranking_card, bg="#ffffff")
+    ranking_table_frame.pack(fill="both", expand=True, padx=12, pady=(0, 12))
+
+    # Styling Treeview to match clean header look
+    style = ttk.Style()
+    style.theme_use("clam")
+    style.configure("Treeview", background="#ffffff", fieldbackground="#ffffff", foreground="#374151", rowheight=45, font=("Arial", 11), borderwidth=0)
+    style.configure("Treeview.Heading", background="#f9fafb", foreground="#6b7280", font=("Arial", 11, "bold"), borderwidth=0)
+    style.map("Treeview", background=[('selected', '#eff6ff')], foreground=[('selected', '#1e40af')])
+
+    columns = ["Pos", "Name", "Class"] + [s[0] for s in SUBJECT_SCORES] + ["Total", "Avg", "Grade"]
+    ranking_table = ttk.Treeview(ranking_table_frame, columns=columns, show="headings", height=10)
+    
+    for col in columns:
+        ranking_table.heading(col, text=col)
+        # Adjust width for subjects
+        w = 140 if col == "Name" else 60
+        if col in ("Pos", "Total", "Avg", "Grade"): w = 70
+        ranking_table.column(col, width=w, anchor="center")
+
+    sb2 = ttk.Scrollbar(ranking_table_frame, orient="vertical", command=ranking_table.yview)
+    ranking_table.configure(yscrollcommand=sb2.set)
+    ranking_table.pack(side="left", fill="both", expand=True)
+    sb2.pack(side="right", fill="y")
+
+    if not filtered_students:
+        ranking_table.insert("", "end", values=["", "No results to display. Add students and enter marks first."] + ["" for _ in range(len(columns)-2)])
+    else:
+        # Sort and populate rankings table
+        sorted_students = sorted(filtered_students, key=lambda x: x[9], reverse=True)
+        for i, s in enumerate(sorted_students, 1):
+            row_data = [i, s[1], s[2]]
+            for _, idx in SUBJECT_SCORES:
+                row_data.append(get_subject_value(s, idx))
+            row_data.extend([s[9], s[10], get_grade_from_score(s[10])])
+            ranking_table.insert("", "end", values=row_data)
+
+    if not filtered_students:
+        ranking_table.insert("", "end", values=["", "No results to display. Add students and enter marks first."] + ["" for _ in range(len(columns) - 2)])
+    else:
+        sorted_students = sorted(filtered_students, key=lambda s: s[12] if len(s) > 12 else 0)
+        for pos, s in enumerate(sorted_students, start=1):
+            row = [pos, s[1], s[2]]
+            for _, idx in SUBJECT_SCORES:
+                row.append(get_subject_value(s, idx))
+            row += [s[9], s[10], get_grade_from_score(s[10])]
+            ranking_table.insert("", "end", values=row)
+
+
+# --- Navigation ---
+add_nav_button("Dashboard", lambda: show_frame(dashboard_frame), "🏠")
+add_nav_button("Students", lambda: show_frame(students_frame), "👥")
+add_nav_button("Enter Marks", lambda: show_frame(marks_frame), "📝")
+add_nav_button("Reports", lambda: show_frame(reports_frame), "📊")
+
+# Sidebar Footer
+sidebar_footer = ctk.CTkFrame(sidebar, fg_color="transparent")
+sidebar_footer.pack(side="bottom", fill="x", pady=(20, 15))
+
+# Divider
+ctk.CTkFrame(sidebar, height=1, fg_color=SIDEBAR_HOVER).pack(fill="x", padx=16, pady=(0, 15))
+
+ctk.CTkLabel(sidebar_footer, text="MOAS System v1.0", font=("Arial", 10), 
+             text_color=SIDEBAR_TEXT_MUTED, fg_color="transparent").pack(pady=(0, 4))
+ctk.CTkLabel(sidebar_footer, text="Mt Olives Adventist School", font=("Arial", 9), 
+             text_color=SIDEBAR_TEXT_MUTED, fg_color="transparent").pack()
+
+# Show initial page
+show_frame(dashboard_frame)
+
+# Run the application with graceful exit handling
+try:
+    app.mainloop()
+except KeyboardInterrupt:
+    print("\nApplication closed by user.")
+    try:
+        app.destroy()
+    except:
+        pass
