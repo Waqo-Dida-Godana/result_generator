@@ -6,8 +6,11 @@ import openpyxl
 from reportlab.pdfgen import canvas
 from reportlab.lib.pagesizes import A4
 from reportlab.lib import colors
-from reportlab.platypus import SimpleDocTemplate, Table, TableStyle, Paragraph, Spacer, Image as RLImage
-from reportlab.lib.styles import getSampleStyleSheet
+from reportlab.platypus import SimpleDocTemplate, Table, TableStyle, Paragraph, Spacer, Image as RLImage, PageBreak
+from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
+from reportlab.graphics.shapes import Drawing, Rect
+from reportlab.graphics.charts.barcharts import VerticalBarChart
+from reportlab.lib.units import inch
 from fpdf import FPDF
 from PIL import Image, ImageTk
 import os
@@ -114,7 +117,8 @@ def connect_db():
                 name VARCHAR(100),
                 class VARCHAR(20),
                 term VARCHAR(20),
-                math INT, eng INT, kisw INT, sci INT, soc INT,
+                math INT, eng INT, kisw INT, int_sci INT, agri INT,
+                sst INT, cre INT, cia INT, pre_tech INT,
                 total INT, avg FLOAT, level VARCHAR(10), rank_no INT,
                 photo_path VARCHAR(255),
                 gender VARCHAR(20)
@@ -145,9 +149,9 @@ def calculate_rank():
         groups[key].append(s)
     
     for key in groups:
-        groups[key].sort(key=lambda x: x[9], reverse=True)
+        groups[key].sort(key=lambda x: x[13], reverse=True)
         for i, s in enumerate(groups[key], 1):
-            s[12] = i
+            s[16] = i
 
 # ─── GUI Logic ───────────────────────────────────────────────────────────────
 def select_photo():
@@ -161,7 +165,7 @@ def select_photo():
         photo_label.configure(image=photo_img, text="")
         photo_label.image = photo_img
 
-def add_student_from_form(admission_no: str, name: str, cls: str, term: str, gender: str, math: str="0", eng: str="0", kisw: str="0", sci: str="0", soc: str="0", photo_path: str=""):
+def add_student_from_form(admission_no: str, name: str, cls: str, term: str, gender: str, math: str="0", eng: str="0", kisw: str="0", int_sci: str="0", agri: str="0", sst: str="0", cre: str="0", cia: str="0", pre_tech: str="0", photo_path: str=""):
     global current_photo_path
 
     admission_no = admission_no.strip()
@@ -174,14 +178,18 @@ def add_student_from_form(admission_no: str, name: str, cls: str, term: str, gen
         m = int(math)
         e = int(eng)
         k = int(kisw)
-        s = int(sci)
-        so = int(soc)
+        isc = int(int_sci)
+        agr = int(agri)
+        ss = int(sst)
+        cr = int(cre)
+        ci = int(cia)
+        pt = int(pre_tech)
     except:
         messagebox.showerror("Error", "Marks must be numeric!")
         return
 
-    total = m + e + k + s + so
-    avg = round(total / 5, 2)
+    total = m + e + k + isc + agr + ss + cr + ci + pt
+    avg = round(total / 9, 2)
     lvl = get_level(avg)
 
     dest_path = ""
@@ -192,7 +200,7 @@ def add_student_from_form(admission_no: str, name: str, cls: str, term: str, gen
         except Exception:
             dest_path = ""
 
-    students.append([admission_no, name, cls, term, m, e, k, s, so, total, avg, lvl, 0, dest_path, gender])
+    students.append([admission_no, name, cls, term, m, e, k, isc, agr, ss, cr, ci, pt, total, avg, lvl, 0, dest_path, gender])
 
     calculate_rank()
     refresh_table()
@@ -231,9 +239,13 @@ def import_from_excel():
             # Get marks (default to 0 if not present)
             math = int(row.get('math', row.get('Math', 0)))
             eng = int(row.get('eng', row.get('Eng', 0)))
-            kisw = int(row.get('kisw', row.get('Kisw', 0)))
-            sci = int(row.get('sci', row.get('Sci', 0)))
-            soc = int(row.get('soc', row.get('Soc', 0)))
+            kis = int(row.get('kis', row.get('Kis', 0)))
+            isc = int(row.get('int_sci', row.get('Int Sci', 0)))
+            agr = int(row.get('agri', row.get('Agri', 0)))
+            sst = int(row.get('sst', row.get('SST', 0)))
+            cre = int(row.get('cre', row.get('CRE', 0)))
+            cia = int(row.get('cia', row.get('CIA', 0)))
+            pt = int(row.get('pre_tech', row.get('Pre-Tech', 0)))
             
             if not name or not admission_no:
                 continue
@@ -247,11 +259,11 @@ def import_from_excel():
                 except Exception:
                     dest_path = ""
             
-            total = math + eng + kisw + sci + soc
-            avg = round(total / 5, 2) if (math + eng + kisw + sci + soc) > 0 else 0
+            total = math + eng + kis + isc + agr + sst + cre + cia + pt
+            avg = round(total / 9, 2) if total > 0 else 0
             lvl = get_level(avg)
             
-            students.append([admission_no, name, cls, term, math, eng, kisw, sci, soc, total, avg, lvl, 0, dest_path, gender])
+            students.append([admission_no, name, cls, term, math, eng, kis, isc, agr, sst, cre, cia, pt, total, avg, lvl, 0, dest_path, gender])
             imported_count += 1
         
         calculate_rank()
@@ -281,12 +293,16 @@ def download_template():
             'class': ['Grade 1', 'Grade 2', 'Grade 3'],
             'term': ['Term 1', 'Term 1', 'Term 1'],
             'gender': ['Male', 'Female', 'Male'],
-            'photo_path': ['', '', ''],
             'math': [0, 0, 0],
             'eng': [0, 0, 0],
-            'kisw': [0, 0, 0],
-            'sci': [0, 0, 0],
-            'soc': [0, 0, 0]
+            'kis': [0, 0, 0],
+            'int_sci': [0, 0, 0],
+            'agri': [0, 0, 0],
+            'sst': [0, 0, 0],
+            'cre': [0, 0, 0],
+            'cia': [0, 0, 0],
+            'pre_tech': [0, 0, 0],
+            'photo_path': ['', '', '']
         }
         df = pd.DataFrame(template_data)
         df.to_excel(file_path, index=False)
@@ -308,22 +324,27 @@ def export_student_list():
     try:
         export_data = []
         for s in students:
+            while len(s) < 19: s.append("")
             export_data.append({
                 'admission_no': s[0],
                 'name': s[1],
                 'class': s[2],
                 'term': s[3],
-                'gender': s[14] if len(s) > 14 else '-',
-                'photo_path': s[13] if len(s) > 13 else '',
                 'math': s[4],
                 'eng': s[5],
-                'kisw': s[6],
-                'sci': s[7],
-                'soc': s[8],
-                'total': s[9],
-                'average': s[10],
-                'level': s[11],
-                'rank': s[12]
+                'kis': s[6],
+                'int_sci': s[7],
+                'agri': s[8],
+                'sst': s[9],
+                'cre': s[10],
+                'cia': s[11],
+                'pre_tech': s[12],
+                'total': s[13],
+                'average': s[14],
+                'level': s[15],
+                'rank': s[16],
+                'photo_path': s[17],
+                'gender': s[18]
             })
         
         df = pd.DataFrame(export_data)
@@ -340,7 +361,7 @@ def refresh_table():
         student_id = s[0]
         name = s[1]
         cls = s[2]
-        gender = s[14] if len(s) > 14 else "-"
+        gender = s[18] if len(s) > 18 else "-"
         table.insert("", "end", values=(student_id, name, cls, gender, "Delete"))
 
 
@@ -480,9 +501,11 @@ def save_to_db():
     if not DB_CONNECTED: return
     try:
         cursor.execute("DELETE FROM students")
-        sql = "INSERT INTO students (admission_no, name, class, term, math, eng, kisw, sci, soc, total, avg, level, rank_no, photo_path, gender) VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)"
+        sql = "INSERT INTO students (admission_no, name, class, term, math, eng, kisw, int_sci, agri, sst, cre, cia, pre_tech, total, avg, level, rank_no, photo_path, gender) VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)"
         for s in students:
-            cursor.execute(sql, tuple(s[:15]))
+            # Ensure s has 19 elements
+            while len(s) < 19: s.append("")
+            cursor.execute(sql, tuple(s[:19]))
         db.commit()
     except Exception as e: print(f"DB Error: {e}")
 
@@ -513,65 +536,169 @@ def generate_report():
     s_id = item["values"][0]
     s_data = next(s for s in students if s[0] == s_id)
     
-    name, cls, term = s_data[1], s_data[2], s_data[3]
-    m, e, k, sci, soc = s_data[4], s_data[5], s_data[6], s_data[7], s_data[8]
-    total, avg, lvl, rank = s_data[9], s_data[10], s_data[11], s_data[12]
-    photo = s_data[13]
+    # Ensure s_data has enough elements
+    while len(s_data) < 19: s_data.append("")
+    
+    adm, name, cls, term = s_data[0], s_data[1], s_data[2], s_data[3]
+    m, e, k, isc, agr, ss, cr, ci, pt = s_data[4], s_data[5], s_data[6], s_data[7], s_data[8], s_data[9], s_data[10], s_data[11], s_data[12]
+    total, avg, lvl, rank = s_data[13], s_data[14], s_data[15], s_data[16]
+    photo = s_data[17]
+    gender = s_data[18]
 
     filename = f"Report_{name}_{cls}_{term}.pdf".replace(" ", "_")
-    doc = SimpleDocTemplate(filename, pagesize=A4)
+    doc = SimpleDocTemplate(filename, pagesize=A4, rightMargin=20, leftMargin=20, topMargin=20, bottomMargin=20)
     styles = getSampleStyleSheet()
+    
+    # Custom styles
+    styles.add(ParagraphStyle(name='SchoolName', parent=styles['Heading1'], fontName='Helvetica-Bold', fontSize=20, textColor=colors.HexColor("#2159A6"), alignment=1))
+    styles.add(ParagraphStyle(name='SchoolInfo', parent=styles['Normal'], fontSize=9, textColor=colors.gray, alignment=1))
+    styles.add(ParagraphStyle(name='ReportTitle', parent=styles['Heading2'], fontName='Helvetica-Bold', fontSize=16, textColor=colors.HexColor("#D9534F"), alignment=1, spaceBefore=10, spaceAfter=10))
+    styles.add(ParagraphStyle(name='SectionHeader', parent=styles['Normal'], fontName='Helvetica-Bold', fontSize=12, textColor=colors.white))
+    styles.add(ParagraphStyle(name='CommentTitle', parent=styles['Normal'], fontName='Helvetica-Bold', fontSize=10, textColor=colors.HexColor("#2159A6")))
+    styles.add(ParagraphStyle(name='CommentText', parent=styles['Normal'], fontName='Helvetica-Oblique', fontSize=10, textColor=colors.gray))
+
     elements = []
 
-    # Header
-    elements.append(Paragraph("<font size=18 color='#1a3c5e'><b>KENYAN CBC ACADEMIC PROGRESS REPORT</b></font>", styles['Title']))
-    elements.append(Paragraph(f"<font size=12><b>{cls} - {term}</b></font>", styles['Normal']))
-    elements.append(Spacer(1, 20))
-
-    # Student Info Table
-    info_data = [
-        ["STUDENT NAME:", name, "RANK:", f"{rank} / {len([x for x in students if x[2]==cls and x[3]==term])}"],
-        ["CLASS:", cls, "LEVEL:", lvl],
-        ["TERM:", term, "AVERAGE:", f"{avg}%"]
+    # Header section
+    header_data = [
+        [Paragraph("VISION PRIMARY AND JUNIOR SCHOOLS", styles['SchoolName'])],
+        [Paragraph("P.O. BOX 54 KENYA", styles['SchoolInfo'])],
+        [Paragraph("visionprimaryschool@gmail.com", styles['SchoolInfo'])],
+        [Paragraph("+254718481515/+254718481515", styles['SchoolInfo'])],
+        [Paragraph("<i>Education For Excellence</i>", styles['SchoolInfo'])],
+        [Spacer(1, 10)],
+        [Paragraph("<hr color='#2159A6' width='100%'/>", styles['Normal'])],
+        [Paragraph("LEARNER ASSESSMENT REPORT CARD", styles['ReportTitle'])]
     ]
-    info_table = Table(info_data, colWidths=[100, 200, 80, 80])
-    info_table.setStyle(TableStyle([('FONTNAME', (0,0), (-1,-1), 'Helvetica-Bold'), ('BOTTOMPADDING', (0,0), (-1,-1), 10)]))
+    header_table = Table(header_data, colWidths=[520])
+    elements.append(header_table)
+
+    # Student Info Grid
+    info_data = [
+        ["NAME", name.upper(), "GRADE", cls],
+        ["STREAM", "001", "YEAR", "2026"],
+        ["TERM", term, "GENDER", gender]
+    ]
+    info_table = Table(info_data, colWidths=[80, 200, 80, 160])
+    info_table.setStyle(TableStyle([
+        ('FONTNAME', (0,0), (-1,-1), 'Helvetica-Bold'),
+        ('FONTSIZE', (0,0), (-1,-1), 10),
+        ('LINEBELOW', (1,0), (1,0), 0.5, colors.gray),
+        ('LINEBELOW', (3,0), (3,0), 0.5, colors.gray),
+        ('LINEBELOW', (1,1), (1,1), 0.5, colors.gray),
+        ('LINEBELOW', (3,1), (3,1), 0.5, colors.gray),
+        ('LINEBELOW', (1,2), (1,2), 0.5, colors.gray),
+        ('LINEBELOW', (3,2), (3,2), 0.5, colors.gray),
+        ('BOTTOMPADDING', (0,0), (-1,-1), 10),
+        ('TOPPADDING', (0,0), (-1,-1), 10),
+    ]))
     elements.append(info_table)
-    
-    if photo and os.path.exists(photo):
-        img = RLImage(photo, width=80, height=80)
-        img.hAlign = 'RIGHT'
-        elements.append(img)
-    
-    elements.append(Spacer(1, 20))
+    elements.append(Spacer(1, 10))
 
     # Marks Table
-    marks_data = [
-        ["SUBJECT", "SCORE (/100)", "REMARKS"],
-        ["MATHEMATICS", m, "Excellent" if m>=80 else "Good"],
-        ["ENGLISH", e, "Excellent" if e>=80 else "Good"],
-        ["KISWAHILI", k, "Excellent" if k>=80 else "Good"],
-        ["SCIENCE", sci, "Excellent" if sci>=80 else "Good"],
-        ["SOCIAL STUDIES", soc, "Excellent" if soc>=80 else "Good"],
-        ["TOTAL MARKS", total, ""],
-    ]
-    marks_table = Table(marks_data, colWidths=[150, 100, 150])
-    marks_table.setStyle(TableStyle([
-        ('BACKGROUND', (0,0), (-1,0), colors.HexColor("#1a3c5e")),
-        ('TEXTCOLOR', (0,0), (-1,0), colors.whitesmoke),
-        ('ALIGN', (0,0), (-1,-1), 'CENTER'),
-        ('GRID', (0,0), (-1,-1), 1, colors.black),
-        ('FONTNAME', (0,0), (-1,0), 'Helvetica-Bold'),
-        ('BOTTOMPADDING', (0,0), (-1,-1), 12),
-    ]))
-    elements.append(marks_table)
-    
-    elements.append(Spacer(1, 40))
-    elements.append(Paragraph("<b>Class Teacher's Remarks:</b> ________________________________________________", styles['Normal']))
-    elements.append(Spacer(1, 10))
-    elements.append(Paragraph("<b>Principal's Signature:</b> ________________________________________________", styles['Normal']))
+    def get_perf_level(score):
+        if score >= 80: return "Exceeding Expectations"
+        if score >= 65: return "Meeting Expectations"
+        if score >= 50: return "Approaching Expectations"
+        return "Below Expectations"
 
-    doc.build(elements)
+    subjects = [
+        ("Math", m), ("Eng", e), ("Kis", k), ("Int Sci", isc),
+        ("Agri", agr), ("SST", ss), ("CRE", cr), ("CIA", ci), ("Pre-Tech", pt)
+    ]
+    
+    marks_header = ["LEARNING AREA", "MARKS", "AVG", "PERFORMANCE LEVEL"]
+    marks_data = [marks_header]
+    for subj, score in subjects:
+        marks_data.append([subj, score, score, get_perf_level(score)])
+    
+    # Summary Rows
+    total_row = ["Total Scores", f"{total}/900", f"{avg}/100", f"Termly Performance Level: {lvl}"]
+    avg_row = ["Average Scores", f"{avg}/100", "", f"Position: {rank} of {len([x for x in students if x[2]==cls and x[3]==term])}"]
+    marks_data.append(total_row)
+    marks_data.append(avg_row)
+
+    marks_table = Table(marks_data, colWidths=[150, 100, 100, 170])
+    marks_style = TableStyle([
+        ('BACKGROUND', (0,0), (-1,0), colors.HexColor("#E2EFDA")),
+        ('TEXTCOLOR', (0,0), (-1,0), colors.HexColor("#2159A6")),
+        ('FONTNAME', (0,0), (-1,0), 'Helvetica-Bold'),
+        ('ALIGN', (0,0), (-1,-1), 'LEFT'),
+        ('GRID', (0,0), (-1,-3), 0.5, colors.gray),
+        ('FONTSIZE', (0,0), (-1,-1), 9),
+        ('BOTTOMPADDING', (0,0), (-1,-1), 8),
+        ('TOPPADDING', (0,0), (-1,-1), 8),
+        # Summary row styling
+        ('BACKGROUND', (0,-2), (-1,-1), colors.HexColor("#D0F0E0")),
+        ('FONTNAME', (0,-2), (-1,-1), 'Helvetica-Bold'),
+        ('SPAN', (2,-1), (2,-1)), # Optional spans
+    ])
+    marks_table.setStyle(marks_style)
+    elements.append(marks_table)
+    elements.append(Spacer(1, 10))
+
+    # Performance Trend Chart
+    elements.append(Paragraph("<u>Performance Trend</u>", styles['SchoolInfo']))
+    elements.append(Spacer(1, 5))
+    
+    drawing = Drawing(400, 150)
+    bc = VerticalBarChart()
+    bc.x = 50
+    bc.y = 20
+    bc.height = 100
+    bc.width = 350
+    bc.data = [[m, e, k, isc, agr, ss, cr, ci, pt]]
+    bc.strokeColor = colors.black
+    bc.valueAxis.valueMin = 0
+    bc.valueAxis.valueMax = 100
+    bc.valueAxis.valueStep = 25
+    bc.categoryAxis.labels.boxAnchor = 'ne'
+    bc.categoryAxis.labels.dx = 0
+    bc.categoryAxis.labels.dy = -2
+    bc.categoryAxis.labels.angle = 30
+    bc.categoryAxis.categoryNames = [s[0] for s in subjects]
+    
+    # Bar colors based on performance
+    for i, (_, score) in enumerate(subjects):
+        if score >= 80: bc.bars[0, i].fillColor = colors.HexColor("#2159A6")
+        elif score >= 50: bc.bars[0, i].fillColor = colors.HexColor("#4CAF50")
+        else: bc.bars[0, i].fillColor = colors.HexColor("#D9534F")
+
+    drawing.add(bc)
+    elements.append(drawing)
+    elements.append(Spacer(1, 20))
+
+    # Comments Section
+    comments_data = [
+        [Paragraph("Class Teacher's Comment: <font color='gray'><i>Fair performance. Keep working harder.</i></font>", styles['CommentTitle'])],
+        [Spacer(1, 10)],
+        [Paragraph("Head Teacher's Comment: <font color='gray'><i>Encourage the learner to improve.</i></font>", styles['CommentTitle'])]
+    ]
+    comments_table = Table(comments_data, colWidths=[520])
+    comments_table.setStyle(TableStyle([
+        ('BOX', (0,0), (-1,0), 0.5, colors.gray),
+        ('BOX', (0,2), (-1,2), 0.5, colors.gray),
+        ('BOTTOMPADDING', (0,0), (-1,-1), 5),
+        ('TOPPADDING', (0,0), (-1,-1), 5),
+    ]))
+    elements.append(comments_table)
+    elements.append(Spacer(1, 10))
+
+    # Footer
+    footer_text = f"This term closed on: 3/11/2026 | Next term opens on: ___________"
+    elements.append(Paragraph(footer_text, styles['SchoolInfo']))
+    elements.append(Spacer(1, 5))
+    elements.append(Paragraph("<font size=7 color='gray' backColor='#EEEEEE'>This Exam Report Card has Been Issued Without Any Alterations Whatsoever. Any Alterations Will Invalidate Its Authenticity.</font>", styles['SchoolInfo']))
+
+    # Border - using Page Canvas for border
+    def add_border(canvas, doc):
+        canvas.saveState()
+        canvas.setStrokeColor(colors.HexColor("#2159A6"))
+        canvas.setLineWidth(2)
+        canvas.rect(10, 10, A4[0]-20, A4[1]-20)
+        canvas.restoreState()
+
+    doc.build(elements, onFirstPage=add_border, onLaterPages=add_border)
     messagebox.showinfo("Report Generated", f"Report card saved as {filename}")
 
 # ─── UI Layout ───────────────────────────────────────────────────────────────
@@ -933,13 +1060,14 @@ def refresh_marks_table():
         row.pack(fill="x", pady=2)
 
         # make sure we have enough slots in student record for the extra subjects
-        while len(s) < 20:
+        while len(s) < 19:
             s.append(0)
 
         name_lbl = ctk.CTkLabel(row, text=s[1], text_color="#2c2c2c")
         name_lbl.pack(side="left", padx=(0, 4), ipady=6, ipadx=4, fill="x", expand=True)
 
-        entry_values = [s[4], s[5], s[6], s[7], s[15], s[16], s[17], s[18], s[19]]
+        # Subjects from index 4 to 12
+        entry_values = [s[4], s[5], s[6], s[7], s[8], s[9], s[10], s[11], s[12]]
         entry_vars = []
         for val in entry_values:
             v = tk.StringVar(value=str(val))
@@ -962,33 +1090,33 @@ def save_marks_for_grade(grade: str):
         s = w._student
         vars = w._entry_vars
         try:
-            s[4] = int(vars[0].get())
-            s[5] = int(vars[1].get())
-            s[6] = int(vars[2].get())
-            s[7] = int(vars[3].get())
-            s[15] = int(vars[4].get())
-            s[16] = int(vars[5].get())
-            s[17] = int(vars[6].get())
-            s[18] = int(vars[7].get())
-            s[19] = int(vars[8].get())
+            # Update subjects 4-12
+            for i in range(9):
+                s[4+i] = int(vars[i].get())
+            
+            # Recalculate total, avg, level
+            s[13] = sum(s[4:13])
+            s[14] = round(s[13] / 9, 2)
+            s[15] = get_level(s[14])
         except ValueError:
             # ignore invalid input
             pass
 
     calculate_rank()
     refresh_table()
+    save_to_db()
 
 # --- Reports Page ---
 SUBJECT_SCORES = [
     ("Math", 4),
     ("Eng", 5),
     ("Kis", 6),
-    ("Int Sci", 15),
-    ("Agri", 16),
-    ("SST", 17),
-    ("CRE", 18),
-    ("CIA", 19),
-    ("Pre-Tech", 20),
+    ("Int Sci", 7),
+    ("Agri", 8),
+    ("SST", 9),
+    ("CRE", 10),
+    ("CIA", 11),
+    ("Pre-Tech", 12),
 ]
 
 report_filter_var = tk.StringVar(value="All")
