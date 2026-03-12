@@ -1,49 +1,58 @@
-# Kenyan CBC Student Results System
+# School Management System - Python Tkinter
 
-A desktop application built with Python and Tkinter for managing student marks under the Competency Based Curriculum (CBC).
+## Requirements
 
-## 🚀 Features
-- **Secure Login System**: Separate access for Admin and Teachers.
-- **Student Management**: Add, delete, and view student records.
-- **CBC Grading**: Automatic calculation of Total, Average, and CBC Levels (EE, ME, AE, BE).
-- **Automatic Ranking**: Students are automatically ranked based on performance.
-- **Data Export**:
-  - Export full class results to **Excel** (`.xlsx`).
-  - Export full class results to **PDF**.
-  - Generate individual **Student Report Cards** in PDF format.
-- **Database Support**: Integration with MySQL (graceful fallback to in-memory mode if MySQL is offline).
-- **Desktop Ready**: Can be converted to a standalone `.exe` file.
+- Python 3.8 or higher
+- matplotlib>=3.5.0
 
-## 🛠 Prerequisites
-Ensure you have Python installed. You will also need the following libraries:
-```bash
-pip install pandas reportlab fpdf openpyxl mysql-connector-python pyinstaller
+## Installation
+
+1. Make sure you have Python installed
+2. Install the required packages:
+   ```
+   pip install matplotlib
+   ```
+
+## Running the Application
+
+Navigate to the `python_tkinter` folder and run:
+```
+python main.py
 ```
 
-## 📖 How to Run
-1. Navigate to the project folder.
-2. Run the application:
-   ```bash
-   python cbc_student_app.py
-   ```
+## Default Login
 
-## 🔐 Login Credentials
-| Role | Username | Password |
-| :--- | :--- | :--- |
-| **Admin** | `admin` | `1234` |
-| **Teacher** | `teacher` | `1111` |
+- Username: admin
+- Password: admin123
 
-## 📦 Building the Desktop App (.EXE)
-To create a standalone executable for Windows:
-1. Run the provided `build_exe.bat` file.
-2. Alternatively, run this command in your terminal:
-   ```bash
-   pyinstaller --onefile --windowed cbc_student_app.py
-   ```
-3. Your software will be available in the `dist` folder.
+## Features
 
-## 📊 CBC Grading Scale
-- **EE (Exceeding Expectations)**: 80 - 100
-- **ME (Meeting Expectations)**: 65 - 79
-- **AE (Approaching Expectations)**: 50 - 64
-- **BE (Below Expectations)**: 0 - 49
+1. **Dashboard** - Overview of school statistics including total students, class average, top student, and grading scale
+
+2. **Students Management** - Add, edit, delete, and search students with their admission number, name, class, and gender
+
+3. **Marks Entry** - Enter marks for 9 subjects (Math, Eng, Kis, Int Sci, Agri, SST, CRE, CIA, Pre-Tech) across 3 terms
+
+4. **Reports & Rankings** - View student rankings, subject performance, and export data to CSV
+
+5. **Charts** - Visual analysis including:
+   - Subject averages bar chart
+   - Grade distribution pie chart
+   - Top 5 students bar chart
+   - Class performance comparison
+
+6. **Report Cards** - Generate and print individual or bulk report cards
+
+## Data Storage
+
+The application uses SQLite for local data storage. A database file (`school_report.db`) will be created automatically in the application folder.
+
+## Grading Scale
+
+| Grade | Range | Description |
+|-------|-------|-------------|
+| EE | 80-100 | Exceeding Expectations |
+| ME | 70-79 | Meeting Expectations |
+| AE | 60-69 | Approaching Expectations |
+| BE | 50-59 | Below Expectations |
+| IE | 0-49 | Inadequate |

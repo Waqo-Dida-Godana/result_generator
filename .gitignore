@@ -29,4 +29,5 @@ dist-ssr
 .env.production.local
 .env.development.local
 .env.test.local
+.kombai
 
