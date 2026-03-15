@@ -2,5 +2,6 @@ pyinstaller>=6.0.0
 matplotlib>=3.5.0
 Pillow>=9.0.0
 pandas>=1.5.0
+openpyxl>=3.0.0
 reportlab>=4.0.0
 fpdf>=1.7.2

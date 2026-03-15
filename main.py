@@ -1,11 +1,12 @@
 # -*- coding: utf-8 -*-
 """
-MOAS CBC Student Report Management System - Complete Merged App
+MOAS School Management System - Complete Merged App
 Pure Tkinter • Modern UI • Full Features • Legacy DB Compatible
 """
 
 import os
 import shutil
+import sys
 import tkinter as tk
 from tkinter import ttk, messagebox, simpledialog, filedialog
 from PIL import Image, ImageTk
@@ -73,14 +74,132 @@ TOPBAR_ICON_FG  = '#ffffff'         # button icon/text color (white on green)
 TOPBAR_USER_BG  = '#7b1fa2'         # purple user section
 TOPBAR_YR_BG    = '#4CAF50'         # green year badge
 
+# ====================== CBC LEVELS & SUBJECTS ======================
+# Kenyan Competency Based Curriculum (CBC) Structure
+
+# Education Levels
+LEVELS = [
+    'Lower Primary (Grade 1-3)',
+    'Upper Primary (Grade 4-6)',
+    'Junior School (Grade 7-9)'
+]
+
+# Subjects by Level
+SUBJECTS_BY_LEVEL = {
+    'Lower Primary (Grade 1-3)': [
+        'Literacy Activities (Reading & Writing)',
+        'Kiswahili Language Activities',
+        'English Language Activities',
+        'Mathematical Activities',
+        'Environmental Activities',
+        'Hygiene & Nutrition Activities',
+        'Religious Education Activities',
+        'Movement & Creative Activities'
+    ],
+    'Upper Primary (Grade 4-6)': [
+        'English',
+        'Kiswahili / Kenyan Sign Language',
+        'Mathematics',
+        'Science & Technology',
+        'Agriculture',
+        'Social Studies',
+        'Religious Education',
+        'Christian Religious Education (CRE)',
+        'Islamic Religious Education (IRE)',
+        'Hindu Religious Education (HRE)',
+        'Creative Arts',
+        'Physical & Health Education',
+        'Home Science'
+    ],
+    'Junior School (Grade 7-9)': {
+        'core': [
+            'English',
+            'Kiswahili / Kenyan Sign Language',
+            'Mathematics',
+            'Integrated Science',
+            'Health Education',
+            'Pre-Technical Studies',
+            'Social Studies',
+            'Religious Education (CRE/IRE/HRE)',
+            'Agriculture',
+            'Life Skills Education',
+            'Sports & Physical Education',
+            'Visual Arts',
+            'Performing Arts'
+        ],
+        'optional': [
+            'Computer Science / ICT',
+            'Foreign Languages (French, German, Arabic)',
+            'Kenyan Sign Language'
+        ]
+    }
+}
+
+# Classes by Level
+CLASSES_BY_LEVEL = {
+    'Lower Primary (Grade 1-3)': ['Grade 1', 'Grade 2', 'Grade 3'],
+    'Upper Primary (Grade 4-6)': ['Grade 4', 'Grade 5', 'Grade 6'],
+    'Junior School (Grade 7-9)': ['Grade 7', 'Grade 8', 'Grade 9']
+}
+
+# Grading System by Level (CBC Competency Levels)
+GRADING_BY_LEVEL = {
+    'Lower Primary (Grade 1-3)': {
+        'levels': {
+            'EE': {'label': 'Exceeding Expectation', 'description': 'Learner performs above the required level'},
+            'ME': {'label': 'Meeting Expectation', 'description': 'Learner understands and performs well'},
+            'AE': {'label': 'Approaching Expectation', 'description': 'Learner is improving but needs support'},
+            'BE': {'label': 'Below Expectation', 'description': 'Learner needs more help'}
+        },
+        'assessment_methods': 'Class activities, Oral work, Practical activities, Teacher observation'
+    },
+    'Upper Primary (Grade 4-6)': {
+        'levels': {
+            'EE': {'label': 'Exceeding Expectation', 'description': 'Learner performs above the required level'},
+            'ME': {'label': 'Meeting Expectation', 'description': 'Learner understands and performs well'},
+            'AE': {'label': 'Approaching Expectation', 'description': 'Learner is improving but needs support'},
+            'BE': {'label': 'Below Expectation', 'description': 'Learner needs more help'}
+        },
+        'assessment_components': '60% School Based Assessment (SBA) + 40% National Assessment (KNEC)'
+    },
+    'Junior School (Grade 7-9)': {
+        'levels': {
+            'EE': {'label': 'Exceeding Expectation', 'description': 'Learner performs above the required level'},
+            'ME': {'label': 'Meeting Expectation', 'description': 'Learner understands and performs well'},
+            'AE': {'label': 'Approaching Expectation', 'description': 'Learner is improving but needs support'},
+            'BE': {'label': 'Below Expectation', 'description': 'Learner needs more help'}
+        },
+        'uses_percentage': True,
+        'description': 'Competency levels with percentage scores'
+    }
+}
+
+# Legacy compatibility - Default to Junior School
+SUBJECTS = SUBJECTS_BY_LEVEL['Junior School (Grade 7-9)']['core']
+CLASSES  = CLASSES_BY_LEVEL['Junior School (Grade 7-9)']
+
 # ====================== CONSTANTS ==========================
-SUBJECTS = ['Math', 'Eng', 'Kis', 'Int Sci', 'Agri', 'SST', 'CRE', 'CIA', 'Pre-Tech']
-CLASSES  = ['Grade 7', 'Grade 8', 'Grade 9']
 TERMS    = ['One', 'Two', 'Three']
 COLORS = {
     'primary': '#4CAF50', 'sidebar': '#1b5e20', 'card': '#ffffff',
     'text': '#333333', 'text_sec': '#666666', 'border': '#e0e0e0'
 }
+
+# ====================== CBC GRADE SUB-LEVELS ===============
+def get_cbc_grade_sublevel(mark):
+    """Return the CBC grade sub-level string (EE1, EE2, ME1, ME2, AE1, AE2, BE1, BE2)."""
+    try:
+        mark = int(mark)
+    except (TypeError, ValueError):
+        return ''
+    if mark >= 90: return 'EE1'
+    if mark >= 75: return 'EE2'
+    if mark >= 60: return 'ME1'
+    if mark >= 50: return 'ME2'
+    if mark >= 35: return 'AE1'
+    if mark >= 25: return 'AE2'
+    if mark >= 12: return 'BE1'
+    return 'BE2'
 
 # ====================== HELPERS ============================
 def _rr(canvas, x0, y0, x1, y1, r, fill, outline=None):
@@ -197,12 +316,16 @@ def setup_treeview_style():
 class SchoolReportApp:
     def __init__(self, root: tk.Tk):
         self.root = root
-        self.root.title('MT OLIVES ADVENTIST SCHOOL')
+        self.root.title('MT OLIVES ADVENTIST SCHOOL,NGONG')
         self.root.geometry('1280x760')
         self.root.configure(bg=CONTENT_BG)
         self.root.minsize(960, 620)
 
+        # CBC Level - Default to Junior School
+        self.current_level = 'Junior School (Grade 7-9)'
+        
         self.current_user = None
+        self.user_role = 'admin'  # Default role
         self.nav_frames: dict = {}
         self.active_nav: str = ''
         self.logo_img = self.load_logo()
@@ -238,6 +361,63 @@ class SchoolReportApp:
         self.show_login()
 
     # ------------------- utilities -------------------
+    def get_current_subjects(self):
+        """Get subjects for the current user based on role"""
+        # Check if user is a teacher with assigned subjects
+        if self.current_user and hasattr(self, 'user_role'):
+            role = getattr(self, 'user_role', 'admin')
+            teacher_id = self.current_user.get('id')
+            
+            # If teacher, return only assigned subjects
+            if role == 'teacher' and teacher_id:
+                assignments = db.get_teacher_subjects(teacher_id)
+                if assignments:
+                    return [a['subject'] for a in assignments]
+        
+        # Default to CBC level subjects
+        return SUBJECTS_BY_LEVEL.get(self.current_level, SUBJECTS)
+    
+    def get_teacher_assigned_classes(self):
+        """Get classes assigned to the current teacher"""
+        if self.current_user and hasattr(self, 'user_role'):
+            role = getattr(self, 'user_role', 'admin')
+            teacher_id = self.current_user.get('id')
+            
+            if role == 'teacher' and teacher_id:
+                # Get unique classes from subject assignments
+                assignments = db.get_teacher_subjects(teacher_id)
+                classes = list(set([a['class_name'] for a in assignments]))
+                if classes:
+                    return classes
+            elif role == 'class_teacher' and teacher_id:
+                return db.get_teacher_classes(teacher_id)
+        
+        return CLASSES_BY_LEVEL.get(self.current_level, CLASSES)
+    
+    def get_current_classes(self):
+        """Get classes for the current CBC level"""
+        return CLASSES_BY_LEVEL.get(self.current_level, CLASSES)
+    
+    def get_current_grading(self):
+        """Get grading system for the current CBC level"""
+        return GRADING_BY_LEVEL.get(self.current_level, GRADING_BY_LEVEL['Junior School (Grade 7-9)'])
+    
+    def set_level(self, level):
+        """Set the current CBC level and update subjects/classes"""
+        if level in LEVELS:
+            self.current_level = level
+            # Update legacy compatibility variables
+            global SUBJECTS, CLASSES
+            # Handle both list and dict structures (Junior School has core/optional)
+            level_subjects = SUBJECTS_BY_LEVEL[level]
+            if isinstance(level_subjects, dict):
+                SUBJECTS = level_subjects.get('core', [])
+            else:
+                SUBJECTS = level_subjects
+            CLASSES = CLASSES_BY_LEVEL[level]
+            return True
+        return False
+    
     def load_logo(self):
         try:
             img = Image.open('moas.jpg').resize((60, 60))
@@ -437,6 +617,9 @@ class SchoolReportApp:
         user = db.authenticate(email, pwd)
         if user:
             self.current_user = user
+            # Get user's role
+            user_role = user.get('role', 'admin')
+            self.user_role = user_role
             self.show_main()
         else:
             messagebox.showerror('Login Failed', 'Invalid email or password.\n\n'
@@ -608,6 +791,20 @@ class SchoolReportApp:
         tk.Label(yr_f, text=acad_year, bg=TOPBAR_YR_BG, fg='white',
                  font=(FF, 7, 'bold')).pack(pady=(0, 10))
 
+        # ── CBC Level Selector ────────────────────────────────────────────────
+        level_frame = tk.Frame(bar, bg='#1565c0', padx=10, cursor='hand2')
+        level_frame.pack(side='right', fill='y', padx=(8, 2))
+        
+        tk.Label(level_frame, text='📚 CBC Level:', bg='#1565c0', fg='white',
+                 font=(FF, 9)).pack(side='left', pady=14)
+        
+        # Level dropdown
+        self.level_var = tk.StringVar(value=self.current_level)
+        level_cb = ttk.Combobox(level_frame, textvariable=self.level_var, 
+                                values=LEVELS, state='readonly', width=22)
+        level_cb.pack(side='left', padx=(5, 0), pady=10)
+        level_cb.bind('<<ComboboxSelected>>', lambda e: self._on_level_change())
+        
         # ── Live clock ────────────────────────────────────────────────────
         dt_lbl = tk.Label(bar, bg=TOPBAR_RIGHT_BG, fg='#c8e6c9',
                           font=(FF, 10), padx=16)
@@ -621,6 +818,20 @@ class SchoolReportApp:
             except tk.TclError:
                 pass
         _tick()
+
+    def _on_level_change(self):
+        """Handle CBC level change - update subjects and classes"""
+        new_level = self.level_var.get()
+        if new_level and new_level != self.current_level:
+            self.set_level(new_level)
+            # Refresh current view if logged in
+            if self.active_nav:
+                # Navigate to dashboard to refresh
+                self.show_dashboard()
+            messagebox.showinfo('CBC Level Changed', 
+                f'Switched to: {new_level}\n\nSubjects updated to:\n' + 
+                '\n'.join(f'• {s}' for s in self.get_current_subjects()[:5]) +
+                ('...' if len(self.get_current_subjects()) > 5 else ''))
 
     def _build_sidebar(self, parent):
         sb = tk.Frame(parent, bg=SIDEBAR_BG, width=238)
@@ -649,14 +860,7 @@ class SchoolReportApp:
         tk.Frame(sb, bg='#2E7D32', height=1).pack(fill='x', padx=18, pady=10)
 
         # --- nav items ---
-        nav_cfg = [
-            ('🏠',  'Dashboard',   self.show_dashboard),
-            ('👥',  'Students',    self.show_students),
-            ('📝',  'Enter Marks', self.show_marks_entry),
-            ('📊',  'Reports',     self.show_reports),
-            ('📈',  'Charts',      self.show_charts),
-            ('📄',  'Report Cards', self.show_report_cards),
-        ]
+        nav_cfg = self._get_role_based_nav()
         nav_box = tk.Frame(sb, bg=SIDEBAR_BG)
         nav_box.pack(fill='x', padx=10)
         self.nav_frames = {}
@@ -684,6 +888,45 @@ class SchoolReportApp:
             w.bind('<Button-1>', lambda e: self.logout())
             w.bind('<Enter>', lambda e: [so.config(bg=SIDEBAR_HOVER), lbl_so.config(bg=SIDEBAR_HOVER)])
             w.bind('<Leave>', lambda e: [so.config(bg=SIDEBAR_BG), lbl_so.config(bg=SIDEBAR_BG)])
+
+    def _get_role_based_nav(self):
+        """Get navigation items based on user role"""
+        role = getattr(self, 'user_role', 'admin')
+        
+        # Base navigation for all users
+        nav = [
+            ('🏠',  'Dashboard',   self.show_dashboard),
+        ]
+        
+        # Admin gets full access
+        if role == 'admin':
+            nav.extend([
+                ('⚙️',  'Settings',    self.show_settings),
+                ('👥',  'Students',    self.show_students),
+                ('👨‍🏫', 'Teachers',    self.show_teachers),
+                ('📝',  'Enter Marks', self.show_marks_entry),
+                ('📊',  'Reports',     self.show_reports),
+                ('📈',  'Charts',      self.show_charts),
+                ('📄',  'Report Cards', self.show_report_cards),
+                ('📚',  'CBC Info',    self.show_cbc_info),
+            ])
+        # Subject teacher
+        elif role == 'teacher':
+            nav.extend([
+                ('📝',  'Enter Marks', self.show_marks_entry),
+                ('📚',  'CBC Info',    self.show_cbc_info),
+            ])
+        # Class teacher
+        elif role == 'class_teacher':
+            nav.extend([
+                ('👥',  'My Students', self.show_class_students),
+                ('📝',  'Enter Marks', self.show_marks_entry),
+                ('💬',  'Add Comments', self.show_add_comments),
+                ('📄',  'Report Cards', self.show_report_cards),
+                ('📚',  'CBC Info',    self.show_cbc_info),
+            ])
+        
+        return nav
 
     def _nav_item(self, parent, icon: str, label: str, cmd):
         frame = tk.Frame(parent, bg=SIDEBAR_BG, cursor='hand2')
@@ -740,6 +983,7 @@ class SchoolReportApp:
 
     def logout(self):
         self.current_user = None
+        self.user_role = 'admin'
         self.show_login()
 
     def change_password(self):
@@ -754,6 +998,393 @@ class SchoolReportApp:
             messagebox.showinfo('Success', 'Password changed successfully')
         else:
             messagebox.showerror('Error', 'Current password is incorrect')
+
+    # ==================== SETTINGS ====================
+    def show_settings(self):
+        """Show settings/admin page for managing classes, streams, subjects"""
+        self.clear_frame()
+        self._set_nav('Settings')
+        self._page_header('Settings', 'Manage school configuration')
+        
+        # Create notebook for different settings
+        notebook = ttk.Notebook(self.content_frame)
+        notebook.pack(fill='both', expand=True, padx=20, pady=10)
+        
+        # Style tabs
+        style = ttk.Style()
+        style.theme_use('default')
+        style.configure('Settings.TNotebook', background=CONTENT_BG)
+        style.configure('Settings.TNotebook.Tab', background=CARD_BG, padding=[10, 5])
+        notebook.configure(style='Settings.TNotebook')
+        
+        # Classes Tab
+        classes_frame = tk.Frame(notebook, bg=CONTENT_BG)
+        notebook.add(classes_frame, text='  Classes  ')
+        self._build_classes_tab(classes_frame)
+        
+        # Streams Tab
+        streams_frame = tk.Frame(notebook, bg=CONTENT_BG)
+        notebook.add(streams_frame, text='  Streams  ')
+        self._build_streams_tab(streams_frame)
+        
+        # Subjects Tab
+        subjects_frame = tk.Frame(notebook, bg=CONTENT_BG)
+        notebook.add(subjects_frame, text='  Subjects  ')
+        self._build_subjects_tab(subjects_frame)
+        
+        # Teacher Assignments Tab
+        assignments_frame = tk.Frame(notebook, bg=CONTENT_BG)
+        notebook.add(assignments_frame, text='  Teacher Assignments  ')
+        self._build_assignments_tab(assignments_frame)
+    
+    def _build_classes_tab(self, parent):
+        """Build classes management tab"""
+        # Toolbar
+        toolbar = tk.Frame(parent, bg=CONTENT_BG)
+        toolbar.pack(fill='x', pady=10)
+        
+        tk.Button(toolbar, text='+ Add Class', bg=GREEN, fg='white',
+                 font=(FF, 10), padx=12, pady=5, command=self._add_class_dialog).pack(side='left', padx=5)
+        
+        tk.Button(toolbar, text='Refresh', bg='#666', fg='white',
+                 font=(FF, 10), padx=12, pady=5, command=lambda: self._refresh_classes(parent)).pack(side='left', padx=5)
+        
+        # Classes list
+        list_frame = tk.Frame(parent, bg=CARD_BG, relief='flat', bd=1)
+        list_frame.pack(fill='both', expand=True, padx=10, pady=5)
+        
+        cols = ('id', 'name', 'level', 'stream')
+        tree = ttk.Treeview(list_frame, columns=cols, show='headings')
+        tree.heading('id', text='ID')
+        tree.heading('name', text='Class Name')
+        tree.heading('level', text='Level')
+        tree.heading('stream', text='Stream')
+        
+        tree.column('id', width=50)
+        tree.column('name', width=150)
+        tree.column('level', width=150)
+        tree.column('stream', width=150)
+        
+        tree.pack(fill='both', expand=True, padx=10, pady=10)
+        
+        # Load classes
+        self._load_classes(tree)
+        
+        # Delete button
+        tk.Button(list_frame, text='Delete Selected', bg='#e74c3c', fg='white',
+                 font=(FF, 10), padx=10, pady=5, command=lambda: self._delete_class(tree)).pack(pady=5)
+    
+    def _load_classes(self, tree):
+        """Load classes into tree"""
+        for item in tree.get_children():
+            tree.delete(item)
+        
+        classes = db.get_all_classes()
+        for cls in classes:
+            tree.insert('', 'end', values=(
+                cls.get('id', '')[:8],
+                cls.get('name', ''),
+                cls.get('level', ''),
+                cls.get('stream', '') or '-'
+            ))
+    
+    def _refresh_classes(self, parent):
+        """Refresh classes tab"""
+        for widget in parent.winfo_children():
+            widget.destroy()
+        self._build_classes_tab(parent)
+    
+    def _add_class_dialog(self):
+        """Dialog to add a new class"""
+        dialog = tk.Toplevel(self.root)
+        dialog.title('Add Class')
+        dialog.geometry('400x300')
+        dialog.transient(self.root)
+        dialog.grab_set()
+        
+        tk.Label(dialog, text='Class Name:', font=(FF, 11)).pack(pady=(20, 5))
+        name_entry = tk.Entry(dialog, font=(FF, 11))
+        name_entry.pack(fill='x', padx=20)
+        
+        tk.Label(dialog, text='Level:', font=(FF, 11)).pack(pady=(15, 5))
+        level_var = tk.StringVar()
+        level_cb = ttk.Combobox(dialog, textvariable=level_var, values=LEVELS, state='readonly', font=(FF, 10))
+        level_cb.pack(fill='x', padx=20)
+        
+        tk.Label(dialog, text='Stream (optional):', font=(FF, 11)).pack(pady=(15, 5))
+        stream_entry = tk.Entry(dialog, font=(FF, 11))
+        stream_entry.pack(fill='x', padx=20)
+        
+        def save():
+            name = name_entry.get().strip()
+            level = level_var.get()
+            stream = stream_entry.get().strip()
+            
+            if not name or not level:
+                messagebox.showerror('Error', 'Class name and level are required')
+                return
+            
+            success, msg = db.add_class(name, level, stream or None)
+            if success:
+                messagebox.showinfo('Success', msg)
+                dialog.destroy()
+                self.show_settings()
+            else:
+                messagebox.showerror('Error', msg)
+        
+        tk.Button(dialog, text='Save', bg=GREEN, fg='white',
+                 font=(FF, 11), padx=20, pady=8, command=save).pack(pady=20)
+    
+    def _delete_class(self, tree):
+        """Delete selected class"""
+        selected = tree.selection()
+        if not selected:
+            messagebox.showwarning('Select', 'Please select a class to delete')
+            return
+        
+        if not messagebox.askyesno('Confirm', 'Delete this class?'):
+            return
+        
+        item = tree.item(selected)
+        class_id = item['values'][0]
+        
+        if db.delete_class(class_id):
+            messagebox.showinfo('Success', 'Class deleted')
+            self._load_classes(tree)
+        else:
+            messagebox.showerror('Error', 'Failed to delete class')
+    
+    def _build_streams_tab(self, parent):
+        """Build streams management tab"""
+        # Toolbar
+        toolbar = tk.Frame(parent, bg=CONTENT_BG)
+        toolbar.pack(fill='x', pady=10)
+        
+        tk.Button(toolbar, text='+ Add Stream', bg=GREEN, fg='white',
+                 font=(FF, 10), padx=12, pady=5, command=self._add_stream_dialog).pack(side='left', padx=5)
+        
+        # Streams list
+        list_frame = tk.Frame(parent, bg=CARD_BG, relief='flat', bd=1)
+        list_frame.pack(fill='both', expand=True, padx=10, pady=5)
+        
+        cols = ('id', 'name', 'class_name')
+        tree = ttk.Treeview(list_frame, columns=cols, show='headings')
+        tree.heading('id', text='ID')
+        tree.heading('name', text='Stream Name')
+        tree.heading('class_name', text='Class')
+        
+        tree.column('id', width=50)
+        tree.column('name', width=200)
+        tree.column('class_name', width=200)
+        
+        tree.pack(fill='both', expand=True, padx=10, pady=10)
+        
+        # Load streams
+        classes = db.get_all_classes()
+        for cls in classes:
+            streams = db.get_streams_for_class(cls['id'])
+            for stream in streams:
+                tree.insert('', 'end', values=(
+                    stream.get('id', '')[:8],
+                    stream.get('name', ''),
+                    cls.get('name', '')
+                ))
+    
+    def _add_stream_dialog(self):
+        """Dialog to add a new stream"""
+        classes = db.get_all_classes()
+        if not classes:
+            messagebox.showwarning('No Classes', 'Please add classes first')
+            return
+        
+        dialog = tk.Toplevel(self.root)
+        dialog.title('Add Stream')
+        dialog.geometry('400x200')
+        dialog.transient(self.root)
+        dialog.grab_set()
+        
+        tk.Label(dialog, text='Stream Name:', font=(FF, 11)).pack(pady=(20, 5))
+        name_entry = tk.Entry(dialog, font=(FF, 11))
+        name_entry.pack(fill='x', padx=20)
+        
+        tk.Label(dialog, text='Class:', font=(FF, 11)).pack(pady=(15, 5))
+        class_var = tk.StringVar()
+        class_cb = ttk.Combobox(dialog, textvariable=class_var, 
+                               values=[c['name'] for c in classes], state='readonly', font=(FF, 10))
+        class_cb.pack(fill='x', padx=20)
+        
+        def save():
+            name = name_entry.get().strip()
+            class_name = class_var.get()
+            
+            if not name or not class_name:
+                messagebox.showerror('Error', 'All fields are required')
+                return
+            
+            # Get class ID
+            class_id = next((c['id'] for c in classes if c['name'] == class_name), None)
+            if not class_id:
+                messagebox.showerror('Error', 'Invalid class')
+                return
+            
+            success, msg = db.add_stream(name, class_id)
+            if success:
+                messagebox.showinfo('Success', msg)
+                dialog.destroy()
+                self.show_settings()
+            else:
+                messagebox.showerror('Error', msg)
+        
+        tk.Button(dialog, text='Save', bg=GREEN, fg='white',
+                 font=(FF, 11), padx=20, pady=8, command=save).pack(pady=20)
+    
+    def _build_subjects_tab(self, parent):
+        """Build subjects management tab"""
+        # Toolbar
+        toolbar = tk.Frame(parent, bg=CONTENT_BG)
+        toolbar.pack(fill='x', pady=10)
+        
+        tk.Button(toolbar, text='+ Add Subject', bg=GREEN, fg='white',
+                 font=(FF, 10), padx=12, pady=5, command=self._add_subject_dialog).pack(side='left', padx=5)
+        
+        # Subjects list
+        list_frame = tk.Frame(parent, bg=CARD_BG, relief='flat', bd=1)
+        list_frame.pack(fill='both', expand=True, padx=10, pady=5)
+        
+        cols = ('id', 'name', 'level', 'category', 'optional')
+        tree = ttk.Treeview(list_frame, columns=cols, show='headings')
+        tree.heading('id', text='ID')
+        tree.heading('name', text='Subject Name')
+        tree.heading('level', text='Level')
+        tree.heading('category', text='Category')
+        tree.heading('optional', text='Optional')
+        
+        tree.column('id', width=50)
+        tree.column('name', width=200)
+        tree.column('level', width=150)
+        tree.column('category', width=150)
+        tree.column('optional', width=80)
+        
+        tree.pack(fill='both', expand=True, padx=10, pady=10)
+        
+        # Load subjects
+        subjects = db.get_subjects_by_level()
+        for subj in subjects:
+            tree.insert('', 'end', values=(
+                subj.get('id', '')[:8],
+                subj.get('name', ''),
+                subj.get('level', ''),
+                subj.get('category', ''),
+                'Yes' if subj.get('is_optional') else 'No'
+            ))
+    
+    def _add_subject_dialog(self):
+        """Dialog to add a new subject"""
+        dialog = tk.Toplevel(self.root)
+        dialog.title('Add Subject')
+        dialog.geometry('400x300')
+        dialog.transient(self.root)
+        dialog.grab_set()
+        
+        tk.Label(dialog, text='Subject Name:', font=(FF, 11)).pack(pady=(20, 5))
+        name_entry = tk.Entry(dialog, font=(FF, 11))
+        name_entry.pack(fill='x', padx=20)
+        
+        tk.Label(dialog, text='Level:', font=(FF, 11)).pack(pady=(15, 5))
+        level_var = tk.StringVar()
+        level_cb = ttk.Combobox(dialog, textvariable=level_var, values=LEVELS, state='readonly', font=(FF, 10))
+        level_cb.pack(fill='x', padx=20)
+        
+        tk.Label(dialog, text='Category:', font=(FF, 11)).pack(pady=(15, 5))
+        category_entry = tk.Entry(dialog, font=(FF, 11))
+        category_entry.pack(fill='x', padx=20)
+        
+        optional_var = tk.BooleanVar(value=False)
+        tk.Checkbutton(dialog, text='Optional Subject', variable=optional_var,
+                      font=(FF, 11)).pack(pady=15)
+        
+        def save():
+            name = name_entry.get().strip()
+            level = level_var.get()
+            category = category_entry.get().strip()
+            
+            if not name or not level or not category:
+                messagebox.showerror('Error', 'All fields are required')
+                return
+            
+            success, msg = db.add_subject(name, level, category, optional_var.get())
+            if success:
+                messagebox.showinfo('Success', msg)
+                dialog.destroy()
+                self.show_settings()
+            else:
+                messagebox.showerror('Error', msg)
+        
+        tk.Button(dialog, text='Save', bg=GREEN, fg='white',
+                 font=(FF, 11), padx=20, pady=8, command=save).pack(pady=20)
+    
+    def _build_assignments_tab(self, parent):
+        """Build teacher assignments tab"""
+        # This reuses the teachers page functionality
+        container = tk.Frame(parent, bg=CONTENT_BG)
+        container.pack(fill='both', expand=True)
+        
+        # Subject Teacher Assignments
+        tk.Label(container, text='Subject Teacher Assignments', font=(FF, 14, 'bold'),
+                bg=CONTENT_BG, fg=TEXT_PRIMARY).pack(pady=10)
+        
+        subj_frame = tk.Frame(container, bg=CARD_BG, relief='flat', bd=1)
+        subj_frame.pack(fill='x', padx=10, pady=5)
+        
+        cols = ('teacher', 'subject', 'class')
+        subj_tree = ttk.Treeview(subj_frame, columns=cols, show='headings', height=8)
+        subj_tree.heading('teacher', text='Teacher')
+        subj_tree.heading('subject', text='Subject')
+        subj_tree.heading('class', text='Class')
+        subj_tree.column('teacher', width=150)
+        subj_tree.column('subject', width=150)
+        subj_tree.column('class', width=150)
+        subj_tree.pack(fill='x', padx=10, pady=10)
+        
+        assignments = db.get_subject_teacher_assignments()
+        for a in assignments:
+            subj_tree.insert('', 'end', values=(
+                a.get('full_name', ''),
+                a.get('subject', ''),
+                a.get('class_name', '')
+            ))
+        
+        # Class Teacher Assignments
+        tk.Label(container, text='Class Teacher Assignments', font=(FF, 14, 'bold'),
+                bg=CONTENT_BG, fg=TEXT_PRIMARY).pack(pady=10)
+        
+        class_frame = tk.Frame(container, bg=CARD_BG, relief='flat', bd=1)
+        class_frame.pack(fill='x', padx=10, pady=5)
+        
+        cols = ('teacher', 'class')
+        class_tree = ttk.Treeview(class_frame, columns=cols, show='headings', height=5)
+        class_tree.heading('teacher', text='Teacher')
+        class_tree.heading('class', text='Class')
+        class_tree.column('teacher', width=200)
+        class_tree.column('class', width=200)
+        class_tree.pack(fill='x', padx=10, pady=10)
+        
+        class_assignments = db.get_class_teacher_assignments()
+        for a in class_assignments:
+            class_tree.insert('', 'end', values=(
+                a.get('full_name', ''),
+                a.get('class_name', '')
+            ))
+        
+        # Buttons
+        btn_frame = tk.Frame(container, bg=CONTENT_BG)
+        btn_frame.pack(pady=10)
+        
+        tk.Button(btn_frame, text='Assign Subject Teacher', bg=BLUE, fg='white',
+                 font=(FF, 10), padx=10, pady=5, command=self._assign_subject_dialog).pack(side='left', padx=5)
+        
+        tk.Button(btn_frame, text='Assign Class Teacher', bg=PURPLE, fg='white',
+                 font=(FF, 10), padx=10, pady=5, command=self._assign_class_teacher_dialog).pack(side='left', padx=5)
 
     # ==================== DASHBOARD ====================
     def show_dashboard(self):
@@ -809,34 +1440,503 @@ class SchoolReportApp:
         for c in range(4):
             cards_row.columnconfigure(c, weight=1)
 
-        # ---- grading scale card ----
-        gc_outer = tk.Frame(self.content_frame, bg=BORDER_CLR)
-        gc_outer.pack(fill='x', pady=8)
-        gc = tk.Frame(gc_outer, bg=CARD_BG, padx=24, pady=20)
-        gc.pack(fill='both', expand=True, padx=1, pady=1)
+        # ---- merged: CBC Info (left) + Grade Scale (right) ----
+        bottom_row = tk.Frame(self.content_frame, bg=CONTENT_BG)
+        bottom_row.pack(fill='both', expand=True, pady=(8, 4))
+        bottom_row.columnconfigure(0, weight=3)
+        bottom_row.columnconfigure(1, weight=2)
 
-        tk.Label(gc, text='Grading Scale', bg=CARD_BG, fg=TEXT_PRIMARY,
-                 font=(FF, 13, 'bold')).pack(anchor='w', pady=(0, 14))
+        # ── CBC Info card (left) ──────────────────────────────────────────
+        cbc_outer = tk.Frame(bottom_row, bg=BORDER_CLR)
+        cbc_outer.grid(row=0, column=0, sticky='nsew', padx=(0, 6))
+        cbc_card = tk.Frame(cbc_outer, bg=CARD_BG, padx=20, pady=18)
+        cbc_card.pack(fill='both', expand=True, padx=1, pady=1)
 
-        row = tk.Frame(gc, bg=CARD_BG)
-        row.pack(fill='x')
+        level = self.current_level
+        _short = {
+            'Lower Primary (Grade 1-3)': 'Lower Primary',
+            'Upper Primary (Grade 4-6)': 'Upper Primary',
+            'Junior School (Grade 7-9)': 'Junior School',
+        }
+        level_short = _short.get(level, level)
+
+        # Title row with level badge
+        cbc_hdr = tk.Frame(cbc_card, bg=CARD_BG)
+        cbc_hdr.pack(fill='x', pady=(0, 12))
+        tk.Label(cbc_hdr, text='📚  CBC Information', bg=CARD_BG, fg=TEXT_PRIMARY,
+                 font=(FF, 13, 'bold')).pack(side='left')
+        tk.Label(cbc_hdr, text=level_short, bg=GREEN, fg='white',
+                 font=(FF, 9, 'bold'), padx=10, pady=3).pack(side='left', padx=(10, 0))
+
+        # Subjects grid (up to 8 chips, 2 columns)
+        subjects_data = SUBJECTS_BY_LEVEL[level]
+        subjects = subjects_data['core'] if isinstance(subjects_data, dict) else subjects_data
+        subj_grid = tk.Frame(cbc_card, bg=CARD_BG)
+        subj_grid.pack(fill='x', pady=(0, 10))
+        for i, subj in enumerate(subjects[:8]):
+            chip = tk.Label(subj_grid, text=f'▸  {subj}', bg='#e8f5e9', fg=GREEN,
+                            font=(FF, 9), padx=8, pady=4)
+            chip.grid(row=i // 2, column=i % 2, padx=4, pady=3, sticky='ew')
+        subj_grid.columnconfigure(0, weight=1)
+        subj_grid.columnconfigure(1, weight=1)
+        if len(subjects) > 8:
+            tk.Label(cbc_card, text=f'+ {len(subjects) - 8} more subjects — see CBC Info page',
+                     bg=CARD_BG, fg=TEXT_SECONDARY, font=(FF, 9, 'italic')).pack(anchor='w', pady=(0, 6))
+
+        # Divider
+        tk.Frame(cbc_card, bg=BORDER_CLR, height=1).pack(fill='x', pady=(4, 8))
+
+        # Assessment note
+        grading_info = GRADING_BY_LEVEL[level]
+        if 'assessment_components' in grading_info:
+            assess_text = grading_info['assessment_components']
+        elif 'assessment_methods' in grading_info:
+            assess_text = grading_info['assessment_methods']
+        else:
+            assess_text = 'Competency levels with percentage scores'
+        tk.Label(cbc_card, text=f'📝  Assessment:  {assess_text}', bg=CARD_BG, fg=TEXT_SECONDARY,
+                 font=(FF, 9), wraplength=400, justify='left').pack(anchor='w')
+
+        # ── Grade Scale card (right) ──────────────────────────────────────
+        gs_outer = tk.Frame(bottom_row, bg=BORDER_CLR)
+        gs_outer.grid(row=0, column=1, sticky='nsew', padx=(6, 0))
+        gs_card = tk.Frame(gs_outer, bg=CARD_BG, padx=20, pady=18)
+        gs_card.pack(fill='both', expand=True, padx=1, pady=1)
+
+        tk.Label(gs_card, text='📊  Grade Scale', bg=CARD_BG, fg=TEXT_PRIMARY,
+                 font=(FF, 13, 'bold')).pack(anchor='w', pady=(0, 10))
 
         grade_data = [
-            ('EE', '80–100', 'Exceeding\nExpectations',   GRADE_COLORS['EE']),
-            ('ME', '70–79',  'Meeting\nExpectations',     GRADE_COLORS['ME']),
-            ('AE', '60–69',  'Approaching\nExpectations', GRADE_COLORS['AE']),
-            ('BE', '50–59',  'Below\nExpectations',       GRADE_COLORS['BE']),
-            ('IE', '0–49',   'Inadequate',                GRADE_COLORS['IE']),
+            ('EE', '80 – 100', 'Exceeding Expectations',   GRADE_COLORS['EE']),
+            ('ME', '70 – 79',  'Meeting Expectations',     GRADE_COLORS['ME']),
+            ('AE', '60 – 69',  'Approaching Expectations', GRADE_COLORS['AE']),
+            ('BE', '50 – 59',  'Below Expectations',       GRADE_COLORS['BE']),
+            ('IE', '0 – 49',   'Inadequate',               GRADE_COLORS['IE']),
         ]
         for code, rng, desc, clr in grade_data:
-            tile = tk.Frame(row, bg=clr, padx=14, pady=14)
-            tile.pack(side='left', padx=5, expand=True, fill='both')
+            tile = tk.Frame(gs_card, bg=clr, padx=14, pady=9)
+            tile.pack(fill='x', pady=2)
             tk.Label(tile, text=code, bg=clr, fg='white',
-                     font=(FF, 18, 'bold')).pack()
+                     font=(FF, 13, 'bold'), width=4, anchor='w').pack(side='left')
             tk.Label(tile, text=rng, bg=clr, fg='white',
-                     font=(FF, 9)).pack()
+                     font=(FF, 9), width=10, anchor='w').pack(side='left')
             tk.Label(tile, text=desc, bg=clr, fg='white',
-                     font=(FF, 8), justify='center').pack()
+                     font=(FF, 9), anchor='w').pack(side='left', padx=(6, 0))
+
+    # ==================== TEACHERS ====================
+    def show_teachers(self):
+        """Show teacher management page"""
+        self.clear_frame()
+        self._set_nav('Teachers')
+        self._page_header('Teachers Management', 'Manage teachers and their subject/class assignments')
+        
+        # Toolbar
+        toolbar = tk.Frame(self.content_frame, bg=CONTENT_BG)
+        toolbar.pack(fill='x', pady=(0, 10))
+        
+        tk.Button(toolbar, text='+ Add Teacher', bg=GREEN, fg='white', 
+                 font=(FF, 10), padx=15, pady=5, command=self._add_teacher_dialog).pack(side='left', padx=5)
+        
+        tk.Button(toolbar, text='Refresh', bg='#666', fg='white',
+                 font=(FF, 10), padx=15, pady=5, command=self.show_teachers).pack(side='left', padx=5)
+        
+        # Teachers list
+        teachers_frame = tk.Frame(self.content_frame, bg=CARD_BG, relief='flat', bd=1)
+        teachers_frame.pack(fill='both', expand=True)
+        
+        # Treeview
+        cols = ('id', 'name', 'username', 'role', 'assignments')
+        tree = ttk.Treeview(teachers_frame, columns=cols, show='headings', style='App.Treeview')
+        
+        tree.heading('id', text='ID')
+        tree.heading('name', text='Full Name')
+        tree.heading('username', text='Username')
+        tree.heading('role', text='Role')
+        tree.heading('assignments', text='Assignments')
+        
+        tree.column('id', width=50)
+        tree.column('name', width=150)
+        tree.column('username', width=120)
+        tree.column('role', width=100)
+        tree.column('assignments', width=300)
+        
+        tree.pack(fill='both', expand=True, padx=10, pady=10)
+        
+        # Load teachers
+        teachers = db.get_all_teachers()
+        for teacher in teachers:
+            # Get assignments
+            assignments = []
+            subject_assignments = db.get_subject_teacher_assignments()
+            class_assignments = db.get_class_teacher_assignments()
+            
+            for sa in subject_assignments:
+                if sa['teacher_id'] == teacher['id']:
+                    assignments.append(f"{sa['subject']} ({sa['class_name']})")
+            
+            for ca in class_assignments:
+                if ca['teacher_id'] == teacher['id']:
+                    assignments.append(f"Class Teacher: {ca['class_name']}")
+            
+            role_label = 'Subject Teacher' if teacher.get('role') == 'teacher' else 'Class Teacher'
+            assignment_text = ', '.join(assignments) if assignments else 'No assignments'
+            
+            tree.insert('', 'end', values=(
+                teacher.get('id', '')[:8],
+                teacher.get('full_name', ''),
+                teacher.get('username', ''),
+                role_label,
+                assignment_text
+            ))
+        
+        # Action buttons
+        action_frame = tk.Frame(teachers_frame, bg=CARD_BG)
+        action_frame.pack(fill='x', padx=10, pady=(0, 10))
+        
+        tk.Button(action_frame, text='Assign Subject', bg=BLUE, fg='white',
+                 font=(FF, 10), padx=10, pady=5, command=self._assign_subject_dialog).pack(side='left', padx=5)
+        
+        tk.Button(action_frame, text='Assign Class Teacher', bg=PURPLE, fg='white',
+                 font=(FF, 10), padx=10, pady=5, command=self._assign_class_teacher_dialog).pack(side='left', padx=5)
+        
+        tk.Button(action_frame, text='Delete', bg='#e74c3c', fg='white',
+                 font=(FF, 10), padx=10, pady=5, command=lambda: self._delete_teacher(tree)).pack(side='left', padx=5)
+    
+    def _add_teacher_dialog(self):
+        """Dialog to add a new teacher"""
+        dialog = tk.Toplevel(self.root)
+        dialog.title('Add Teacher')
+        dialog.geometry('400x350')
+        dialog.transient(self.root)
+        dialog.grab_set()
+        
+        tk.Label(dialog, text='Full Name:', font=(FF, 11)).pack(pady=(20, 5))
+        name_entry = tk.Entry(dialog, font=(FF, 11))
+        name_entry.pack(fill='x', padx=20)
+        
+        tk.Label(dialog, text='Username:', font=(FF, 11)).pack(pady=(15, 5))
+        username_entry = tk.Entry(dialog, font=(FF, 11))
+        username_entry.pack(fill='x', padx=20)
+        
+        tk.Label(dialog, text='Password:', font=(FF, 11)).pack(pady=(15, 5))
+        password_entry = tk.Entry(dialog, font=(FF, 11), show='*')
+        password_entry.pack(fill='x', padx=20)
+        
+        tk.Label(dialog, text='Role:', font=(FF, 11)).pack(pady=(15, 5))
+        role_var = tk.StringVar(value='teacher')
+        role_frame = tk.Frame(dialog)
+        role_frame.pack()
+        tk.Radiobutton(role_frame, text='Subject Teacher', variable=role_var, 
+                      value='teacher', font=(FF, 10)).pack(side='left', padx=10)
+        tk.Radiobutton(role_frame, text='Class Teacher', variable=role_var, 
+                      value='class_teacher', font=(FF, 10)).pack(side='left', padx=10)
+        
+        def save_teacher():
+            name = name_entry.get().strip()
+            username = username_entry.get().strip()
+            password = password_entry.get().strip()
+            role = role_var.get()
+            
+            if not all([name, username, password]):
+                messagebox.showerror('Error', 'All fields are required')
+                return
+            
+            if len(password) < 4:
+                messagebox.showerror('Error', 'Password must be at least 4 characters')
+                return
+            
+            success, msg = db.add_teacher(name, username, password, role)
+            if success:
+                messagebox.showinfo('Success', msg)
+                dialog.destroy()
+                self.show_teachers()
+            else:
+                messagebox.showerror('Error', msg)
+        
+        tk.Button(dialog, text='Save Teacher', bg=GREEN, fg='white',
+                 font=(FF, 11), padx=20, pady=8, command=save_teacher).pack(pady=25)
+    
+    def _assign_subject_dialog(self):
+        """Dialog to assign a subject to a teacher"""
+        teachers = db.get_all_teachers()
+        if not teachers:
+            messagebox.showwarning('No Teachers', 'Please add teachers first')
+            return
+        
+        dialog = tk.Toplevel(self.root)
+        dialog.title('Assign Subject to Teacher')
+        dialog.geometry('400x300')
+        dialog.transient(self.root)
+        dialog.grab_set()
+        
+        tk.Label(dialog, text='Select Teacher:', font=(FF, 11)).pack(pady=(20, 5))
+        teacher_names = [f"{t['full_name']} ({t['username']})" for t in teachers]
+        teacher_var = tk.StringVar()
+        teacher_cb = ttk.Combobox(dialog, textvariable=teacher_var, values=teacher_names, 
+                                  state='readonly', font=(FF, 10))
+        teacher_cb.pack(fill='x', padx=20)
+        
+        tk.Label(dialog, text='Select Class:', font=(FF, 11)).pack(pady=(15, 5))
+        class_var = tk.StringVar()
+        class_cb = ttk.Combobox(dialog, textvariable=class_var, values=CLASSES,
+                               state='readonly', font=(FF, 10))
+        class_cb.pack(fill='x', padx=20)
+        
+        tk.Label(dialog, text='Select Subject:', font=(FF, 11)).pack(pady=(15, 5))
+        subject_var = tk.StringVar()
+        subject_cb = ttk.Combobox(dialog, textvariable=subject_var, values=SUBJECTS,
+                                 state='readonly', font=(FF, 10))
+        subject_cb.pack(fill='x', padx=20)
+        
+        def save_assignment():
+            if not all([teacher_var.get(), class_var.get(), subject_var.get()]):
+                messagebox.showerror('Error', 'All fields are required')
+                return
+            
+            # Get selected teacher ID
+            selected_idx = teacher_cb.current()
+            teacher_id = teachers[selected_idx]['id']
+            
+            success = db.assign_subject_teacher(teacher_id, class_var.get(), subject_var.get())
+            if success:
+                messagebox.showinfo('Success', 'Subject assigned successfully!')
+                dialog.destroy()
+                self.show_teachers()
+            else:
+                messagebox.showerror('Error', 'Failed to assign subject')
+        
+        tk.Button(dialog, text='Assign Subject', bg=BLUE, fg='white',
+                 font=(FF, 11), padx=20, pady=8, command=save_assignment).pack(pady=25)
+    
+    def _assign_class_teacher_dialog(self):
+        """Dialog to assign a class teacher"""
+        teachers = db.get_all_teachers()
+        if not teachers:
+            messagebox.showwarning('No Teachers', 'Please add teachers first')
+            return
+        
+        dialog = tk.Toplevel(self.root)
+        dialog.title('Assign Class Teacher')
+        dialog.geometry('400x250')
+        dialog.transient(self.root)
+        dialog.grab_set()
+        
+        tk.Label(dialog, text='Select Teacher:', font=(FF, 11)).pack(pady=(20, 5))
+        teacher_names = [f"{t['full_name']} ({t['username']})" for t in teachers]
+        teacher_var = tk.StringVar()
+        teacher_cb = ttk.Combobox(dialog, textvariable=teacher_var, values=teacher_names,
+                                  state='readonly', font=(FF, 10))
+        teacher_cb.pack(fill='x', padx=20)
+        
+        tk.Label(dialog, text='Select Class:', font=(FF, 11)).pack(pady=(15, 5))
+        class_var = tk.StringVar()
+        class_cb = ttk.Combobox(dialog, textvariable=class_var, values=CLASSES,
+                               state='readonly', font=(FF, 10))
+        class_cb.pack(fill='x', padx=20)
+        
+        def save_assignment():
+            if not all([teacher_var.get(), class_var.get()]):
+                messagebox.showerror('Error', 'All fields are required')
+                return
+            
+            selected_idx = teacher_cb.current()
+            teacher_id = teachers[selected_idx]['id']
+            
+            success = db.assign_class_teacher(teacher_id, class_var.get())
+            if success:
+                messagebox.showinfo('Success', 'Class teacher assigned successfully!')
+                dialog.destroy()
+                self.show_teachers()
+            else:
+                messagebox.showerror('Error', 'Failed to assign class teacher')
+        
+        tk.Button(dialog, text='Assign Class Teacher', bg=PURPLE, fg='white',
+                 font=(FF, 11), padx=20, pady=8, command=save_assignment).pack(pady=25)
+    
+    def _delete_teacher(self, tree):
+        """Delete selected teacher"""
+        selected = tree.selection()
+        if not selected:
+            messagebox.showwarning('Select Teacher', 'Please select a teacher to delete')
+            return
+        
+        if not messagebox.askyesno('Confirm Delete', 'Are you sure you want to delete this teacher?'):
+            return
+        
+        item = tree.item(selected)
+        teacher_id = item['values'][0]
+        
+        if db.delete_user(teacher_id):
+            messagebox.showinfo('Success', 'Teacher deleted successfully')
+            self.show_teachers()
+        else:
+            messagebox.showerror('Error', 'Failed to delete teacher')
+
+    # ==================== CLASS TEACHER VIEWS ====================
+    def show_class_students(self):
+        """Show class teacher their assigned students"""
+        if not self.current_user:
+            messagebox.showerror('Error', 'Please login first')
+            return
+        
+        teacher_id = self.current_user.get('id')
+        classes = db.get_teacher_classes(teacher_id)
+        
+        if not classes:
+            messagebox.showwarning('No Class', 'You are not assigned as a class teacher for any class')
+            return
+        
+        self.clear_frame()
+        self._set_nav('My Students')
+        self._page_header('My Students', f'Class Teacher for: {classes[0]}')
+        
+        # Class selector
+        ctrl = tk.Frame(self.content_frame, bg=CONTENT_BG)
+        ctrl.pack(fill='x', pady=(0, 10))
+        
+        tk.Label(ctrl, text='Class:', bg=CONTENT_BG, fg=TEXT_SECONDARY, font=(FF, 10)).pack(side='left', padx=5)
+        class_var = tk.StringVar(value=classes[0])
+        class_cb = ttk.Combobox(ctrl, textvariable=class_var, values=classes, state='readonly', font=(FF, 10))
+        class_cb.pack(side='left', padx=5)
+        class_cb.bind('<<ComboboxSelected>>', lambda e: self._load_class_students(class_var.get()))
+        
+        # Students list
+        list_frame = tk.Frame(self.content_frame, bg=CARD_BG, relief='flat', bd=1)
+        list_frame.pack(fill='both', expand=True)
+        
+        cols = ('adm', 'name', 'gender')
+        tree = ttk.Treeview(list_frame, columns=cols, show='headings')
+        tree.heading('adm', text='Admission No')
+        tree.heading('name', text='Name')
+        tree.heading('gender', text='Gender')
+        tree.column('adm', width=120)
+        tree.column('name', width=200)
+        tree.column('gender', width=80)
+        tree.pack(fill='both', expand=True, padx=10, pady=10)
+        
+        self.class_students_tree = tree
+        self._load_class_students(classes[0])
+    
+    def _load_class_students(self, class_name):
+        """Load students for a specific class"""
+        tree = self.class_students_tree
+        for item in tree.get_children():
+            tree.delete(item)
+        
+        students = db.get_students_by_class(class_name)
+        for s in students:
+            tree.insert('', 'end', values=(
+                s.get('admission_no', ''),
+                s.get('name', ''),
+                s.get('gender', '')
+            ))
+    
+    def show_add_comments(self):
+        """Show page for adding student comments"""
+        if not self.current_user:
+            messagebox.showerror('Error', 'Please login first')
+            return
+        
+        teacher_id = self.current_user.get('id')
+        classes = db.get_teacher_classes(teacher_id)
+        
+        if not classes:
+            messagebox.showwarning('No Class', 'You are not assigned as a class teacher for any class')
+            return
+        
+        self.clear_frame()
+        self._set_nav('Add Comments')
+        self._page_header('Add Comments', 'Add comments for students in your class')
+        
+        # Controls
+        ctrl = tk.Frame(self.content_frame, bg=CONTENT_BG)
+        ctrl.pack(fill='x', pady=(0, 10))
+        
+        tk.Label(ctrl, text='Class:', bg=CONTENT_BG, fg=TEXT_SECONDARY, font=(FF, 10)).pack(side='left', padx=5)
+        class_var = tk.StringVar(value=classes[0])
+        class_cb = ttk.Combobox(ctrl, textvariable=class_var, values=classes, state='readonly', font=(FF, 10))
+        class_cb.pack(side='left', padx=5)
+        
+        tk.Label(ctrl, text='Term:', bg=CONTENT_BG, fg=TEXT_SECONDARY, font=(FF, 10)).pack(side='left', padx=15)
+        term_var = tk.StringVar(value='One')
+        term_cb = ttk.Combobox(ctrl, textvariable=term_var, values=TERMS, state='readonly', font=(FF, 10))
+        term_cb.pack(side='left', padx=5)
+        
+        tk.Button(ctrl, text='Load Students', bg=BLUE, fg='white', font=(FF, 10),
+                 command=lambda: self._load_students_for_comments(class_var.get(), term_var.get())).pack(side='left', padx=15)
+        
+        # Students with comments
+        list_frame = tk.Frame(self.content_frame, bg=CARD_BG, relief='flat', bd=1)
+        list_frame.pack(fill='both', expand=True)
+        
+        cols = ('adm', 'name', 'comment')
+        tree = ttk.Treeview(list_frame, columns=cols, show='headings')
+        tree.heading('adm', text='Admission No')
+        tree.heading('name', text='Name')
+        tree.heading('comment', text='Current Comment')
+        tree.column('adm', width=120)
+        tree.column('name', width=180)
+        tree.column('comment', width=350)
+        tree.pack(fill='both', expand=True, padx=10, pady=10)
+        
+        self.comments_tree = tree
+        self.comments_class_var = class_var
+        self.comments_term_var = term_var
+    
+    def _load_students_for_comments(self, class_name, term):
+        """Load students for adding comments"""
+        tree = self.comments_tree
+        for item in tree.get_children():
+            tree.delete(item)
+        
+        students = db.get_students_by_class(class_name)
+        for s in students:
+            # Get existing comment
+            comment_data = db.get_student_comment(s['id'], term)
+            comment = comment_data.get('comment_text', '') if comment_data else ''
+            
+            tree.insert('', 'end', values=(
+                s.get('admission_no', ''),
+                s.get('name', ''),
+                comment
+            ), tags=(s['id'],))
+        
+        # Add double-click to edit
+        tree.bind('<Double-1>', lambda e: self._edit_comment(tree, class_name, term))
+    
+    def _edit_comment(self, tree, class_name, term):
+        """Edit comment for selected student"""
+        selected = tree.selection()
+        if not selected:
+            return
+        
+        item = tree.item(selected)
+        student_id = item['tags'][0]
+        current_comment = item['values'][2]
+        
+        # Dialog to edit comment
+        dialog = tk.Toplevel(self.root)
+        dialog.title('Add/Edit Comment')
+        dialog.geometry('500x250')
+        dialog.transient(self.root)
+        dialog.grab_set()
+        
+        tk.Label(dialog, text='Comment:', font=(FF, 11)).pack(pady=(20, 5))
+        comment_text = tk.Text(dialog, font=(FF, 11), height=8)
+        comment_text.pack(fill='both', expand=True, padx=20, pady=10)
+        comment_text.insert('1.0', current_comment)
+        
+        def save():
+            text = comment_text.get('1.0', 'end').strip()
+            if db.save_comment(student_id, self.current_user['id'], term, text):
+                messagebox.showinfo('Success', 'Comment saved!')
+                dialog.destroy()
+                self._load_students_for_comments(class_name, term)
+            else:
+                messagebox.showerror('Error', 'Failed to save comment')
+        
+        tk.Button(dialog, text='Save Comment', bg=GREEN, fg='white',
+                 font=(FF, 11), padx=20, pady=8, command=save).pack(pady=10)
 
     # ==================== STUDENTS ====================
     def show_students(self):
@@ -971,7 +2071,7 @@ class SchoolReportApp:
 
         tk.Label(card, text='Class', bg=CARD_BG, fg=TEXT_SECONDARY,
                  font=(FF, 10, 'bold'), anchor='w').pack(fill='x', pady=(0, 3))
-        cls_cb = ttk.Combobox(card, values=CLASSES, state='readonly', style='App.TCombobox')
+        cls_cb = ttk.Combobox(card, values=self.get_current_classes(), state='readonly', style='App.TCombobox')
         cls_cb.set(cls)
         cls_cb.pack(fill='x', ipady=4, pady=(0, 10))
 
@@ -1051,25 +2151,35 @@ class SchoolReportApp:
                 return
             
             imported_count = 0
+            updated_count  = 0
             for _, row in df.iterrows():
                 admission_no = str(row.get('admission_no', '')).strip()
-                name = str(row.get('name', '')).strip()
-                cls = str(row.get('class', 'Grade 7')).strip()
-                gender = str(row.get('gender', 'Male')).strip()
-                photo_path = str(row.get('photo_path', '')).strip()
-                
+                name         = str(row.get('name', '')).strip()
+                cls          = str(row.get('class', 'Grade 7')).strip()
+                gender       = str(row.get('gender', 'Male')).strip()
+                photo_path   = str(row.get('photo_path', '')).strip()
+                # pandas reads missing cells as 'nan'
+                if photo_path.lower() == 'nan':
+                    photo_path = ''
+
                 if not name or not admission_no:
                     continue
-                
-                # Check if student exists
-                db.add_student(name, cls, gender, admission_no, photo_path)
-                
-                # If there are marks in the excel, we could also import them
-                # But for now let's just do student info to keep it simple
-                imported_count += 1
-            
+
+                # Upsert: update existing student (preserving photo if not provided),
+                # or add new student.
+                existing = db.get_student_by_admission_no(admission_no)
+                if existing:
+                    db.update_student(existing['id'], name, cls, gender, admission_no, photo_path)
+                    updated_count += 1
+                else:
+                    db.add_student(name, cls, gender, admission_no, photo_path)
+                    imported_count += 1
+
             self.load_students()
-            messagebox.showinfo("Import Complete", f"Successfully imported {imported_count} students!")
+            messagebox.showinfo("Import Complete",
+                                f"Done!  {imported_count} new student(s) added, "
+                                f"{updated_count} updated.\n"
+                                f"Existing photos were preserved where no new photo was supplied.")
             
         except Exception as e:
             messagebox.showerror("Import Error", f"Failed to import Excel file: {str(e)}")
@@ -1132,7 +2242,7 @@ class SchoolReportApp:
                                  font=(FF, 10)).pack(side='left', padx=(10, 4))
 
         lbl('Class:')
-        self.marks_class_cb = ttk.Combobox(ctrl, values=CLASSES, state='readonly',
+        self.marks_class_cb = ttk.Combobox(ctrl, values=self.get_current_classes(), state='readonly',
                                            style='App.TCombobox', width=12)
         self.marks_class_cb.set(CLASSES[0])
         self.marks_class_cb.pack(side='left', ipady=4)
@@ -1148,6 +2258,10 @@ class SchoolReportApp:
 
         self._toolbar_btn(ctrl, '\U0001f4be  Save All Marks', self.save_marks).pack(
             side='left', padx=16)
+        self._toolbar_btn(ctrl, '\U0001f4cb  Template', self.download_marks_template,
+                          bg=ORANGE).pack(side='left', padx=4)
+        self._toolbar_btn(ctrl, '\U0001f4e5  Import Marks', self.import_marks_excel,
+                          bg=PURPLE).pack(side='left', padx=4)
         
         def validate_mark(event, sid, sub):
             val = event.widget.get().strip()
@@ -1199,7 +2313,7 @@ class SchoolReportApp:
         hdr.pack(fill='x', pady=(0, 8))
         tk.Label(hdr, text='Student', bg=CARD_BG, fg=TEXT_PRIMARY, 
                  font=(FF, 11, 'bold'), width=20, anchor='w').pack(side='left', padx=12)
-        for sub in SUBJECTS:
+        for sub in self.get_current_subjects():
             tk.Label(hdr, text=sub, bg=CARD_BG, fg=TEXT_PRIMARY, 
                      font=(FF, 10, 'bold'), width=9, anchor='center').pack(side='left', padx=2)
         
@@ -1220,7 +2334,7 @@ class SchoolReportApp:
             # mark entries
             self.marks_entries[sid] = {}
             m = db.get_student_marks(sid, term)
-            for sub in SUBJECTS:
+            for sub in self.get_current_subjects():
                 e_frame = tk.Frame(row_frame, bg=CARD_BG, width=70)
                 e_frame.pack(side='left', padx=1)
                 e_frame.pack_propagate(False)
@@ -1271,7 +2385,7 @@ class SchoolReportApp:
         entries: dict = {}
         grid = tk.Frame(card, bg=CARD_BG)
         grid.pack(fill='x')
-        for i, sub in enumerate(SUBJECTS):
+        for i, sub in enumerate(self.get_current_subjects()):
             r, c = divmod(i, 3)
             tk.Label(grid, text=sub, bg=CARD_BG, fg=TEXT_SECONDARY,
                      font=(FF, 10, 'bold'), anchor='w', width=9).grid(
@@ -1326,6 +2440,192 @@ class SchoolReportApp:
         
         messagebox.showinfo('Success', f'Marks saved successfully! ({saved_count} values updated)')
 
+    # ── Marks import / template helpers ──────────────────────────────────────
+
+    def download_marks_template(self):
+        """Export an Excel template for the current class & term pre-filled with
+        student names / admission numbers and blank subject columns."""
+        cls  = self.marks_class_cb.get()
+        term = self.marks_term_cb.get()
+        subjects = self.get_current_subjects()
+        students = db.get_students_by_class(cls)
+
+        file_path = filedialog.asksaveasfilename(
+            title='Save Marks Template',
+            defaultextension='.xlsx',
+            filetypes=[('Excel files', '*.xlsx')],
+            initialfile=f"marks_template_{cls.replace(' ', '_')}_T{term}.xlsx"
+        )
+        if not file_path:
+            return
+
+        try:
+            import openpyxl
+            from openpyxl.styles import PatternFill, Font, Alignment
+
+            wb = openpyxl.Workbook()
+            ws = wb.active
+            ws.title = 'Marks'
+
+            HDR_FILL = PatternFill('solid', fgColor='2E7D32')
+            HDR_FONT = Font(bold=True, color='FFFFFF', name='Calibri', size=10)
+            CTR = Alignment(horizontal='center', vertical='center')
+
+            # Header row: admission_no | name | subject1 | subject2 | ...
+            headers = ['admission_no', 'name'] + subjects
+            for ci, h in enumerate(headers, 1):
+                cell = ws.cell(row=1, column=ci, value=h)
+                cell.fill = HDR_FILL
+                cell.font = HDR_FONT
+                cell.alignment = CTR
+
+            # Column widths
+            ws.column_dimensions['A'].width = 15
+            ws.column_dimensions['B'].width = 26
+            for i in range(len(subjects)):
+                from openpyxl.utils import get_column_letter
+                ws.column_dimensions[get_column_letter(3 + i)].width = 11
+
+            # Pre-fill student rows with existing marks where available
+            for ri, s in enumerate(students, 2):
+                existing = db.get_student_marks(s['id'], term)
+                ws.cell(row=ri, column=1, value=s['admission_no'])
+                ws.cell(row=ri, column=2, value=s['name'])
+                for ci, subj in enumerate(subjects, 3):
+                    v = existing.get(subj)
+                    ws.cell(row=ri, column=ci, value=v if v else '')
+
+            wb.save(file_path)
+            messagebox.showinfo(
+                'Template Saved',
+                f'Template saved to:\n{file_path}\n\n'
+                f'Fill in the mark columns then use "Import Marks" to load them.'
+            )
+        except Exception as exc:
+            messagebox.showerror('Error', f'Could not create template:\n{exc}')
+
+    def import_marks_excel(self):
+        """Import marks from an Excel file into the current class & term.
+
+        Both 'admission_no' and 'name' columns are optional — at least one
+        identifier is enough. Column names are matched case-insensitively and
+        common aliases are accepted.
+        """
+        cls      = self.marks_class_cb.get()
+        term     = self.marks_term_cb.get()
+        subjects = self.get_current_subjects()
+
+        file_path = filedialog.askopenfilename(
+            title='Select Marks File',
+            filetypes=[('Excel files', '*.xlsx *.xls')]
+        )
+        if not file_path:
+            return
+
+        try:
+            df = pd.read_excel(file_path)
+
+            # ── Normalise all column names to lowercase-stripped for matching ──
+            orig_cols = list(df.columns)
+            df.columns = [str(c).strip().lower() for c in df.columns]
+
+            # Accepted aliases for the two identifier fields
+            ADM_ALIASES  = {'admission_no', 'adm_no', 'admission no', 'adm no',
+                            'admission', 'adm', 'reg_no', 'reg no', 'regno'}
+            NAME_ALIASES = {'name', 'student_name', 'student name', 'learner',
+                            'learner name', 'full_name', 'fullname', 'pupil'}
+
+            adm_col  = next((c for c in df.columns if c in ADM_ALIASES),  None)
+            name_col = next((c for c in df.columns if c in NAME_ALIASES), None)
+
+            if not adm_col and not name_col:
+                messagebox.showerror(
+                    'No Identifier Column Found',
+                    'The file needs at least one column to identify students.\n\n'
+                    'Accepted column names for admission number:\n'
+                    '  admission_no, adm_no, admission, reg_no …\n\n'
+                    'Accepted column names for student name:\n'
+                    '  name, learner, student_name, full_name …\n\n'
+                    'Use the Template button to get a ready-made file.'
+                )
+                return
+
+            # ── Build subject-column lookup (case-insensitive) ─────────────────
+            # Map lowercase subject name → actual df column name
+            subj_col_map = {}
+            for subj in subjects:
+                subj_lower = subj.strip().lower()
+                if subj_lower in df.columns:
+                    subj_col_map[subj] = subj_lower
+
+            if not subj_col_map:
+                messagebox.showerror(
+                    'No Subject Columns Found',
+                    f'No subject columns were found in the file.\n\n'
+                    f'Expected columns (any capitalisation):\n'
+                    + ', '.join(subjects)
+                )
+                return
+
+            # ── Student lookup tables ──────────────────────────────────────────
+            students = db.get_students_by_class(cls)
+            adm_to_sid  = {s['admission_no'].strip(): s['id'] for s in students}
+            name_to_sid = {s['name'].strip().lower():  s['id'] for s in students}
+
+            updated   = 0
+            skipped   = 0
+            not_found = []
+
+            for _, row in df.iterrows():
+                # Extract identifiers (treat pandas 'nan' as empty)
+                def _clean(val):
+                    v = str(val).strip()
+                    return '' if v.lower() == 'nan' else v
+
+                adm      = _clean(row[adm_col])  if adm_col  else ''
+                name_key = _clean(row[name_col]).lower() if name_col else ''
+
+                # Resolve: admission_no first, name as fallback
+                sid = adm_to_sid.get(adm) or name_to_sid.get(name_key)
+                if not sid:
+                    label = adm or name_key
+                    if label:
+                        not_found.append(label)
+                    continue
+
+                # Collect valid marks from subject columns
+                marks = {}
+                for subj, col in subj_col_map.items():
+                    raw = row.get(col)
+                    if raw is not None and str(raw).strip() not in ('', 'nan'):
+                        try:
+                            marks[subj] = min(100, max(0, int(float(raw))))
+                        except (ValueError, TypeError):
+                            pass
+
+                if marks:
+                    db.save_student_marks(sid, marks, term)
+                    updated += 1
+                else:
+                    skipped += 1
+
+            # Refresh on-screen grid
+            self._load_marks_table()
+
+            used_id = f'"{adm_col}"' if adm_col else f'"{name_col}"'
+            msg = f'Import complete!  (matched by {used_id})\n\n✅ {updated} student(s) updated.'
+            if skipped:
+                msg += f'\n⚠️  {skipped} row(s) had no valid mark values (skipped).'
+            if not_found:
+                msg += (f'\n❌ {len(not_found)} identifier(s) not found in {cls}:\n   '
+                        + ', '.join(not_found[:10]))
+                if len(not_found) > 10:
+                    msg += f'  … and {len(not_found) - 10} more'
+            messagebox.showinfo('Import Complete', msg)
+
+        except Exception as exc:
+            messagebox.showerror('Import Error', f'Failed to import marks:\n{exc}')
+
     # ==================== REPORTS ====================
     def show_reports(self):
         self.clear_frame()
@@ -1339,7 +2639,7 @@ class SchoolReportApp:
                               font=(FF, 10)).pack(side='left', padx=(10, 4))
 
         lbl('Class:')
-        self.rep_cls_cb = ttk.Combobox(ctrl, values=['All'] + CLASSES, state='readonly',
+        self.rep_cls_cb = ttk.Combobox(ctrl, values=['All'] + self.get_current_classes(), state='readonly',
                                        style='App.TCombobox', width=12)
         self.rep_cls_cb.set('All')
         self.rep_cls_cb.pack(side='left', ipady=4)
@@ -1355,6 +2655,8 @@ class SchoolReportApp:
 
         self._toolbar_btn(ctrl, '\u2193  Export CSV', self.export_csv,
                           bg='#475569').pack(side='left', padx=16)
+        self._toolbar_btn(ctrl, '\U0001F4CA  Spotlight Excel', self.export_spotlight_excel,
+                          bg='#1B5E20').pack(side='left', padx=4)
 
         # subject averages strip
         subj_outer = tk.Frame(self.content_frame, bg=BORDER_CLR)
@@ -1372,14 +2674,14 @@ class SchoolReportApp:
         tc = tk.Frame(tc_outer, bg=CARD_BG)
         tc.pack(fill='both', expand=True, padx=1, pady=1)
 
-        cols = ['pos', 'name', 'class'] + SUBJECTS + ['total', 'avg', 'grade']
+        cols = ['pos', 'name', 'class'] + self.get_current_subjects() + ['total', 'avg', 'grade']
         self.rep_tree = ttk.Treeview(tc, columns=cols, show='headings', style='App.Treeview')
 
         spec = [('pos','Pos',45,'center'), ('name','Name',170,'w'), ('class','Class',90,'center')]
         for col, txt, w, anchor in spec:
             self.rep_tree.heading(col, text=txt)
             self.rep_tree.column(col, width=w, anchor=anchor)
-        for s in SUBJECTS:
+        for s in self.get_current_subjects():
             self.rep_tree.heading(s, text=s)
             self.rep_tree.column(s, width=54, anchor='center')
         for col, txt, w in [('total','Total',65), ('avg','Avg',65), ('grade','Grade',60)]:
@@ -1405,12 +2707,12 @@ class SchoolReportApp:
         results = db.calculate_results(cls, term)
 
         # subject averages
-        subj_totals = {s: [] for s in SUBJECTS}
+        subj_totals = {s: [] for s in self.get_current_subjects()}
         for r in results:
-            for s in SUBJECTS:
+            for s in self.get_current_subjects():
                 if r['marks'].get(s): subj_totals[s].append(r['marks'][s])
 
-        for s in SUBJECTS:
+        for s in self.get_current_subjects():
             vals = subj_totals[s]
             avg  = round(sum(vals) / len(vals), 1) if vals else 0
             grade = 'EE' if avg >= 80 else 'ME' if avg >= 70 else 'AE' if avg >= 60 else 'BE' if avg >= 50 else 'IE'
@@ -1424,7 +2726,7 @@ class SchoolReportApp:
         # rows
         for r in results:
             vals = [r['position'], r['student']['name'], r['student']['class']]
-            for s in SUBJECTS: vals.append(r['marks'].get(s, '—'))
+            for s in self.get_current_subjects(): vals.append(r['marks'].get(s, '—'))
             vals += [r['total'], r['average'], r['grade']]
             self.rep_tree.insert('', 'end', values=vals)
 
@@ -1435,14 +2737,319 @@ class SchoolReportApp:
         fn = f"report_{cls.replace(' ', '_')}_term_{term}.csv"
         with open(fn, 'w', newline='') as f:
             w = csv.writer(f)
-            w.writerow(['Position', 'Adm No', 'Name', 'Class'] + SUBJECTS + ['Total', 'Average', 'Grade'])
+            w.writerow(['Position', 'Adm No', 'Name', 'Class'] + self.get_current_subjects() + ['Total', 'Average', 'Grade'])
             for r in results:
                 row = [r['position'], r['student']['admission_no'],
                        r['student']['name'], r['student']['class']]
-                row += [r['marks'].get(s, 0) for s in SUBJECTS]
+                row += [r['marks'].get(s, 0) for s in self.get_current_subjects()]
                 row += [r['total'], r['average'], r['grade']]
                 w.writerow(row)
         messagebox.showinfo('Exported', f'Report saved to {fn}')
+
+    # ==================== WESTERN SPOTLIGHT EXPORT ====================
+    def export_spotlight_excel(self):
+        """Open a dialog to configure and export the Western Spotlight class report."""
+        # Pre-populate from Reports page if available
+        try:
+            initial_cls  = self.rep_cls_cb.get()
+            if initial_cls == 'All':
+                initial_cls = CLASSES[0]
+            initial_term = self.rep_term_cb.get()
+        except AttributeError:
+            initial_cls  = CLASSES[0]
+            initial_term = TERMS[0]
+
+        dlg = tk.Toplevel(self.root)
+        dlg.title('Export – Western Spotlight')
+        dlg.geometry('400x340')
+        dlg.configure(bg=CONTENT_BG)
+        dlg.transient(self.root)
+        dlg.grab_set()
+        dlg.resizable(False, False)
+
+        outer = tk.Frame(dlg, bg=BORDER_CLR)
+        outer.place(relx=0.5, rely=0.5, anchor='center')
+        card = tk.Frame(outer, bg=CARD_BG, padx=30, pady=24)
+        card.pack(padx=1, pady=1)
+        card.columnconfigure(1, weight=1)
+
+        tk.Label(card, text='Western Spotlight Export', bg=CARD_BG, fg=TEXT_PRIMARY,
+                 font=(FF, 13, 'bold')).grid(row=0, column=0, columnspan=2,
+                                              sticky='w', pady=(0, 18))
+
+        def row_field(r, label, widget):
+            tk.Label(card, text=label, bg=CARD_BG, fg=TEXT_SECONDARY,
+                     font=(FF, 10, 'bold'), anchor='w').grid(
+                         row=r, column=0, sticky='w', padx=(0, 12), pady=5)
+            widget.grid(row=r, column=1, sticky='ew', pady=5, ipady=4)
+
+        cls_cb = ttk.Combobox(card, values=self.get_current_classes(),
+                               state='readonly', style='App.TCombobox', width=20)
+        cls_cb.set(initial_cls)
+        row_field(1, 'Class:', cls_cb)
+
+        term_cb = ttk.Combobox(card, values=TERMS, state='readonly',
+                                style='App.TCombobox', width=20)
+        term_cb.set(initial_term)
+        row_field(2, 'Term:', term_cb)
+
+        stream_var = tk.StringVar(value='GREEN')
+        stream_e = ttk.Entry(card, textvariable=stream_var,
+                              style='App.TEntry', width=20)
+        row_field(3, 'Stream / Group:', stream_e)
+
+        assess_cb = ttk.Combobox(card, values=['MID-TERM', 'END-TERM'],
+                                  state='readonly', style='App.TCombobox', width=20)
+        assess_cb.set('MID-TERM')
+        row_field(4, 'Assessment:', assess_cb)
+
+        year_var = tk.StringVar(value=str(datetime.now().year))
+        year_e = ttk.Entry(card, textvariable=year_var,
+                            style='App.TEntry', width=20)
+        row_field(5, 'Year:', year_e)
+
+        btn_row = tk.Frame(card, bg=CARD_BG)
+        btn_row.grid(row=6, column=0, columnspan=2, pady=(20, 0))
+
+        cancel = tk.Label(btn_row, text='Cancel', bg='#e8f5e9', fg=TEXT_PRIMARY,
+                          font=(FF, 10, 'bold'), padx=18, pady=8, cursor='hand2')
+        cancel.pack(side='left', padx=(0, 8))
+        cancel.bind('<Button-1>', lambda e: dlg.destroy())
+
+        def do_export():
+            selected_cls    = cls_cb.get()
+            selected_term   = term_cb.get()
+            selected_stream = stream_var.get().strip() or 'GREEN'
+            selected_assess = assess_cb.get()
+            selected_year   = year_var.get().strip() or str(datetime.now().year)
+            dlg.destroy()
+            self._do_spotlight_export(selected_cls, selected_term,
+                                      selected_stream, selected_assess, selected_year)
+
+        export_btn = tk.Label(btn_row, text='Export Excel', bg='#1B5E20', fg='white',
+                              font=(FF, 10, 'bold'), padx=18, pady=8, cursor='hand2')
+        export_btn.pack(side='left')
+        export_btn.bind('<Button-1>', lambda e: do_export())
+
+    def _do_spotlight_export(self, cls, term, stream, assess, year):
+        """Generate the Western Spotlight Excel workbook and save it."""
+        results = db.calculate_results(cls, term)
+        if not results:
+            messagebox.showwarning('No Data',
+                                   f'No results found for {cls}, Term {term}.\n'
+                                   'Please enter marks first.')
+            return
+
+        file_path = filedialog.asksaveasfilename(
+            title='Save – Western Spotlight',
+            defaultextension='.xlsx',
+            filetypes=[('Excel files', '*.xlsx')],
+            initialfile=f"spotlight_{cls.replace(' ', '_')}_T{term}_{year}.xlsx"
+        )
+        if not file_path:
+            return
+
+        try:
+            import openpyxl
+            from openpyxl.styles import PatternFill, Font, Alignment, Border, Side
+            from openpyxl.utils import get_column_letter
+
+            wb = openpyxl.Workbook()
+            ws = wb.active
+            ws.title = 'Spotlight'
+            ws.sheet_view.showGridLines = False
+
+            # ── Palette ──────────────────────────────────────────────────────
+            BG_TITLE  = PatternFill('solid', fgColor='1B5E20')   # dark green – titles
+            BG_HDR    = PatternFill('solid', fgColor='2E7D32')   # medium green – headers
+            BG_DATA   = PatternFill('solid', fgColor='4CAF50')   # bright green – data rows
+            FNT_YLW   = Font(bold=True, color='FFFF00', size=12, name='Calibri')
+            FNT_YLW_S = Font(bold=True, color='FFFF00', size=10, name='Calibri')
+            FNT_WHT   = Font(bold=True, color='FFFFFF', size=11, name='Calibri')
+            FNT_WHT_S = Font(bold=True, color='FFFFFF', size=10, name='Calibri')
+            ALIGN_CTR = Alignment(horizontal='center', vertical='center', wrap_text=True)
+            ALIGN_LFT = Alignment(horizontal='left',   vertical='center')
+            _thin     = Side(style='thin', color='000000')
+            BORDER    = Border(left=_thin, right=_thin, top=_thin, bottom=_thin)
+
+            subjects   = self.get_current_subjects()
+            SUBJ_LABEL = {
+                'Math': 'MATH', 'Eng': 'ENG', 'Kis': 'KIS',
+                'Int Sci': 'INT. SCI', 'Agri': 'AGRI', 'SST': 'SST',
+                'CRE': 'CRE', 'CIA': 'C/A', 'Pre-Tech': 'PRE-TECH'
+            }
+            n_subj    = len(subjects)
+            total_max = n_subj * 100
+
+            # Column numbers (1-based)
+            C_NO    = 1
+            C_NAME  = 2
+            C_S0    = 3                    # first subject score col
+            C_TOTAL = C_S0 + n_subj * 2
+            C_AVG   = C_TOTAL + 1
+            C_PSN   = C_AVG + 1
+            C_LAST  = C_PSN
+
+            def cl(c):
+                return get_column_letter(c)
+
+            def apply_style(r, c, fill=None, font=None, align=ALIGN_CTR, border=None):
+                cell = ws.cell(row=r, column=c)
+                if fill:   cell.fill      = fill
+                if font:   cell.font      = font
+                if align:  cell.alignment = align
+                if border: cell.border    = border
+                return cell
+
+            def fill_entire_row(r, fill, font, height=None):
+                for c in range(1, C_LAST + 1):
+                    apply_style(r, c, fill=fill, font=font)
+                if height:
+                    ws.row_dimensions[r].height = height
+
+            def merged_cell(r1, c1, r2, c2, value='', fill=None, font=None, align=ALIGN_CTR):
+                ws.merge_cells(start_row=r1, start_column=c1,
+                               end_row=r2,   end_column=c2)
+                cell = ws.cell(row=r1, column=c1)
+                cell.value     = value
+                if fill:  cell.fill      = fill
+                if font:  cell.font      = font
+                if align: cell.alignment = align
+                return cell
+
+            # ── Title section (rows 1-5) ─────────────────────────────────────
+            grade_num   = cls.replace('Grade ', '')
+            grade_words = {'1':'ONE','2':'TWO','3':'THREE','4':'FOUR','5':'FIVE',
+                           '6':'SIX','7':'SEVEN','8':'EIGHT','9':'NINE'}.get(grade_num, grade_num)
+
+            fill_entire_row(1, BG_TITLE, FNT_YLW, height=26)
+            merged_cell(1, C_NO, 1, C_LAST,
+                        'MT.  OLIVES ADVENTIST SCHOOL,  NGONG',
+                        BG_TITLE, FNT_YLW, ALIGN_CTR)
+
+            fill_entire_row(2, BG_TITLE, FNT_YLW, height=8)
+            merged_cell(2, C_NO, 2, C_LAST, '', BG_TITLE, FNT_YLW)
+
+            title3 = (f'GRADE {grade_words} ({grade_num}) {stream} '
+                      f'TERM {term.upper()} {assess} ASSESSMENT REPORT {year}')
+            fill_entire_row(3, BG_TITLE, FNT_YLW, height=22)
+            merged_cell(3, C_NO, 3, C_LAST, title3, BG_TITLE, FNT_YLW, ALIGN_CTR)
+
+            fill_entire_row(4, BG_TITLE, FNT_YLW, height=8)
+            merged_cell(4, C_NO, 4, C_LAST, '', BG_TITLE, FNT_YLW)
+
+            fill_entire_row(5, BG_TITLE, FNT_YLW, height=22)
+            merged_cell(5, C_NO, 5, C_LAST,
+                        'THE WESTERN SPOTLIGHT', BG_TITLE, FNT_YLW, ALIGN_CTR)
+
+            # ── Column header rows (6 & 7) ───────────────────────────────────
+            ws.row_dimensions[6].height = 20
+            ws.row_dimensions[7].height = 18
+            for c in range(1, C_LAST + 1):
+                for r in (6, 7):
+                    apply_style(r, c, fill=BG_HDR, font=FNT_WHT,
+                                align=ALIGN_CTR, border=BORDER)
+
+            # NO.  – merged rows 6-7
+            merged_cell(6, C_NO, 7, C_NO, 'NO.', BG_HDR, FNT_WHT, ALIGN_CTR)
+            for r in (6, 7):
+                ws.cell(r, C_NO).border = BORDER
+
+            # LEARNER – merged rows 6-7
+            merged_cell(6, C_NAME, 7, C_NAME, 'LEARNER', BG_HDR, FNT_WHT, ALIGN_CTR)
+            for r in (6, 7):
+                ws.cell(r, C_NAME).border = BORDER
+
+            # Subject names row 6 (merged score+grade cols), row 7 sub-labels
+            for i, subj in enumerate(subjects):
+                sc  = C_S0 + i * 2      # score col
+                gc  = sc + 1             # grade col
+                lbl = SUBJ_LABEL.get(subj, subj.upper())
+                merged_cell(6, sc, 6, gc, lbl, BG_HDR, FNT_WHT, ALIGN_CTR)
+                for c in (sc, gc):
+                    ws.cell(6, c).border = BORDER
+                # Row 7: '100' under score, blank under grade
+                c7 = ws.cell(7, sc)
+                c7.value = '100'; c7.fill = BG_HDR; c7.font = FNT_WHT_S
+                c7.alignment = ALIGN_CTR; c7.border = BORDER
+                ws.cell(7, gc).border = BORDER
+
+            # TOTAL
+            ws.cell(6, C_TOTAL).value = 'TOTAL'
+            ws.cell(7, C_TOTAL).value = str(total_max)
+            for r in (6, 7):
+                apply_style(r, C_TOTAL, fill=BG_HDR, font=FNT_WHT,
+                            align=ALIGN_CTR, border=BORDER)
+
+            # AVERAGE
+            ws.cell(6, C_AVG).value = 'AVERAGE'
+            ws.cell(7, C_AVG).value = '100%'
+            for r in (6, 7):
+                apply_style(r, C_AVG, fill=BG_HDR, font=FNT_WHT,
+                            align=ALIGN_CTR, border=BORDER)
+
+            # PSN – merged rows 6-7
+            merged_cell(6, C_PSN, 7, C_PSN, 'PSN', BG_HDR, FNT_WHT, ALIGN_CTR)
+            for r in (6, 7):
+                ws.cell(r, C_PSN).border = BORDER
+
+            # ── Data rows ────────────────────────────────────────────────────
+            for idx, result in enumerate(results):
+                r  = 8 + idx
+                ws.row_dimensions[r].height = 16
+                s  = result['student']
+                mk = result['marks']
+
+                def dc(col, value, align=ALIGN_CTR):
+                    cell = ws.cell(row=r, column=col)
+                    cell.value     = value
+                    cell.fill      = BG_DATA
+                    cell.font      = FNT_YLW_S
+                    cell.alignment = align
+                    cell.border    = BORDER
+
+                dc(C_NO,   result['position'])
+                dc(C_NAME, s['name'].upper(), ALIGN_LFT)
+
+                for i, subj in enumerate(subjects):
+                    sc       = C_S0 + i * 2
+                    gc       = sc + 1
+                    raw      = mk.get(subj)
+                    mark_val = int(raw) if raw else 0
+                    dc(sc, mark_val if raw else '')
+                    dc(gc, get_cbc_grade_sublevel(mark_val) if raw else '')
+
+                dc(C_TOTAL, result['total'])
+                dc(C_AVG,   result['average'])
+                dc(C_PSN,   result['position'])
+
+            # ── Column widths ─────────────────────────────────────────────────
+            ws.column_dimensions[cl(C_NO)].width   = 5
+            ws.column_dimensions[cl(C_NAME)].width = 24
+            for i in range(n_subj):
+                sc = C_S0 + i * 2
+                ws.column_dimensions[cl(sc)].width     = 5.5
+                ws.column_dimensions[cl(sc + 1)].width = 5.5
+            ws.column_dimensions[cl(C_TOTAL)].width = 7
+            ws.column_dimensions[cl(C_AVG)].width   = 9
+            ws.column_dimensions[cl(C_PSN)].width   = 5
+
+            # ── Print settings (A4 landscape) ─────────────────────────────────
+            ws.page_setup.orientation = 'landscape'
+            ws.page_setup.paperSize   = 9     # A4
+            ws.page_setup.fitToPage   = True
+            ws.page_setup.fitToWidth  = 1
+            ws.page_setup.fitToHeight = 0
+
+            wb.save(file_path)
+            messagebox.showinfo('Export Complete',
+                                f'Western Spotlight report saved:\n{file_path}')
+
+        except ImportError:
+            messagebox.showerror('Missing Library',
+                                 'openpyxl is required. Run:\n  pip install openpyxl')
+        except Exception as exc:
+            messagebox.showerror('Export Error', f'Failed to generate file:\n{exc}')
 
     def generate_pdf_report(self, student_id=None):
         """Generate a PDF report card for a student"""
@@ -1548,14 +3155,14 @@ class SchoolReportApp:
             marks_header = ["LEARNING AREA", "MARKS", "AVG", "PERFORMANCE LEVEL"]
             marks_data = [marks_header]
             
-            for subj in SUBJECTS:
+            for subj in self.get_current_subjects():
                 mk = result['marks'].get(subj, 0)
                 # Subject grade
                 subj_grade = 'EE' if mk >= 80 else 'ME' if mk >= 70 else 'AE' if mk >= 60 else 'BE' if mk >= 50 else 'IE'
                 marks_data.append([subj, mk, mk, GRADE_LABELS[subj_grade]])
             
             # Summary Rows
-            possible = len(SUBJECTS) * 100
+            possible = len(self.get_current_subjects()) * 100
             marks_data.append(["Total Scores", f"{result['total']}/{possible}", f"{result['average']}/100", f"Level: {result['grade']}"])
             marks_data.append(["Average Scores", f"{result['average']}/100", "", f"Position: {result['position']}"])
 
@@ -1581,16 +3188,16 @@ class SchoolReportApp:
             bc.y = 20
             bc.height = 100
             bc.width = 350
-            bc.data = [[result['marks'].get(sub, 0) for sub in SUBJECTS]]
+            bc.data = [[result['marks'].get(sub, 0) for sub in self.get_current_subjects()]]
             bc.strokeColor = colors.black
             bc.valueAxis.valueMin = 0
             bc.valueAxis.valueMax = 100
             bc.valueAxis.valueStep = 25
             bc.categoryAxis.labels.boxAnchor = 'ne'
             bc.categoryAxis.labels.angle = 30
-            bc.categoryAxis.categoryNames = SUBJECTS
+            bc.categoryAxis.categoryNames = self.get_current_subjects()
             
-            for i, subj in enumerate(SUBJECTS):
+            for i, subj in enumerate(self.get_current_subjects()):
                 score = result['marks'].get(subj, 0)
                 if score >= 80: bc.bars[0, i].fillColor = colors.HexColor("#1b5e20")
                 elif score >= 50: bc.bars[0, i].fillColor = colors.HexColor("#4CAF50")
@@ -1624,6 +3231,254 @@ class SchoolReportApp:
         except Exception as e:
             messagebox.showerror("Error", f"Failed to generate PDF: {str(e)}")
 
+    # ==================== CBC INFO ====================
+    def show_cbc_info(self):
+        """Show CBC (Competency Based Curriculum) information page"""
+        self.clear_frame()
+        self._set_nav('CBC Info')
+        self._page_header('CBC Information', 'Competency Based Curriculum Details')
+        
+        # Create main container with notebook (tabs)
+        notebook = ttk.Notebook(self.content_frame)
+        notebook.pack(fill='both', expand=True, padx=20, pady=10)
+        
+        # Style for tabs
+        style = ttk.Style()
+        style.theme_use('default')
+        style.configure('CBC.TNotebook', background=CONTENT_BG)
+        style.configure('CBC.TNotebook.Tab', background=CARD_BG, foreground=TEXT_PRIMARY, 
+                        padding=[12, 8], font=(FF, 11, 'bold'))
+        style.map('CBC.TNotebook.Tab', background=[('selected', GREEN)], 
+                  foreground=[('selected', 'white')])
+        notebook.configure(style='CBC.TNotebook')
+        
+        # Create tab frames for each level
+        tabs = {}
+        for level in LEVELS:
+            tab_frame = tk.Frame(notebook, bg=CONTENT_BG)
+            notebook.add(tab_frame, text=f"  {level}  ")
+            tabs[level] = tab_frame
+        
+        # Build content for each level
+        self._build_lower_primary_tab(tabs['Lower Primary (Grade 1-3)'])
+        self._build_upper_primary_tab(tabs['Upper Primary (Grade 4-6)'])
+        self._build_junior_school_tab(tabs['Junior School (Grade 7-9)'])
+    
+    def _build_lower_primary_tab(self, parent):
+        """Build Lower Primary (Grade 1-3) tab content"""
+        canvas = tk.Canvas(parent, bg=CONTENT_BG, highlightthickness=0)
+        scrollbar = ttk.Scrollbar(parent, orient='vertical', command=canvas.yview)
+        scrollable_frame = tk.Frame(canvas, bg=CONTENT_BG)
+        
+        scrollable_frame.bind(
+            "<Configure>",
+            lambda e: canvas.configure(scrollregion=canvas.bbox("all"))
+        )
+        
+        canvas.create_window((0, 0), window=scrollable_frame, anchor='nw')
+        canvas.configure(yscrollcommand=scrollbar.set)
+        
+        canvas.pack(side='left', fill='both', expand=True)
+        scrollbar.pack(side='right', fill='y')
+        
+        # Level Description
+        self._add_section_header(scrollable_frame, "About Lower Primary (Grade 1-3)", 
+                                  "Learners are mostly taught by one class teacher and focus on basic skills.")
+        
+        # Subjects Section
+        self._add_section_header(scrollable_frame, "📚 Subjects / Learning Areas", "")
+        subjects_frame = tk.Frame(scrollable_frame, bg=CARD_BG, relief='flat', bd=1)
+        subjects_frame.pack(fill='x', padx=20, pady=5)
+        
+        subjects = SUBJECTS_BY_LEVEL['Lower Primary (Grade 1-3)']
+        for i, subject in enumerate(subjects):
+            row = i // 2
+            col = i % 2
+            self._add_subject_chip(subjects_frame, subject, row, col)
+        
+        # Grading Scale Section
+        self._add_section_header(scrollable_frame, "📊 Grading Scale", 
+                                  "Learners are graded using competency levels instead of marks.")
+        grading_frame = tk.Frame(scrollable_frame, bg=CARD_BG, relief='flat', bd=1)
+        grading_frame.pack(fill='x', padx=20, pady=5)
+        
+        grading_data = GRADING_BY_LEVEL['Lower Primary (Grade 1-3)']['levels']
+        for i, (grade, info) in enumerate(grading_data.items()):
+            self._add_grade_card(grading_frame, grade, info['label'], info['description'], i)
+        
+        # Assessment Methods
+        self._add_section_header(scrollable_frame, "📝 Assessment Methods", "")
+        assess_frame = tk.Frame(scrollable_frame, bg=CARD_BG, relief='flat', bd=1)
+        assess_frame.pack(fill='x', padx=20, pady=5)
+        
+        assess_methods = [
+            "✓ Class activities",
+            "✓ Oral work", 
+            "✓ Practical activities",
+            "✓ Teacher observation"
+        ]
+        for method in assess_methods:
+            tk.Label(assess_frame, text=method, font=(FF, 11), bg=CARD_BG, 
+                    fg=TEXT_SECONDARY, padx=15, pady=5, anchor='w').pack(fill='x', padx=15)
+    
+    def _build_upper_primary_tab(self, parent):
+        """Build Upper Primary (Grade 4-6) tab content"""
+        canvas = tk.Canvas(parent, bg=CONTENT_BG, highlightthickness=0)
+        scrollbar = ttk.Scrollbar(parent, orient='vertical', command=canvas.yview)
+        scrollable_frame = tk.Frame(canvas, bg=CONTENT_BG)
+        
+        scrollable_frame.bind(
+            "<Configure>",
+            lambda e: canvas.configure(scrollregion=canvas.bbox("all"))
+        )
+        
+        canvas.create_window((0, 0), window=scrollable_frame, anchor='nw')
+        canvas.configure(yscrollcommand=scrollbar.set)
+        
+        canvas.pack(side='left', fill='both', expand=True)
+        scrollbar.pack(side='right', fill='y')
+        
+        # Level Description
+        self._add_section_header(scrollable_frame, "About Upper Primary (Grade 4-6)", 
+                                  "Assessment combines class assessments and national assessments.")
+        
+        # Subjects Section
+        self._add_section_header(scrollable_frame, "📚 Subjects", "")
+        subjects_frame = tk.Frame(scrollable_frame, bg=CARD_BG, relief='flat', bd=1)
+        subjects_frame.pack(fill='x', padx=20, pady=5)
+        
+        subjects = SUBJECTS_BY_LEVEL['Upper Primary (Grade 4-6)']
+        for i, subject in enumerate(subjects):
+            row = i // 2
+            col = i % 2
+            self._add_subject_chip(subjects_frame, subject, row, col)
+        
+        # Grading Scale Section
+        self._add_section_header(scrollable_frame, "📊 Grading Scale", 
+                                  "Performance levels based on competency.")
+        grading_frame = tk.Frame(scrollable_frame, bg=CARD_BG, relief='flat', bd=1)
+        grading_frame.pack(fill='x', padx=20, pady=5)
+        
+        grading_data = GRADING_BY_LEVEL['Upper Primary (Grade 4-6)']['levels']
+        for i, (grade, info) in enumerate(grading_data.items()):
+            self._add_grade_card(grading_frame, grade, info['label'], info['description'], i)
+        
+        # Assessment Components
+        self._add_section_header(scrollable_frame, "📝 Assessment Components", "")
+        assess_frame = tk.Frame(scrollable_frame, bg=CARD_BG, relief='flat', bd=1)
+        assess_frame.pack(fill='x', padx=20, pady=5)
+        
+        tk.Label(assess_frame, text="60% School Based Assessment (SBA)", 
+                font=(FF, 11, 'bold'), bg=CARD_BG, fg=GREEN, padx=15, pady=8).pack(anchor='w', padx=15, pady=(15, 5))
+        tk.Label(assess_frame, text="   Continuous assessment by teachers", 
+                font=(FF, 10), bg=CARD_BG, fg=TEXT_SECONDARY, padx=15).pack(anchor='w', padx=15)
+        
+        tk.Label(assess_frame, text="40% National Assessment (KNEC)", 
+                font=(FF, 11, 'bold'), bg=CARD_BG, fg=ORANGE, padx=15, pady=8).pack(anchor='w', padx=15, pady=(15, 5))
+        tk.Label(assess_frame, text="   Assessment done by Kenya National Examinations Council", 
+                font=(FF, 10), bg=CARD_BG, fg=TEXT_SECONDARY, padx=15).pack(anchor='w', padx=15, pady=(5, 15))
+    
+    def _build_junior_school_tab(self, parent):
+        """Build Junior School (Grade 7-9) tab content"""
+        canvas = tk.Canvas(parent, bg=CONTENT_BG, highlightthickness=0)
+        scrollbar = ttk.Scrollbar(parent, orient='vertical', command=canvas.yview)
+        scrollable_frame = tk.Frame(canvas, bg=CONTENT_BG)
+        
+        scrollable_frame.bind(
+            "<Configure>",
+            lambda e: canvas.configure(scrollregion=canvas.bbox("all"))
+        )
+        
+        canvas.create_window((0, 0), window=scrollable_frame, anchor='nw')
+        canvas.configure(yscrollcommand=scrollbar.set)
+        
+        canvas.pack(side='left', fill='both', expand=True)
+        scrollbar.pack(side='right', fill='y')
+        
+        # Level Description
+        self._add_section_header(scrollable_frame, "About Junior School (Grade 7-9)", 
+                                  "Junior school uses competency levels but also percentage scores.")
+        
+        # Core Subjects Section
+        self._add_section_header(scrollable_frame, "📚 Core Subjects", "")
+        subjects_frame = tk.Frame(scrollable_frame, bg=CARD_BG, relief='flat', bd=1)
+        subjects_frame.pack(fill='x', padx=20, pady=5)
+        
+        core_subjects = SUBJECTS_BY_LEVEL['Junior School (Grade 7-9)']['core']
+        for i, subject in enumerate(core_subjects):
+            row = i // 2
+            col = i % 2
+            self._add_subject_chip(subjects_frame, subject, row, col)
+        
+        # Optional Subjects Note
+        opt_frame = tk.Frame(scrollable_frame, bg=CARD_BG, relief='flat', bd=1)
+        opt_frame.pack(fill='x', padx=20, pady=5)
+        tk.Label(opt_frame, text="📌 Optional Subjects (schools may choose some):", 
+                font=(FF, 11, 'bold'), bg=CARD_BG, fg=PURPLE, padx=15, pady=8).pack(anchor='w', padx=15)
+        optionals = SUBJECTS_BY_LEVEL['Junior School (Grade 7-9)']['optional']
+        for opt in optionals:
+            tk.Label(opt_frame, text=f"   • {opt}", font=(FF, 10), bg=CARD_BG, 
+                    fg=TEXT_SECONDARY, padx=15, pady=3).pack(anchor='w', padx=15)
+        
+        # Grading Scale Section
+        self._add_section_header(scrollable_frame, "📊 Grading Scale", 
+                                  "Competency levels with percentage scores.")
+        grading_frame = tk.Frame(scrollable_frame, bg=CARD_BG, relief='flat', bd=1)
+        grading_frame.pack(fill='x', padx=20, pady=5)
+        
+        grading_data = GRADING_BY_LEVEL['Junior School (Grade 7-9)']['levels']
+        for i, (grade, info) in enumerate(grading_data.items()):
+            self._add_grade_card(grading_frame, grade, info['label'], info['description'], i)
+    
+    def _add_section_header(self, parent, title, subtitle):
+        """Add a section header with title and subtitle"""
+        header_frame = tk.Frame(parent, bg=CONTENT_BG)
+        header_frame.pack(fill='x', padx=20, pady=(15, 5))
+        
+        tk.Label(header_frame, text=title, font=(FF, 14, 'bold'), 
+                bg=CONTENT_BG, fg=TEXT_PRIMARY).pack(anchor='w')
+        if subtitle:
+            tk.Label(header_frame, text=subtitle, font=(FF, 10), 
+                    bg=CONTENT_BG, fg=TEXT_SECONDARY).pack(anchor='w', pady=(2, 0))
+    
+    def _add_subject_chip(self, parent, subject, row, col):
+        """Add a subject chip/badge"""
+        chip = tk.Frame(parent, bg='#e8f5e9', relief='flat', bd=1)
+        chip.grid(row=row, column=col, padx=10, pady=8, sticky='w')
+        
+        tk.Label(chip, text=f"▸ {subject}", font=(FF, 10), 
+                bg='#e8f5e9', fg=GREEN, padx=10, pady=6).pack()
+    
+    def _add_grade_card(self, parent, grade, label, description, index):
+        """Add a grade card with visual styling"""
+        # Determine color based on grade
+        grade_colors = {
+            'EE': '#2ecc71',  # Green - Exceeding
+            'ME': '#3498db',  # Blue - Meeting
+            'AE': '#f39c12',  # Orange - Approaching
+            'BE': '#e74c3c',  # Red - Below
+        }
+        color = grade_colors.get(grade, '#95a5a6')
+        
+        card = tk.Frame(parent, bg=CARD_BG, relief='flat', bd=1)
+        card.pack(fill='x', padx=10, pady=5)
+        
+        # Grade badge
+        badge = tk.Frame(card, bg=color, relief='flat', bd=1)
+        badge.pack(side='left', padx=10, pady=10)
+        
+        tk.Label(badge, text=grade, font=(FF, 12, 'bold'), 
+                bg=color, fg='white', padx=12, pady=6).pack()
+        
+        # Grade info
+        info_frame = tk.Frame(card, bg=CARD_BG)
+        info_frame.pack(side='left', fill='both', expand=True, padx=10, pady=10)
+        
+        tk.Label(info_frame, text=label, font=(FF, 11, 'bold'), 
+                bg=CARD_BG, fg=TEXT_PRIMARY).pack(anchor='w')
+        tk.Label(info_frame, text=description, font=(FF, 10), 
+                bg=CARD_BG, fg=TEXT_SECONDARY).pack(anchor='w', pady=(2, 0))
+
     # ==================== CHARTS ====================
     def show_charts(self):
         self.clear_frame()
@@ -1636,7 +3491,7 @@ class SchoolReportApp:
         def lbl(t): tk.Label(ctrl, text=t, bg=CONTENT_BG, fg=TEXT_SECONDARY,
                               font=(FF, 10)).pack(side='left', padx=(10, 4))
         lbl('Class:')
-        self.ch_cls_cb = ttk.Combobox(ctrl, values=['All'] + CLASSES, state='readonly',
+        self.ch_cls_cb = ttk.Combobox(ctrl, values=['All'] + self.get_current_classes(), state='readonly',
                                       style='App.TCombobox', width=12)
         self.ch_cls_cb.set('All')
         self.ch_cls_cb.pack(side='left', ipady=4)
@@ -1668,17 +3523,17 @@ class SchoolReportApp:
             ax.clear()
             ax.set_facecolor('#fafafa')
 
-        subj_totals = {s: [] for s in SUBJECTS}
+        subj_totals = {s: [] for s in self.get_current_subjects()}
         for r in results:
-            for s in SUBJECTS:
+            for s in self.get_current_subjects():
                 if r['marks'].get(s): subj_totals[s].append(r['marks'][s])
 
-        avgs   = [round(sum(subj_totals[s]) / len(subj_totals[s]), 1) if subj_totals[s] else 0 for s in SUBJECTS]
+        avgs   = [round(sum(subj_totals[s]) / len(subj_totals[s]), 1) if subj_totals[s] else 0 for s in self.get_current_subjects()]
         colors = [GRADE_COLORS['EE'] if a >= 80 else GRADE_COLORS['ME'] if a >= 70 else
                   GRADE_COLORS['AE'] if a >= 60 else GRADE_COLORS['BE'] if a >= 50 else
                   GRADE_COLORS['IE'] for a in avgs]
 
-        bars0 = self.axes[0, 0].bar(SUBJECTS, avgs, color=colors, edgecolor='none', width=0.6)
+        bars0 = self.axes[0, 0].bar(self.get_current_subjects(), avgs, color=colors, edgecolor='none', width=0.6)
         self.axes[0, 0].set_title('Subject Averages', fontweight='bold',
                                    color=TEXT_PRIMARY, pad=10, fontsize=11)
         self.axes[0, 0].set_ylim(0, 110)
@@ -1776,7 +3631,7 @@ class SchoolReportApp:
         def lbl(t): tk.Label(ctrl, text=t, bg=CONTENT_BG, fg=TEXT_SECONDARY,
                               font=(FF, 10)).pack(side='left', padx=(10, 4))
         lbl('Class:')
-        self.rc_cls_cb = ttk.Combobox(ctrl, values=CLASSES, state='readonly',
+        self.rc_cls_cb = ttk.Combobox(ctrl, values=self.get_current_classes(), state='readonly',
                                       style='App.TCombobox', width=12)
         self.rc_cls_cb.set(CLASSES[0])
         self.rc_cls_cb.pack(side='left', ipady=4)
@@ -1913,7 +3768,7 @@ class SchoolReportApp:
             tk.Label(tbl, text=text, bg=HDR_BG, fg=SCH_BLUE,
                      font=(FF, 10, 'bold'), padx=10, pady=8, anchor=anchor
                      ).grid(row=0, column=col, sticky='nsew', padx=1, pady=1)
-        for i, subj in enumerate(SUBJECTS):
+        for i, subj in enumerate(self.get_current_subjects()):
             mk    = marks.get(subj, 0)
             grade = get_grade(mk)
             row_bg = '#f5f7fa' if i % 2 == 0 else 'white'
@@ -1933,8 +3788,8 @@ class SchoolReportApp:
         avg_score   = result['average']
         grade_ov    = result['grade']
         pos         = result['position']
-        possible    = len(SUBJECTS) * 100
-        base        = len(SUBJECTS) + 1
+        possible    = len(self.get_current_subjects()) * 100
+        base        = len(self.get_current_subjects()) + 1
         for j, (lab, c1, c2, c3) in enumerate([
             ('Total Scores',   f'{total_marks}/{possible}', f'{avg_score}/100',
              f'Termly Performance Level: {grade_ov}'),
@@ -1960,9 +3815,9 @@ class SchoolReportApp:
         fig, ax = plt.subplots(figsize=(6.2, 2.8))
         fig.patch.set_facecolor('white')
         ax.set_facecolor('#fafafa')
-        mark_vals  = [marks.get(sub, 0) for sub in SUBJECTS]
+        mark_vals  = [marks.get(sub, 0) for sub in self.get_current_subjects()]
         bar_colors = [GRADE_COLORS[get_grade(m)] for m in mark_vals]
-        ax.bar(SUBJECTS, mark_vals, color=bar_colors, edgecolor='none', width=0.55)
+        ax.bar(self.get_current_subjects(), mark_vals, color=bar_colors, edgecolor='none', width=0.55)
         ax.set_ylim(0, 105)
         ax.set_yticks([0, 25, 50, 75, 100])
         ax.tick_params(axis='x', rotation=45, labelsize=8, labelcolor='#444')
@@ -2010,7 +3865,7 @@ class SchoolReportApp:
     def _gen_rc_text(self, result, total, term):
         """Plain-text fallback used for printing."""
         s, m = result['student'], result['marks']
-        possible = len(SUBJECTS) * 100
+        possible = len(self.get_current_subjects()) * 100
         lines = [
             '=' * 62,
             '      MT OLIVES ADVENTIST SCHOOL',
@@ -2023,7 +3878,7 @@ class SchoolReportApp:
             f"  {'Subject':<16} {'Marks':>6}  {'Avg':>6}  Performance Level",
             '-' * 62,
         ]
-        for sub in SUBJECTS:
+        for sub in self.get_current_subjects():
             mk = m.get(sub, 0)
             g  = ('EE' if mk >= 80 else 'ME' if mk >= 70 else
                   'AE' if mk >= 60 else 'BE' if mk >= 50 else 'IE')
@@ -2083,8 +3938,20 @@ def main():
     except Exception as e:
         print(f'Could not load logo: {e}')
     
-    app  = SchoolReportApp(root)
-    root.mainloop()
+    app = SchoolReportApp(root)
+    
+    try:
+        root.mainloop()
+    except KeyboardInterrupt:
+        print("\nKeyboardInterrupt received. Shutting down gracefully...")
+    finally:
+        # Cleanup code - ensure proper shutdown
+        print("Cleanup complete. Goodbye!")
+        try:
+            root.destroy()
+        except Exception:
+            pass
+        sys.exit(0)
 
 
 if __name__ == '__main__':
