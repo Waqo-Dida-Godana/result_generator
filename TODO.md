@@ -1,16 +1,13 @@
-# Git Push Fix - Clean Large Files
-✅ **COMPLETE**
+# Letterhead Integration TODO
+## Status: [IN PROGRESS]
 
-**What was done:**
-- Updated .gitignore: Added exclusions for build/, dist/, *.db, .venv/, __pycache__/, etc.
-- Removed tracked large files: git rm --cached build/* (~40MB PyInstaller), cbc_school.db, school_report.db.
-- Committed: "fix: ignore and remove large build artifacts, databases from tracking; repo now ~60MB smaller"
-- git push origin main: Succeeded fast (only 764 bytes transferred vs previous 60MB hang).
-
-**Repo now lean:** Source code only, build artifacts ignored/local.
-**Future builds:** Regenerate build/ locally with PyInstaller; .db recreated by app.
-
-**Test:** git status clean, push works. View on GitHub: https://github.com/Waqo-Dida-Godana/result_generator
-
-**Previous:** Marks entry fields fixed ✅
-
+1. ✅ [DONE] Create TODO.md
+2. ✅ Create assets/ directory
+3. ✅ Copy letterhead DOCX to assets/letterhead.docx
+4. ✅ Create extract_letterhead.py
+5. ⚠️ Python/pip setup needed (run `py -m pip install -r requirements.txt`)
+6. ⚠️ Run `py extract_letterhead.py` (after manual DOCX copy + Python install)
+7. ✅ Edit main.py: Letterhead RLImage integrated w/ fallback to moas.jpg
+8. [ ] Test PDF generation in app
+9. [ ] Update PyInstaller spec if needed
+10. ✅ [DONE] Complete task

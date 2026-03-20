@@ -1,0 +1,39 @@
+==============================================================
+      MT OLIVES ADVENTIST SCHOOL
+          LEARNER ASSESSMENT REPORT CARD
+==============================================================
+  Name    : TOTAL                 Grade  : 7
+  Stream  : AUTO-GRADE7-TOTA-4A5A4  Year   : 2026
+  Term    : One                   Gender : Male
+--------------------------------------------------------------
+  Subject           Marks     Avg  Performance Level
+--------------------------------------------------------------
+  English               0       0  Inadequate
+  Kiswahili / Kenyan Sign Language      0       0  Inadequate
+  Mathematics           0       0  Inadequate
+  Integrated Science      0       0  Inadequate
+  Health Education      0       0  Inadequate
+  Pre-Technical Studies      0       0  Inadequate
+  Social Studies        0       0  Inadequate
+  Religious Education (CRE/IRE/HRE)      0       0  Inadequate
+  Agriculture           0       0  Inadequate
+  Life Skills Education      0       0  Inadequate
+  Sports & Physical Education    100     100  Exceeding Expectations
+  Visual Arts           0       0  Inadequate
+  Performing Arts       0       0  Inadequate
+  Computer Science / ICT      0       0  Inadequate
+  Foreign Languages (French, German, Arabic)    100     100  Exceeding Expectations
+  Kenyan Sign Language      0       0  Inadequate
+  Agri                100     100  Exceeding Expectations
+  CRE                 100     100  Exceeding Expectations
+  Eng                 100     100  Exceeding Expectations
+  Int Sci             100     100  Exceeding Expectations
+  Kis                 100     100  Exceeding Expectations
+  Math                100     100  Exceeding Expectations
+  Pre-Tech            100     100  Exceeding Expectations
+  SST                 100     100  Exceeding Expectations
+  CIA                   0       0  Inadequate
+--------------------------------------------------------------
+  Total   : 1000/2500   Average: 40.0/100
+  Grade   : IE   Position: 1 of 40
+==============================================================
