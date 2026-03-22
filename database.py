@@ -580,6 +580,23 @@ class Database:
         conn.commit()
         conn.close()
         return success
+
+    def update_stream(self, stream_id: str, name: str, class_id: str) -> Tuple[bool, str]:
+        """Update stream name and/or parent class."""
+        conn = self.get_connection()
+        cursor = conn.cursor()
+        try:
+            cursor.execute(
+                'UPDATE streams SET name = ?, class_id = ? WHERE id = ?',
+                (name, class_id, stream_id)
+            )
+            success = cursor.rowcount > 0
+            conn.commit()
+            conn.close()
+            return (True, 'Stream updated successfully') if success else (False, 'Stream not found')
+        except Exception as e:
+            conn.close()
+            return False, str(e)
     
     # ── Subject Management ────────────────────────────────────────────────
     def add_subject(self, name: str, level: str, category: str, is_optional: bool = False,

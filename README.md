@@ -33,7 +33,7 @@ python main.py
 
 3. **Marks Entry** - Enter marks for 9 subjects (Math, Eng, Kis, Int Sci, Agri, SST, CRE, CIA, Pre-Tech) across 3 terms
 
-4. **Reports & Rankings** - View student rankings, subject performance, and export data to CSV
+4. **Results** - View student rankings, subject performance, and export data to CSV
 
 5. **Charts** - Visual analysis including:
    - Subject averages bar chart
