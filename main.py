@@ -19,6 +19,8 @@ from email.message import EmailMessage
 from PIL import Image, ImageTk
 from database import db
 from extract_letterhead import extract_letterhead
+from promotion import promotion_manager
+from exam_analytics import exam_analytics
 import matplotlib
 matplotlib.use('TkAgg')
 import matplotlib.pyplot as plt
@@ -130,7 +132,7 @@ def _mix_hex(color1, color2, ratio):
 FF = 'Segoe UI'   # font family
 
 # ====================== TOPBAR TOKENS ======================
-TOPBAR_H        = 56                # height in px
+TOPBAR_H        = 50                # height in px
 TOPBAR_RIGHT_BG = OLIVE_DARK
 TOPBAR_BTN_BG   = OLIVE_PRIMARY
 TOPBAR_BTN_HOV  = OLIVE_MID
@@ -830,8 +832,13 @@ class SchoolReportApp:
         self.user_role = 'admin'  # Default role
         self.nav_frames: dict = {}
         self.active_nav: str = ''
+        self.sidebar_collapsed = False
+        self.sidebar_host = None
         self._topbar_clock_job = None
         self._topbar_clock_label = None
+        self._topbar_bar = None
+        self._topbar_clock_visible = True
+        self._topbar_clock_generation = 0
         self.logo_img = self.load_logo()
         
         # Load logo image for use in dashboard
@@ -1480,6 +1487,11 @@ class SchoolReportApp:
             return None
 
     def _clear(self):
+        self._topbar_clock_generation += 1
+        self._topbar_clock_job = None
+        self._topbar_clock_label = None
+        self._topbar_bar = None
+        self._topbar_clock_visible = True
         for w in self.root.winfo_children():
             w.destroy()
 
@@ -1719,7 +1731,9 @@ class SchoolReportApp:
         bottom = tk.Frame(wrapper, bg=CONTENT_BG)
         bottom.pack(fill='both', expand=True)
 
-        self._build_sidebar(bottom)
+        self.sidebar_host = tk.Frame(bottom, bg=SIDEBAR_BG)
+        self.sidebar_host.pack(side='left', fill='y')
+        self._build_sidebar(self.sidebar_host)
 
         # 1-px divider between sidebar and content
         tk.Frame(bottom, bg=BORDER_CLR, width=1).pack(side='left', fill='y')
@@ -1756,13 +1770,17 @@ class SchoolReportApp:
             # Question mark glyph
             c.create_text(11, 12, text='?', fill=FG,
                           font=(FF, 11, 'bold'))
+        elif icon_type == 'menu':
+            c.create_line(4, 6, 18, 6, fill=FG, width=2, capstyle='round')
+            c.create_line(4, 11, 18, 11, fill=FG, width=2, capstyle='round')
+            c.create_line(4, 16, 18, 16, fill=FG, width=2, capstyle='round')
 
-    def _topbar_btn(self, parent, icon_type, label, bg, command=None):
+    def _topbar_btn(self, parent, icon_type, label, bg, command=None, side='right'):
         """Icon-over-text button with crisp Canvas-drawn icons."""
         hover = TOPBAR_BTN_HOV
 
         f = tk.Frame(parent, bg=bg, padx=16, cursor='hand2')
-        f.pack(side='right', fill='y')
+        f.pack(side=side, fill='y')
 
         # Canvas icon (22×22 drawing area)
         ic = tk.Canvas(f, width=22, height=22, bg=bg, highlightthickness=0)
@@ -1793,15 +1811,48 @@ class SchoolReportApp:
             w.bind('<Leave>', _on_leave)
         return f
 
+    def _topbar_compact_btn(self, parent, icon_type, label, bg, command=None, side='right'):
+        """Compact topbar button with icon and label on one line."""
+        hover = TOPBAR_BTN_HOV
+
+        f = tk.Frame(parent, bg=bg, padx=10, cursor='hand2')
+        f.pack(side=side, fill='y')
+
+        inner = tk.Frame(f, bg=bg)
+        inner.pack(expand=True, pady=10)
+
+        ic = tk.Canvas(inner, width=22, height=22, bg=bg, highlightthickness=0)
+        ic.pack(side='left')
+        self._draw_topbar_icon(ic, icon_type, bg)
+
+        txt = tk.Label(inner, text=label, bg=bg, fg=TOPBAR_ICON_FG,
+                       font=(FF, 8, 'bold'))
+        txt.pack(side='left', padx=(6, 0))
+
+        all_w = [f, inner, ic, txt]
+        if command:
+            for w in all_w:
+                w.bind('<Button-1>', lambda e: command())
+
+        def _on_enter(e):
+            for w in [f, inner, txt]:
+                w.config(bg=hover)
+            ic.config(bg=hover)
+            self._draw_topbar_icon(ic, icon_type, hover)
+
+        def _on_leave(e):
+            for w in [f, inner, txt]:
+                w.config(bg=bg)
+            ic.config(bg=bg)
+            self._draw_topbar_icon(ic, icon_type, bg)
+
+        for w in all_w:
+            w.bind('<Enter>', _on_enter)
+            w.bind('<Leave>', _on_leave)
+        return f
+
     def _build_topbar(self, parent):
         """Build the Gestio-RPS-style top navigation bar."""
-        if self._topbar_clock_job:
-            try:
-                self.root.after_cancel(self._topbar_clock_job)
-            except Exception:
-                pass
-            self._topbar_clock_job = None
-
         now = datetime.now()
         acad_year = f'{now.year}/{now.year + 1}'
         uname = self.current_user.get('username', 'Admin') if self.current_user else 'Admin'
@@ -1811,80 +1862,109 @@ class SchoolReportApp:
         bar = tk.Frame(parent, bg=TOPBAR_RIGHT_BG, height=TOPBAR_H)
         bar.pack(fill='x', side='top')
         bar.pack_propagate(False)
+        self._topbar_bar = bar
+        bar.bind('<Configure>', self._update_topbar_responsive)
+        self._topbar_compact_btn(bar, 'menu', 'Menu', TOPBAR_BTN_BG,
+                                 command=self._toggle_sidebar, side='left')
 
         # ── Right buttons – packed right→left so visual order = left→right ─
         # About
-        self._topbar_btn(bar, 'about', 'About', TOPBAR_BTN_BG,
-                         command=lambda: messagebox.showinfo(
-                             'About', 'School MIS v1.0\nMT Olives Adventist School'))
+        self._topbar_compact_btn(bar, 'about', 'About', TOPBAR_BTN_BG,
+                                 command=lambda: messagebox.showinfo(
+                                     'About', 'School MIS v1.0\nMT Olives Adventist School'))
         # Log Out  (License removed)
-        self._topbar_btn(bar, 'logout', 'Log Out', TOPBAR_BTN_BG,
-                         command=self.logout)
+        self._topbar_compact_btn(bar, 'logout', 'Log Out', TOPBAR_BTN_BG,
+                                 command=self.logout)
 
         # ── User section (purple) ──────────────────────────────────────────
-        usr_f = tk.Frame(bar, bg=TOPBAR_USER_BG, padx=14, cursor='hand2')
+        usr_f = tk.Frame(bar, bg=TOPBAR_USER_BG, padx=10, cursor='hand2')
         usr_f.pack(side='right', fill='y')
 
         # Crisp Canvas person icon
         av = tk.Canvas(usr_f, width=28, height=28,
                        bg=TOPBAR_USER_BG, highlightthickness=0)
-        av.pack(side='left', pady=14)
+        av.pack(side='left', pady=11)
         av.create_oval(7, 1, 21, 15, fill='white', outline='')       # head
         av.create_arc(1, 13, 27, 31, start=0, extent=180,
                       fill='white', outline='')                        # shoulders
 
         tk.Label(usr_f, text=f'  admin | {role}',
                  bg=TOPBAR_USER_BG, fg='white',
-                 font=(FF, 10, 'bold')).pack(side='left')
+                 font=(FF, 9, 'bold')).pack(side='left', pady=14)
 
         # ── Academic year badge (green) ───────────────────────────────────
-        yr_f = tk.Frame(bar, bg=TOPBAR_YR_BG, padx=12, cursor='hand2')
+        yr_f = tk.Frame(bar, bg=TOPBAR_YR_BG, padx=10, cursor='hand2')
         yr_f.pack(side='right', fill='y', padx=(0, 2))
 
         # Canvas checkmark
         ck = tk.Canvas(yr_f, width=22, height=18,
                        bg=TOPBAR_YR_BG, highlightthickness=0)
-        ck.pack(pady=(10, 0))
+        ck.pack(side='left', pady=16)
         ck.create_line(2, 9, 8, 15, fill='white', width=2.5,
                        capstyle='round', joinstyle='round')
         ck.create_line(8, 15, 20, 4, fill='white', width=2.5,
                        capstyle='round', joinstyle='round')
 
         tk.Label(yr_f, text=acad_year, bg=TOPBAR_YR_BG, fg='white',
-                 font=(FF, 7, 'bold')).pack(pady=(0, 10))
+                 font=(FF, 7, 'bold')).pack(side='left', padx=(4, 0), pady=16)
 
         # ── CBC Level Selector ────────────────────────────────────────────────
-        level_frame = tk.Frame(bar, bg=OLIVE_PRIMARY, padx=10, cursor='hand2')
+        level_frame = tk.Frame(bar, bg=OLIVE_PRIMARY, padx=8, cursor='hand2')
         level_frame.pack(side='right', fill='y', padx=(8, 2))
         
-        tk.Label(level_frame, text='📚 CBC Level:', bg=OLIVE_PRIMARY, fg='white',
-                 font=(FF, 9)).pack(side='left', pady=14)
+        tk.Label(level_frame, text='CBC:', bg=OLIVE_PRIMARY, fg='white',
+                 font=(FF, 8, 'bold')).pack(side='left', pady=14)
         
         # Level dropdown
         self.level_var = tk.StringVar(value=self.current_level)
         level_cb = ttk.Combobox(level_frame, textvariable=self.level_var, 
-                                values=[ALL_SCHOOL_LEVEL] + LEVELS, state='readonly', width=24)
-        level_cb.pack(side='left', padx=(5, 0), pady=10)
+                                values=[ALL_SCHOOL_LEVEL] + LEVELS, state='readonly', width=18)
+        level_cb.pack(side='left', padx=(4, 0), pady=11)
         level_cb.bind('<<ComboboxSelected>>', lambda e: self._on_level_change())
         
         # ── Live clock ────────────────────────────────────────────────────
         dt_lbl = tk.Label(bar, bg=TOPBAR_RIGHT_BG, fg='#c8e6c9',
-                          font=(FF, 10), padx=16)
-        dt_lbl.pack(side='right', fill='y')
+                          font=(FF, 9), padx=10)
+        dt_lbl.pack(side='right', fill='y', pady=14)
         self._topbar_clock_label = dt_lbl
-        self._tick_topbar_clock()
+        self._topbar_clock_visible = True
+        self._update_topbar_responsive()
+        self._topbar_clock_generation += 1
+        self._tick_topbar_clock(self._topbar_clock_generation)
 
-    def _tick_topbar_clock(self):
+    def _tick_topbar_clock(self, generation=None):
         try:
+            if generation is not None and generation != self._topbar_clock_generation:
+                self._topbar_clock_job = None
+                return
             if not self._topbar_clock_label or not self._topbar_clock_label.winfo_exists():
                 self._topbar_clock_job = None
                 return
             self._topbar_clock_label.config(
                 text=datetime.now().strftime('%a, %d %b %Y  %H:%M:%S')
             )
-            self._topbar_clock_job = self.root.after(1000, self._tick_topbar_clock)
+            self._topbar_clock_job = self.root.after(
+                1000, lambda gen=generation: self._tick_topbar_clock(gen)
+            )
         except Exception:
             self._topbar_clock_job = None
+
+    def _update_topbar_responsive(self, event=None):
+        """Hide lower-priority topbar elements when the window gets narrow."""
+        if not self._topbar_bar or not self._topbar_bar.winfo_exists():
+            return
+        if not self._topbar_clock_label or not self._topbar_clock_label.winfo_exists():
+            return
+
+        width = event.width if event is not None else self._topbar_bar.winfo_width()
+        should_show_clock = width >= 1500
+
+        if should_show_clock and not self._topbar_clock_visible:
+            self._topbar_clock_label.pack(side='right', fill='y', pady=14)
+            self._topbar_clock_visible = True
+        elif not should_show_clock and self._topbar_clock_visible:
+            self._topbar_clock_label.pack_forget()
+            self._topbar_clock_visible = False
 
     def _on_level_change(self):
         """Handle CBC level change - update subjects and classes"""
@@ -1903,14 +1983,30 @@ class SchoolReportApp:
                 '\n'.join(f'• {s}' for s in self.get_current_subjects()[:5]) +
                 ('...' if len(self.get_current_subjects()) > 5 else ''))
 
+    def _toggle_sidebar(self):
+        """Collapse or expand the sidebar."""
+        self.sidebar_collapsed = not self.sidebar_collapsed
+        self._rebuild_sidebar()
+
+    def _rebuild_sidebar(self):
+        """Re-render the sidebar in its current collapsed/expanded state."""
+        if not self.sidebar_host or not self.sidebar_host.winfo_exists():
+            return
+        for child in self.sidebar_host.winfo_children():
+            child.destroy()
+        self._build_sidebar(self.sidebar_host)
+        if self.active_nav:
+            self._set_nav(self.active_nav)
+
     def _build_sidebar(self, parent):
-        sb = tk.Frame(parent, bg=SIDEBAR_BG, width=238)
+        sidebar_width = 72 if self.sidebar_collapsed else 220
+        sb = tk.Frame(parent, bg=SIDEBAR_BG, width=sidebar_width)
         sb.pack(side='left', fill='y')
         sb.pack_propagate(False)
 
         # --- logo ---
         logo_row = tk.Frame(sb, bg=SIDEBAR_BG)
-        logo_row.pack(fill='x', padx=18, pady=(10, 10))
+        logo_row.pack(fill='x', padx=8 if self.sidebar_collapsed else 14, pady=(8, 8))
 
         if self.logo_img:
             tk.Label(logo_row, image=self.logo_img, bg=SIDEBAR_BG).pack(side='left')
@@ -1920,19 +2016,46 @@ class SchoolReportApp:
             icon_c.create_oval(0, 0, 40, 40, fill=SIDEBAR_ACTIVE, outline=SIDEBAR_ACTIVE)
             icon_c.create_text(20, 20, text='\U0001f393', font=(FF, 17))
 
-        title_box = tk.Frame(logo_row, bg=SIDEBAR_BG)
-        title_box.pack(side='left', padx=10)
-        tk.Label(title_box, text='MT OLIVES', bg=SIDEBAR_BG, fg='white',
-                 font=(FF, 11, 'bold')).pack(anchor='w')
-        tk.Label(title_box, text='ADVENTIST SCHOOL', bg=SIDEBAR_BG, fg=SIDEBAR_TEXT,
-                 font=(FF, 8)).pack(anchor='w')
+        if not self.sidebar_collapsed:
+            title_box = tk.Frame(logo_row, bg=SIDEBAR_BG)
+            title_box.pack(side='left', padx=8)
+            tk.Label(title_box, text='MT OLIVES', bg=SIDEBAR_BG, fg='white',
+                     font=(FF, 10, 'bold')).pack(anchor='w')
+            tk.Label(title_box, text='ADVENTIST SCHOOL', bg=SIDEBAR_BG, fg=SIDEBAR_TEXT,
+                     font=(FF, 7)).pack(anchor='w')
 
-        tk.Frame(sb, bg='#2E7D32', height=1).pack(fill='x', padx=18, pady=10)
+        tk.Frame(sb, bg='#2E7D32', height=1).pack(fill='x', padx=8 if self.sidebar_collapsed else 14, pady=8)
 
         # --- nav items ---
         nav_cfg = self._get_role_based_nav()
-        nav_box = tk.Frame(sb, bg=SIDEBAR_BG)
-        nav_box.pack(fill='x', padx=10)
+        nav_wrap = tk.Frame(sb, bg=SIDEBAR_BG)
+        nav_wrap.pack(fill='both', expand=True, padx=(4, 2) if self.sidebar_collapsed else (8, 4), pady=(0, 6))
+
+        nav_canvas = tk.Canvas(nav_wrap, bg=SIDEBAR_BG, highlightthickness=0, bd=0)
+        nav_scroll = ttk.Scrollbar(nav_wrap, orient='vertical', command=nav_canvas.yview)
+        nav_box = tk.Frame(nav_canvas, bg=SIDEBAR_BG)
+
+        nav_box.bind(
+            '<Configure>',
+            lambda e: nav_canvas.configure(scrollregion=nav_canvas.bbox('all'))
+        )
+
+        nav_window = nav_canvas.create_window((0, 0), window=nav_box, anchor='nw')
+
+        def _resize_sidebar_nav(event):
+            nav_canvas.itemconfigure(nav_window, width=event.width)
+
+        def _scroll_sidebar_nav(event):
+            nav_canvas.yview_scroll(int(-1 * (event.delta / 120)), 'units')
+
+        nav_canvas.bind('<Configure>', _resize_sidebar_nav)
+        nav_canvas.bind('<MouseWheel>', _scroll_sidebar_nav)
+        nav_box.bind('<MouseWheel>', _scroll_sidebar_nav)
+
+        nav_canvas.configure(yscrollcommand=nav_scroll.set)
+        nav_canvas.pack(side='left', fill='both', expand=True)
+        if not self.sidebar_collapsed:
+            nav_scroll.pack(side='right', fill='y')
         self.nav_frames = {}
 
         for item in nav_cfg:
@@ -1944,18 +2067,28 @@ class SchoolReportApp:
 
         # --- bottom ---
         bot = tk.Frame(sb, bg=SIDEBAR_BG)
-        bot.pack(side='bottom', fill='x', padx=18, pady=18)
-        tk.Frame(bot, bg='#2E7D32', height=1).pack(fill='x', pady=(0, 12))
+        bot.pack(side='bottom', fill='x', padx=8 if self.sidebar_collapsed else 14, pady=12)
+        tk.Frame(bot, bg='#2E7D32', height=1).pack(fill='x', pady=(0, 8))
 
         uname = self.current_user.get('username', 'admin') if self.current_user else 'admin'
         email = uname if '@' in uname else uname + '@school.ac'
-        tk.Label(bot, text=email, bg=SIDEBAR_BG, fg=SIDEBAR_TEXT,
-                 font=(FF, 10), anchor='w').pack(fill='x', pady=(0, 8))
+        if not self.sidebar_collapsed:
+            tk.Label(bot, text=email, bg=SIDEBAR_BG, fg=SIDEBAR_TEXT,
+                     font=(FF, 9), anchor='w').pack(fill='x', pady=(0, 6))
 
         so = tk.Frame(bot, bg=SIDEBAR_BG, cursor='hand2')
         so.pack(fill='x')
-        lbl_so = tk.Label(so, text='\u2192  Sign Out', bg=SIDEBAR_BG, fg=SIDEBAR_TEXT,
-                          font=(FF, 11), anchor='w', padx=4, pady=6)
+        sign_out_text = '\u2192' if self.sidebar_collapsed else '\u2192  Sign Out'
+        lbl_so = tk.Label(
+            so,
+            text=sign_out_text,
+            bg=SIDEBAR_BG,
+            fg=SIDEBAR_TEXT,
+            font=(FF, 10),
+            anchor='center' if self.sidebar_collapsed else 'w',
+            padx=4,
+            pady=5
+        )
         lbl_so.pack(fill='x')
 
         for w in (so, lbl_so):
@@ -1981,9 +2114,11 @@ class SchoolReportApp:
                 ('📝', 'Enter Marks', self.show_marks_entry),
                 ('📊', 'Results', self.show_reports),
                 ('📄', 'Report Cards', self.show_report_cards),
+                ('🎓', 'Promotions', self.show_promotions),
 
                 ('section', 'Analytics', None),
                 ('📈', 'Charts', self.show_charts),
+                ('📊', 'Exam Analytics', self.show_exam_analytics),
                 ('📏', 'Grading Scale', self.show_settings_grading),
 
                 ('section', 'System', None),
@@ -2015,30 +2150,40 @@ class SchoolReportApp:
         ]
 
     def _nav_section(self, parent, title: str):
+        if self.sidebar_collapsed:
+            tk.Frame(parent, bg='#2E7D32', height=1).pack(fill='x', padx=10, pady=(6, 4))
+            return
         tk.Label(
             parent,
             text=title.upper(),
             bg=SIDEBAR_BG,
             fg='#c8d6a2',
-            font=(FF, 9, 'bold'),
+            font=(FF, 8, 'bold'),
             anchor='w',
-            padx=12,
-            pady=8,
-        ).pack(fill='x', pady=(8, 2))
+            padx=10,
+            pady=6,
+        ).pack(fill='x', pady=(5, 1))
 
     def _nav_item(self, parent, icon: str, label: str, cmd):
         frame = tk.Frame(parent, bg=SIDEBAR_BG, cursor='hand2')
-        frame.pack(fill='x', pady=2)
+        frame.pack(fill='x', pady=1)
 
-        row = tk.Frame(frame, bg=SIDEBAR_BG, padx=12, pady=9)
+        row = tk.Frame(frame, bg=SIDEBAR_BG, padx=6 if self.sidebar_collapsed else 10, pady=6)
         row.pack(fill='x')
 
         ico = tk.Label(row, text=icon, bg=SIDEBAR_BG, fg=SIDEBAR_TEXT,
-                       font=(FF, 13), width=2, anchor='center')
+                       font=(FF, 12), width=2, anchor='center')
         ico.pack(side='left')
-        txt = tk.Label(row, text=f'  {label}', bg=SIDEBAR_BG, fg=SIDEBAR_TEXT,
-                       font=(FF, 11), anchor='w')
-        txt.pack(side='left', fill='x')
+        txt = tk.Label(
+            row,
+            text='' if self.sidebar_collapsed else f'  {label}',
+            bg=SIDEBAR_BG,
+            fg=SIDEBAR_TEXT,
+            font=(FF, 10),
+            anchor='w'
+        )
+        if not self.sidebar_collapsed:
+            txt.pack(side='left', fill='x')
 
         widgets = [frame, row, ico, txt]
         self.nav_frames[label] = widgets
@@ -5163,6 +5308,760 @@ class SchoolReportApp:
                  font=(FF, 10, 'bold'), padx=18, pady=8, command=dialog.destroy).pack(side='left', padx=(0, 8))
         tk.Button(btn_row, text='Save Comment', bg=GREEN, fg='white',
                  font=(FF, 11), padx=20, pady=8, command=save).pack(side='left')
+
+    # ==================== PROMOTIONS ====================
+    def show_promotions(self):
+        """Show student promotions management interface."""
+        self.clear_frame()
+        self._set_nav('Promotions')
+        self._page_header('Student Promotions', 'Manage student promotions to next class/grade')
+        
+        # Main container with two columns
+        main_container = tk.Frame(self.content_frame, bg=CONTENT_BG)
+        main_container.pack(fill='both', expand=True, padx=10, pady=10)
+        main_container.columnconfigure(0, weight=1)
+        main_container.columnconfigure(1, weight=1)
+        
+        # Left column - Promotion Settings
+        left_frame = tk.Frame(main_container, bg=CARD_BG, relief='flat', bd=1)
+        left_frame.grid(row=0, column=0, sticky='nsew', padx=(0, 5))
+        
+        tk.Label(left_frame, text='Promotion Settings', bg=CARD_BG, fg=TEXT_PRIMARY,
+                 font=(FF, 14, 'bold')).pack(anchor='w', padx=15, pady=(15, 10))
+        
+        # Settings form
+        settings_frame = tk.Frame(left_frame, bg=CARD_BG)
+        settings_frame.pack(fill='x', padx=15, pady=5)
+        
+        # Get current settings
+        settings = promotion_manager.get_settings()
+        
+        # Promotion date
+        tk.Label(settings_frame, text='Promotion Date (MM-DD):', bg=CARD_BG, fg=TEXT_SECONDARY,
+                 font=(FF, 10)).pack(anchor='w', pady=(10, 2))
+        self.promo_date_var = tk.StringVar(value=settings.get('promotion_date', '12-01'))
+        promo_date_entry = tk.Entry(settings_frame, textvariable=self.promo_date_var,
+                                    font=(FF, 10), width=20)
+        promo_date_entry.pack(anchor='w', pady=(0, 10))
+        
+        # Minimum passing average
+        tk.Label(settings_frame, text='Minimum Passing Average (%):', bg=CARD_BG, fg=TEXT_SECONDARY,
+                 font=(FF, 10)).pack(anchor='w', pady=(10, 2))
+        self.min_avg_var = tk.StringVar(value=settings.get('min_passing_average', '50.0'))
+        min_avg_entry = tk.Entry(settings_frame, textvariable=self.min_avg_var,
+                                 font=(FF, 10), width=20)
+        min_avg_entry.pack(anchor='w', pady=(0, 10))
+
+        tk.Label(settings_frame, text='Academic Year Override (optional):', bg=CARD_BG, fg=TEXT_SECONDARY,
+                 font=(FF, 10)).pack(anchor='w', pady=(10, 2))
+        self.promo_year_var = tk.StringVar(value=settings.get('promotion_academic_year', ''))
+        promo_year_entry = tk.Entry(settings_frame, textvariable=self.promo_year_var,
+                                    font=(FF, 10), width=20)
+        promo_year_entry.pack(anchor='w', pady=(0, 10))
+        
+        # Auto-promote enabled
+        self.auto_promote_var = tk.BooleanVar(value=settings.get('auto_promote_enabled', 'false').lower() == 'true')
+        auto_promote_cb = tk.Checkbutton(settings_frame, text='Enable Auto-Promotion',
+                                         variable=self.auto_promote_var,
+                                         bg=CARD_BG, fg=TEXT_PRIMARY,
+                                         font=(FF, 10), selectcolor=CARD_BG)
+        auto_promote_cb.pack(anchor='w', pady=(10, 10))
+        
+        # Save settings button
+        tk.Button(settings_frame, text='Save Settings', bg=GREEN, fg='white',
+                  font=(FF, 10, 'bold'), padx=15, pady=5,
+                  command=self._save_promotion_settings).pack(anchor='w', pady=(10, 0))
+        
+        # Promotion status
+        status_frame = tk.Frame(left_frame, bg=CARD_BG)
+        status_frame.pack(fill='x', padx=15, pady=15)
+        
+        is_due = promotion_manager.is_promotion_due()
+        academic_year = promotion_manager.get_current_academic_year()
+        
+        tk.Label(status_frame, text=f'Current Academic Year:', bg=CARD_BG, fg=TEXT_SECONDARY,
+                 font=(FF, 10)).pack(anchor='w')
+        tk.Label(status_frame, text=academic_year, bg=CARD_BG, fg=TEXT_PRIMARY,
+                 font=(FF, 11, 'bold')).pack(anchor='w', pady=(0, 10))
+        
+        tk.Label(status_frame, text=f'Promotion Due:', bg=CARD_BG, fg=TEXT_SECONDARY,
+                 font=(FF, 10)).pack(anchor='w')
+        status_color = '#2ecc71' if is_due else '#e74c3c'
+        tk.Label(status_frame, text='Yes' if is_due else 'No', bg=CARD_BG, fg=status_color,
+                 font=(FF, 11, 'bold')).pack(anchor='w', pady=(0, 10))
+
+        tk.Label(status_frame, text='Configured Trigger Date:', bg=CARD_BG, fg=TEXT_SECONDARY,
+                 font=(FF, 10)).pack(anchor='w')
+        tk.Label(status_frame, text=settings.get('promotion_date', '12-01'), bg=CARD_BG, fg=TEXT_PRIMARY,
+                 font=(FF, 11, 'bold')).pack(anchor='w', pady=(0, 10))
+        
+        # Right column - Promotion Actions
+        right_frame = tk.Frame(main_container, bg=CARD_BG, relief='flat', bd=1)
+        right_frame.grid(row=0, column=1, sticky='nsew', padx=(5, 0))
+        
+        tk.Label(right_frame, text='Promotion Actions', bg=CARD_BG, fg=TEXT_PRIMARY,
+                 font=(FF, 14, 'bold')).pack(anchor='w', padx=15, pady=(15, 10))
+        
+        # Action buttons
+        actions_frame = tk.Frame(right_frame, bg=CARD_BG)
+        actions_frame.pack(fill='x', padx=15, pady=5)
+        
+        tk.Button(actions_frame, text='Preview Promotions', bg=BLUE, fg='white',
+                  font=(FF, 10, 'bold'), padx=15, pady=8,
+                  command=self._preview_promotions).pack(fill='x', pady=(0, 10))
+        
+        tk.Button(actions_frame, text='Execute Promotions', bg=GREEN, fg='white',
+                  font=(FF, 10, 'bold'), padx=15, pady=8,
+                  command=self._execute_promotions).pack(fill='x', pady=(0, 10))
+        
+        tk.Button(actions_frame, text='View Promotion History', bg=PURPLE, fg='white',
+                  font=(FF, 10, 'bold'), padx=15, pady=8,
+                  command=self._view_promotion_history).pack(fill='x', pady=(0, 10))
+        
+        tk.Button(actions_frame, text='View Audit Log', bg=ORANGE, fg='white',
+                  font=(FF, 10, 'bold'), padx=15, pady=8,
+                  command=self._view_promotion_audit_log).pack(fill='x', pady=(0, 10))
+        
+        # Statistics
+        stats_frame = tk.Frame(right_frame, bg=CARD_BG)
+        stats_frame.pack(fill='x', padx=15, pady=15)
+        
+        stats = promotion_manager.get_promotion_statistics()
+        
+        tk.Label(stats_frame, text='Promotion Statistics', bg=CARD_BG, fg=TEXT_PRIMARY,
+                 font=(FF, 12, 'bold')).pack(anchor='w', pady=(0, 10))
+        
+        tk.Label(stats_frame, text=f'Total Promotions: {stats.get("total_promotions", 0)}',
+                 bg=CARD_BG, fg=TEXT_SECONDARY, font=(FF, 10)).pack(anchor='w')
+        tk.Label(stats_frame, text=f'Promoted: {stats.get("promoted_count", 0)}',
+                 bg=CARD_BG, fg=TEXT_SECONDARY, font=(FF, 10)).pack(anchor='w')
+        tk.Label(stats_frame, text=f'Repeating: {stats.get("repeating_count", 0)}',
+                 bg=CARD_BG, fg=TEXT_SECONDARY, font=(FF, 10)).pack(anchor='w')
+    
+    def _save_promotion_settings(self):
+        """Save promotion settings."""
+        settings = {
+            'promotion_date': self.promo_date_var.get().strip(),
+            'min_passing_average': self.min_avg_var.get().strip(),
+            'promotion_academic_year': self.promo_year_var.get().strip(),
+            'auto_promote_enabled': 'true' if self.auto_promote_var.get() else 'false'
+        }
+
+        success, message = promotion_manager.update_settings(settings)
+        if success:
+            messagebox.showinfo('Success', message)
+            self.show_promotions()
+        else:
+            messagebox.showerror('Error', message)
+    
+    def _preview_promotions(self):
+        """Preview which students will be promoted or repeat."""
+        preview = promotion_manager.get_promotion_preview()
+        
+        # Create preview window
+        preview_window = tk.Toplevel(self.root)
+        preview_window.title('Promotion Preview')
+        preview_window.geometry('800x600')
+        preview_window.configure(bg=CONTENT_BG)
+        
+        # Title
+        tk.Label(preview_window, text='Promotion Preview', bg=CONTENT_BG, fg=TEXT_PRIMARY,
+                 font=(FF, 16, 'bold')).pack(pady=(20, 10))
+        
+        # Summary
+        summary_frame = tk.Frame(preview_window, bg=CARD_BG, relief='flat', bd=1)
+        summary_frame.pack(fill='x', padx=20, pady=10)
+        
+        tk.Label(summary_frame, text='Summary', bg=CARD_BG, fg=TEXT_PRIMARY,
+                 font=(FF, 12, 'bold')).pack(anchor='w', padx=15, pady=(10, 5))
+        
+        tk.Label(summary_frame, text=f'Eligible for Promotion: {len(preview["eligible"])}',
+                 bg=CARD_BG, fg=TEXT_SECONDARY, font=(FF, 10)).pack(anchor='w', padx=15)
+        tk.Label(summary_frame, text=f'Will Repeat: {len(preview["repeating"])}',
+                 bg=CARD_BG, fg=TEXT_SECONDARY, font=(FF, 10)).pack(anchor='w', padx=15)
+        tk.Label(summary_frame, text=f'No Exam Data: {len(preview["no_data"])}',
+                 bg=CARD_BG, fg=TEXT_SECONDARY, font=(FF, 10)).pack(anchor='w', padx=15, pady=(0, 10))
+        tk.Label(summary_frame, text=f'Final Class / No Next Class: {len(preview["terminal"])}',
+                 bg=CARD_BG, fg=TEXT_SECONDARY, font=(FF, 10)).pack(anchor='w', padx=15)
+        tk.Label(summary_frame, text=f'Already Processed This Year: {len(preview["already_processed"])}',
+                 bg=CARD_BG, fg=TEXT_SECONDARY, font=(FF, 10)).pack(anchor='w', padx=15, pady=(0, 10))
+        
+        # Notebook for tabs
+        notebook = ttk.Notebook(preview_window)
+        notebook.pack(fill='both', expand=True, padx=20, pady=10)
+        
+        # Eligible students tab
+        eligible_frame = tk.Frame(notebook, bg=CONTENT_BG)
+        notebook.add(eligible_frame, text=f'Eligible ({len(preview["eligible"])})')
+        
+        if preview['eligible']:
+            cols = ('name', 'admission_no', 'current_class', 'next_class', 'average')
+            tree = ttk.Treeview(eligible_frame, columns=cols, show='headings', style='App.Treeview')
+            tree.heading('name', text='Name')
+            tree.heading('admission_no', text='Admission No')
+            tree.heading('current_class', text='Current Class')
+            tree.heading('next_class', text='Next Class')
+            tree.heading('average', text='Average')
+            
+            for student in preview['eligible']:
+                tree.insert('', 'end', values=(
+                    student.get('name', ''),
+                    student.get('admission_no', ''),
+                    student.get('current_class', ''),
+                    student.get('next_class', ''),
+                    f"{student.get('average_marks', 0):.1f}%"
+                ))
+            
+            tree.pack(fill='both', expand=True, padx=10, pady=10)
+        else:
+            tk.Label(eligible_frame, text='No students eligible for promotion',
+                     bg=CONTENT_BG, fg=TEXT_SECONDARY, font=(FF, 10)).pack(pady=50)
+        
+        # Repeating students tab
+        repeating_frame = tk.Frame(notebook, bg=CONTENT_BG)
+        notebook.add(repeating_frame, text=f'Repeating ({len(preview["repeating"])})')
+        
+        if preview['repeating']:
+            cols = ('name', 'admission_no', 'current_class', 'average')
+            tree = ttk.Treeview(repeating_frame, columns=cols, show='headings', style='App.Treeview')
+            tree.heading('name', text='Name')
+            tree.heading('admission_no', text='Admission No')
+            tree.heading('current_class', text='Current Class')
+            tree.heading('average', text='Average')
+            
+            for student in preview['repeating']:
+                tree.insert('', 'end', values=(
+                    student.get('name', ''),
+                    student.get('admission_no', ''),
+                    student.get('current_class', ''),
+                    f"{student.get('average_marks', 0):.1f}%"
+                ))
+            
+            tree.pack(fill='both', expand=True, padx=10, pady=10)
+        else:
+            tk.Label(repeating_frame, text='No students repeating',
+                     bg=CONTENT_BG, fg=TEXT_SECONDARY, font=(FF, 10)).pack(pady=50)
+
+        no_data_frame = tk.Frame(notebook, bg=CONTENT_BG)
+        notebook.add(no_data_frame, text=f'No Data ({len(preview["no_data"])})')
+
+        if preview['no_data']:
+            cols = ('name', 'admission_no', 'current_class')
+            tree = ttk.Treeview(no_data_frame, columns=cols, show='headings', style='App.Treeview')
+            tree.heading('name', text='Name')
+            tree.heading('admission_no', text='Admission No')
+            tree.heading('current_class', text='Current Class')
+
+            for student in preview['no_data']:
+                tree.insert('', 'end', values=(
+                    student.get('name', ''),
+                    student.get('admission_no', ''),
+                    student.get('current_class', ''),
+                ))
+
+            tree.pack(fill='both', expand=True, padx=10, pady=10)
+        else:
+            tk.Label(no_data_frame, text='All students have marks for the latest exam session',
+                     bg=CONTENT_BG, fg=TEXT_SECONDARY, font=(FF, 10)).pack(pady=50)
+
+        terminal_frame = tk.Frame(notebook, bg=CONTENT_BG)
+        notebook.add(terminal_frame, text=f'Final Class ({len(preview["terminal"])})')
+
+        if preview['terminal']:
+            cols = ('name', 'admission_no', 'current_class', 'average', 'reason')
+            tree = ttk.Treeview(terminal_frame, columns=cols, show='headings', style='App.Treeview')
+            tree.heading('name', text='Name')
+            tree.heading('admission_no', text='Admission No')
+            tree.heading('current_class', text='Current Class')
+            tree.heading('average', text='Average')
+            tree.heading('reason', text='Reason')
+
+            for student in preview['terminal']:
+                tree.insert('', 'end', values=(
+                    student.get('name', ''),
+                    student.get('admission_no', ''),
+                    student.get('current_class', ''),
+                    f"{float(student.get('average_marks') or 0):.1f}%",
+                    student.get('reason', ''),
+                ))
+
+            tree.pack(fill='both', expand=True, padx=10, pady=10)
+        else:
+            tk.Label(terminal_frame, text='Every passing class has a configured next class',
+                     bg=CONTENT_BG, fg=TEXT_SECONDARY, font=(FF, 10)).pack(pady=50)
+
+        processed_frame = tk.Frame(notebook, bg=CONTENT_BG)
+        notebook.add(processed_frame, text=f'Processed ({len(preview["already_processed"])})')
+
+        if preview['already_processed']:
+            cols = ('name', 'admission_no', 'current_class', 'status', 'to_class', 'promotion_date')
+            tree = ttk.Treeview(processed_frame, columns=cols, show='headings', style='App.Treeview')
+            tree.heading('name', text='Name')
+            tree.heading('admission_no', text='Admission No')
+            tree.heading('current_class', text='Current Class')
+            tree.heading('status', text='Status')
+            tree.heading('to_class', text='Processed To')
+            tree.heading('promotion_date', text='Processed On')
+
+            for student in preview['already_processed']:
+                tree.insert('', 'end', values=(
+                    student.get('name', ''),
+                    student.get('admission_no', ''),
+                    student.get('current_class', ''),
+                    student.get('status', ''),
+                    student.get('to_class', ''),
+                    (student.get('promotion_date', '') or '')[:10],
+                ))
+
+            tree.pack(fill='both', expand=True, padx=10, pady=10)
+        else:
+            tk.Label(processed_frame, text='No students have been processed for this academic year yet',
+                     bg=CONTENT_BG, fg=TEXT_SECONDARY, font=(FF, 10)).pack(pady=50)
+        
+        # Close button
+        tk.Button(preview_window, text='Close', bg=GREEN, fg='white',
+                  font=(FF, 10, 'bold'), padx=20, pady=8,
+                  command=preview_window.destroy).pack(pady=20)
+    
+    def _execute_promotions(self):
+        """Execute student promotions."""
+        preview = promotion_manager.get_promotion_preview()
+        total_to_process = len(preview['eligible']) + len(preview['repeating'])
+
+        if total_to_process == 0:
+            messagebox.showinfo(
+                'Nothing To Process',
+                'No students are ready for batch promotion.\n\n'
+                f'No data: {len(preview["no_data"])}\n'
+                f'Final class / no next class: {len(preview["terminal"])}\n'
+                f'Already processed this year: {len(preview["already_processed"])}'
+            )
+            return
+
+        # Confirm execution
+        if not messagebox.askyesno('Confirm Promotion',
+                                   'Are you sure you want to execute promotions?\n\n'
+                                   f'Promote: {len(preview["eligible"])}\n'
+                                   f'Repeat: {len(preview["repeating"])}\n'
+                                   f'No data (skipped): {len(preview["no_data"])}\n'
+                                   f'Final class / no next class (skipped): {len(preview["terminal"])}\n'
+                                   f'Already processed this year (skipped): {len(preview["already_processed"])}\n\n'
+                                   'This will update student classes and cannot be easily undone.'):
+            return
+        
+        # Get current user ID
+        user_id = self.current_user.get('id') if self.current_user else None
+        
+        # Execute promotion
+        success, message, results = promotion_manager.execute_promotion(
+            class_name=None,
+            performed_by=user_id,
+            dry_run=False
+        )
+        
+        if success:
+            messagebox.showinfo('Success',
+                                f'Promotions completed successfully!\n\n'
+                                f'Promoted: {results.get("promoted", 0)}\n'
+                                f'Repeating: {results.get("repeating", 0)}\n'
+                                f'No data skipped: {results.get("no_data", 0)}\n'
+                                f'Final class skipped: {results.get("terminal", 0)}\n'
+                                f'Already processed skipped: {results.get("already_processed", 0)}\n'
+                                f'Failed: {results.get("failed", 0)}\n'
+                                f'Batch ID: {results.get("batch_id", "n/a")}')
+            # Refresh the page
+            self.show_promotions()
+        else:
+            errors = results.get('errors', [])[:5] if isinstance(results, dict) else []
+            error_text = '\n'.join(errors)
+            messagebox.showerror(
+                'Error',
+                f'Promotion failed: {message}'
+                + (f'\n\nDetails:\n{error_text}' if error_text else '')
+            )
+    
+    def _view_promotion_history(self):
+        """View promotion history."""
+        history = promotion_manager.get_promotion_history()
+        
+        # Create history window
+        history_window = tk.Toplevel(self.root)
+        history_window.title('Promotion History')
+        history_window.geometry('900x600')
+        history_window.configure(bg=CONTENT_BG)
+        
+        # Title
+        tk.Label(history_window, text='Promotion History', bg=CONTENT_BG, fg=TEXT_PRIMARY,
+                 font=(FF, 16, 'bold')).pack(pady=(20, 10))
+        
+        # Treeview
+        cols = ('student_name', 'admission_no', 'from_class', 'to_class', 'status', 'academic_year', 'promotion_date', 'reason')
+        tree = ttk.Treeview(history_window, columns=cols, show='headings', style='App.Treeview')
+        tree.heading('student_name', text='Student Name')
+        tree.heading('admission_no', text='Admission No')
+        tree.heading('from_class', text='From Class')
+        tree.heading('to_class', text='To Class')
+        tree.heading('status', text='Status')
+        tree.heading('academic_year', text='Academic Year')
+        tree.heading('promotion_date', text='Promotion Date')
+        tree.heading('reason', text='Reason')
+        
+        for record in history:
+            tree.insert('', 'end', values=(
+                record.get('student_name', ''),
+                record.get('admission_no', ''),
+                record.get('from_class', ''),
+                record.get('to_class', ''),
+                record.get('status', ''),
+                record.get('academic_year', ''),
+                record.get('promotion_date', '')[:10] if record.get('promotion_date') else '',
+                record.get('reason', ''),
+            ))
+        
+        tree.pack(fill='both', expand=True, padx=20, pady=10)
+        
+        # Close button
+        tk.Button(history_window, text='Close', bg=GREEN, fg='white',
+                  font=(FF, 10, 'bold'), padx=20, pady=8,
+                  command=history_window.destroy).pack(pady=20)
+    
+    def _view_promotion_audit_log(self):
+        """View promotion audit log."""
+        audit_log = promotion_manager.get_promotion_audit_log(limit=100)
+        
+        # Create audit log window
+        audit_window = tk.Toplevel(self.root)
+        audit_window.title('Promotion Audit Log')
+        audit_window.geometry('900x600')
+        audit_window.configure(bg=CONTENT_BG)
+        
+        # Title
+        tk.Label(audit_window, text='Promotion Audit Log', bg=CONTENT_BG, fg=TEXT_PRIMARY,
+                 font=(FF, 16, 'bold')).pack(pady=(20, 10))
+        
+        # Treeview
+        cols = ('batch_id', 'action', 'details', 'performed_by', 'performed_at')
+        tree = ttk.Treeview(audit_window, columns=cols, show='headings', style='App.Treeview')
+        tree.heading('batch_id', text='Batch ID')
+        tree.heading('action', text='Action')
+        tree.heading('details', text='Details')
+        tree.heading('performed_by', text='Performed By')
+        tree.heading('performed_at', text='Performed At')
+        
+        for log in audit_log:
+            tree.insert('', 'end', values=(
+                log.get('promotion_batch_id', ''),
+                log.get('action', ''),
+                log.get('details', ''),
+                log.get('performed_by_name', 'System'),
+                log.get('performed_at', '')[:19] if log.get('performed_at') else ''
+            ))
+        
+        tree.pack(fill='both', expand=True, padx=20, pady=10)
+        
+        # Close button
+        tk.Button(audit_window, text='Close', bg=GREEN, fg='white',
+                  font=(FF, 10, 'bold'), padx=20, pady=8,
+                  command=audit_window.destroy).pack(pady=20)
+
+    # ==================== EXAM ANALYTICS ====================
+    def show_exam_analytics(self):
+        """Show exam analytics and comparison interface."""
+        self.clear_frame()
+        self._set_nav('Exam Analytics')
+        self._page_header('Exam Analytics', 'Compare exam types and analyze deviations')
+        
+        # Main container
+        main_container = tk.Frame(self.content_frame, bg=CONTENT_BG)
+        main_container.pack(fill='both', expand=True, padx=10, pady=10)
+        
+        # Top section - Filters and controls
+        top_frame = tk.Frame(main_container, bg=CARD_BG, relief='flat', bd=1)
+        top_frame.pack(fill='x', pady=(0, 10))
+        
+        tk.Label(top_frame, text='Analysis Filters', bg=CARD_BG, fg=TEXT_PRIMARY,
+                 font=(FF, 14, 'bold')).pack(anchor='w', padx=15, pady=(15, 10))
+        
+        # Filter controls
+        filter_frame = tk.Frame(top_frame, bg=CARD_BG)
+        filter_frame.pack(fill='x', padx=15, pady=5)
+        
+        # Class filter
+        tk.Label(filter_frame, text='Class:', bg=CARD_BG, fg=TEXT_SECONDARY,
+                 font=(FF, 10)).grid(row=0, column=0, sticky='w', padx=(0, 10))
+        self.analytics_class_var = tk.StringVar(value='All Classes')
+        class_options = ['All Classes'] + [c['name'] for c in db.get_all_classes()]
+        class_cb = ttk.Combobox(filter_frame, textvariable=self.analytics_class_var,
+                                values=class_options, state='readonly', width=20, style='App.TCombobox')
+        class_cb.grid(row=0, column=1, padx=(0, 20))
+        
+        # Term filter
+        tk.Label(filter_frame, text='Term:', bg=CARD_BG, fg=TEXT_SECONDARY,
+                 font=(FF, 10)).grid(row=0, column=2, sticky='w', padx=(0, 10))
+        self.analytics_term_var = tk.StringVar(value='All Terms')
+        term_options = ['All Terms', 'One', 'Two', 'Three']
+        term_cb = ttk.Combobox(filter_frame, textvariable=self.analytics_term_var,
+                               values=term_options, state='readonly', width=15, style='App.TCombobox')
+        term_cb.grid(row=0, column=3, padx=(0, 20))
+        
+        # Exam type filter
+        tk.Label(filter_frame, text='Exam Type:', bg=CARD_BG, fg=TEXT_SECONDARY,
+                 font=(FF, 10)).grid(row=0, column=4, sticky='w', padx=(0, 10))
+        self.analytics_exam_type_var = tk.StringVar(value='All Types')
+        available_exam_types = {
+            row.get('exam_type', '')
+            for row in db.get_available_exam_sessions()
+            if str(row.get('exam_type', '')).strip()
+        }
+        exam_type_options = ['All Types'] + sorted(
+            available_exam_types.union({'Opener', 'Mid-Term', 'End-Term'}),
+            key=lambda value: {'Opener': 1, 'Quiz': 2, 'Assignment': 3, 'Mid-Term': 4, 'CAT': 5, 'End-Term': 6}.get(value, 999)
+        )
+        exam_type_cb = ttk.Combobox(filter_frame, textvariable=self.analytics_exam_type_var,
+                                    values=exam_type_options, state='readonly', width=15, style='App.TCombobox')
+        exam_type_cb.grid(row=0, column=5, padx=(0, 20))
+        
+        # Action buttons
+        btn_frame = tk.Frame(top_frame, bg=CARD_BG)
+        btn_frame.pack(fill='x', padx=15, pady=(10, 15))
+        
+        tk.Button(btn_frame, text='Run Analysis', bg=GREEN, fg='white',
+                  font=(FF, 10, 'bold'), padx=15, pady=5,
+                  command=self._run_exam_analysis).pack(side='left', padx=(0, 10))
+        tk.Button(btn_frame, text='Generate Report', bg=BLUE, fg='white',
+                  font=(FF, 10, 'bold'), padx=15, pady=5,
+                  command=self._generate_analytics_report).pack(side='left', padx=(0, 10))
+        tk.Button(btn_frame, text='Export Charts', bg=PURPLE, fg='white',
+                  font=(FF, 10, 'bold'), padx=15, pady=5,
+                  command=self._export_analytics_charts).pack(side='left')
+        
+        # Results section
+        results_frame = tk.Frame(main_container, bg=CONTENT_BG)
+        results_frame.pack(fill='both', expand=True)
+        
+        # Left column - Summary
+        left_frame = tk.Frame(results_frame, bg=CARD_BG, relief='flat', bd=1)
+        left_frame.pack(side='left', fill='both', expand=True, padx=(0, 5))
+        
+        tk.Label(left_frame, text='Analysis Summary', bg=CARD_BG, fg=TEXT_PRIMARY,
+                 font=(FF, 12, 'bold')).pack(anchor='w', padx=15, pady=(15, 10))
+        
+        # Summary text
+        self.analytics_summary_text = tk.Text(left_frame, wrap='word', font=(FF, 10),
+                                              bg=CARD_BG, fg=TEXT_PRIMARY, height=15)
+        self.analytics_summary_text.pack(fill='both', expand=True, padx=15, pady=(0, 15))
+        self.analytics_summary_text.insert('1.0', 'Click "Run Analysis" to generate exam analytics...')
+        self.analytics_summary_text.config(state='disabled')
+        
+        # Right column - Deviation metrics
+        right_frame = tk.Frame(results_frame, bg=CARD_BG, relief='flat', bd=1)
+        right_frame.pack(side='right', fill='both', expand=True, padx=(5, 0))
+        
+        tk.Label(right_frame, text='Deviation Metrics', bg=CARD_BG, fg=TEXT_PRIMARY,
+                 font=(FF, 12, 'bold')).pack(anchor='w', padx=15, pady=(15, 10))
+        
+        # Deviation metrics treeview
+        cols = ('metric', 'value', 'severity')
+        self.analytics_tree = ttk.Treeview(right_frame, columns=cols, show='headings', style='App.Treeview', height=12)
+        self.analytics_tree.heading('metric', text='Metric')
+        self.analytics_tree.heading('value', text='Value')
+        self.analytics_tree.heading('severity', text='Severity')
+        
+        self.analytics_tree.column('metric', width=200)
+        self.analytics_tree.column('value', width=100)
+        self.analytics_tree.column('severity', width=100)
+        
+        self.analytics_tree.pack(fill='both', expand=True, padx=15, pady=(0, 15))
+        
+        # Bottom section - Subject deviation view
+        bottom_frame = tk.Frame(main_container, bg=CARD_BG, relief='flat', bd=1)
+        bottom_frame.pack(fill='x', pady=(10, 0))
+        
+        tk.Label(bottom_frame, text='Subject Deviation View', bg=CARD_BG, fg=TEXT_PRIMARY,
+                 font=(FF, 12, 'bold')).pack(anchor='w', padx=15, pady=(15, 10))
+        
+        # Subject deviation display area
+        self.analytics_chart_frame = tk.Frame(bottom_frame, bg=CARD_BG)
+        self.analytics_chart_frame.pack(fill='both', expand=True, padx=15, pady=(0, 15))
+        
+        subject_cols = ('subject', 'pair', 'baseline', 'comparison', 'deviation', 'pass_change')
+        self.analytics_subject_tree = ttk.Treeview(
+            self.analytics_chart_frame,
+            columns=subject_cols,
+            show='headings',
+            style='App.Treeview',
+            height=10
+        )
+        self.analytics_subject_tree.heading('subject', text='Subject')
+        self.analytics_subject_tree.heading('pair', text='Exam Pair')
+        self.analytics_subject_tree.heading('baseline', text='Baseline Mean')
+        self.analytics_subject_tree.heading('comparison', text='Compared Mean')
+        self.analytics_subject_tree.heading('deviation', text='Deviation')
+        self.analytics_subject_tree.heading('pass_change', text='Pass Rate Shift')
+        self.analytics_subject_tree.column('subject', width=150)
+        self.analytics_subject_tree.column('pair', width=170)
+        self.analytics_subject_tree.column('baseline', width=110, anchor='center')
+        self.analytics_subject_tree.column('comparison', width=120, anchor='center')
+        self.analytics_subject_tree.column('deviation', width=95, anchor='center')
+        self.analytics_subject_tree.column('pass_change', width=110, anchor='center')
+        self.analytics_subject_tree.pack(fill='both', expand=True)
+    
+    def _run_exam_analysis(self):
+        """Run exam analysis based on selected filters."""
+        # Get filter values
+        class_name = self.analytics_class_var.get()
+        term = self.analytics_term_var.get()
+        exam_type = self.analytics_exam_type_var.get()
+        
+        # Convert 'All' options to None
+        class_name = None if class_name == 'All Classes' else class_name
+        term = None if term == 'All Terms' else term
+        exam_type = None if exam_type == 'All Types' else exam_type
+        
+        # Get exam sessions
+        sessions = exam_analytics.get_exam_sessions(
+            class_name=class_name,
+            term=term,
+            exam_type=exam_type
+        )
+        
+        if len(sessions) < 2:
+            messagebox.showwarning('Insufficient Data',
+                                 'At least 2 exam sessions are required for comparison analysis.')
+            return
+        
+        # Run comparison
+        comparison = exam_analytics.compare_exam_sessions(sessions)
+        
+        # Update summary
+        self.analytics_summary_text.config(state='normal')
+        self.analytics_summary_text.delete('1.0', 'end')
+        
+        summary = f"Exam Analysis Results\n{'='*50}\n\n"
+        summary += f"Sessions Analyzed: {len(sessions)}\n"
+        summary += f"Overall Similarity Score: {comparison.overall_similarity_score:.1f}/100\n\n"
+        if comparison.anova_results:
+            summary += f"ANOVA: {comparison.anova_results.get('interpretation', 'N/A')}\n"
+        if comparison.time_series_results:
+            summary += f"Trend: {comparison.time_series_results.get('interpretation', 'N/A')}\n"
+        
+        if comparison.exam_type_summaries:
+            summary += "\nExam Type Summary:\n"
+            for item in comparison.exam_type_summaries:
+                summary += (
+                    f"- {item['exam_type']}: mean {item['mean_score']:.1f}, "
+                    f"pass {item['pass_rate']:.1f}%, difficulty {item['difficulty_index']:.3f}\n"
+                )
+            summary += "\n"
+        
+        summary += "Patterns Identified:\n"
+        for pattern in comparison.patterns:
+            summary += f"• {pattern}\n"
+        
+        summary += "\nAnomalies Detected:\n"
+        if comparison.anomalies:
+            for anomaly in comparison.anomalies:
+                summary += f"• {anomaly}\n"
+        else:
+            summary += "• No significant anomalies detected\n"
+        
+        summary += "\nRecommendations:\n"
+        for i, rec in enumerate(comparison.recommendations, 1):
+            summary += f"{i}. {rec}\n"
+        
+        self.analytics_summary_text.insert('1.0', summary)
+        self.analytics_summary_text.config(state='disabled')
+        
+        # Update deviation metrics treeview
+        for item in self.analytics_tree.get_children():
+            self.analytics_tree.delete(item)
+        
+        for dev in comparison.deviations:
+            metric_name = dev.metric.value.replace('_', ' ').title()
+            self.analytics_tree.insert('', 'end', values=(
+                metric_name,
+                f"{dev.value:.3f}",
+                dev.severity.upper()
+            ))
+        
+        for item in self.analytics_subject_tree.get_children():
+            self.analytics_subject_tree.delete(item)
+        
+        for row in comparison.subject_deviation_rows:
+            self.analytics_subject_tree.insert('', 'end', values=(
+                row.get('subject', ''),
+                f"{row.get('baseline_exam_type', '')} -> {row.get('comparison_exam_type', '')}",
+                f"{row.get('baseline_mean', 0):.1f}",
+                f"{row.get('comparison_mean', 0):.1f}",
+                f"{row.get('score_deviation', 0):+.1f}",
+                f"{row.get('pass_rate_deviation', 0):+.1f}%",
+            ))
+        
+        # Store comparison for later use
+        self.current_comparison = comparison
+        
+        messagebox.showinfo('Analysis Complete',
+                           f'Analysis completed successfully!\n\n'
+                           f'Sessions analyzed: {len(sessions)}\n'
+                           f'Similarity score: {comparison.overall_similarity_score:.1f}/100')
+    
+    def _generate_analytics_report(self):
+        """Generate and display a detailed analytics report."""
+        if not hasattr(self, 'current_comparison'):
+            messagebox.showwarning('No Analysis', 'Please run an analysis first.')
+            return
+        
+        # Generate report
+        report = exam_analytics.generate_comparison_report(self.current_comparison)
+        
+        # Create report window
+        report_window = tk.Toplevel(self.root)
+        report_window.title('Exam Analytics Report')
+        report_window.geometry('800x600')
+        report_window.configure(bg=CONTENT_BG)
+        
+        # Title
+        tk.Label(report_window, text='Exam Analytics Report', bg=CONTENT_BG, fg=TEXT_PRIMARY,
+                 font=(FF, 16, 'bold')).pack(pady=(20, 10))
+        
+        # Report text
+        report_text = tk.Text(report_window, wrap='word', font=(FF, 10))
+        report_text.pack(fill='both', expand=True, padx=20, pady=10)
+        report_text.insert('1.0', report)
+        report_text.config(state='disabled')
+        
+        # Scrollbar
+        scrollbar = ttk.Scrollbar(report_window, orient='vertical', command=report_text.yview)
+        scrollbar.pack(side='right', fill='y', padx=(0, 20), pady=10)
+        report_text.config(yscrollcommand=scrollbar.set)
+        
+        # Close button
+        tk.Button(report_window, text='Close', bg=GREEN, fg='white',
+                  font=(FF, 10, 'bold'), padx=20, pady=8,
+                  command=report_window.destroy).pack(pady=20)
+    
+    def _export_analytics_charts(self):
+        """Export analytics charts to files."""
+        if not hasattr(self, 'current_comparison'):
+            messagebox.showwarning('No Analysis', 'Please run an analysis first.')
+            return
+        
+        # Ask for export directory
+        export_dir = filedialog.askdirectory(title='Select Export Directory')
+        if not export_dir:
+            return
+        
+        try:
+            # Create dashboard charts
+            charts = exam_analytics.create_comparison_dashboard(
+                self.current_comparison, export_dir
+            )
+            
+            messagebox.showinfo('Export Complete',
+                               f'Charts exported successfully to:\n{export_dir}\n\n'
+                               f'Files created:\n' + '\n'.join(charts.values()))
+        except Exception as e:
+            messagebox.showerror('Export Error', f'Failed to export charts: {str(e)}')
 
     # ==================== STUDENTS ====================
     def show_students(self):

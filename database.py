@@ -3,6 +3,7 @@ Database module for School Report Management System
 Uses SQLite for local data storage
 """
 
+import re
 import sqlite3
 import uuid
 from datetime import datetime
@@ -228,6 +229,47 @@ class Database:
                 error_message TEXT NOT NULL DEFAULT '',
                 sent_at TEXT NOT NULL,
                 FOREIGN KEY (student_id) REFERENCES students(id) ON DELETE CASCADE
+            )
+        ''')
+
+        # Promotion history table
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS promotion_history (
+                id TEXT PRIMARY KEY,
+                student_id TEXT NOT NULL,
+                from_class TEXT NOT NULL,
+                to_class TEXT NOT NULL,
+                promotion_date TEXT NOT NULL,
+                academic_year TEXT NOT NULL,
+                status TEXT NOT NULL DEFAULT 'promoted',
+                reason TEXT NOT NULL DEFAULT '',
+                created_at TEXT NOT NULL,
+                FOREIGN KEY (student_id) REFERENCES students(id) ON DELETE CASCADE
+            )
+        ''')
+        cursor.execute('CREATE INDEX IF NOT EXISTS idx_promotion_history_student_year ON promotion_history(student_id, academic_year)')
+        cursor.execute('CREATE INDEX IF NOT EXISTS idx_promotion_history_year ON promotion_history(academic_year)')
+
+        # Promotion audit log table
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS promotion_audit_log (
+                id TEXT PRIMARY KEY,
+                promotion_batch_id TEXT NOT NULL,
+                action TEXT NOT NULL,
+                details TEXT NOT NULL DEFAULT '',
+                performed_by TEXT,
+                performed_at TEXT NOT NULL,
+                FOREIGN KEY (performed_by) REFERENCES users(id) ON DELETE SET NULL
+            )
+        ''')
+        cursor.execute('CREATE INDEX IF NOT EXISTS idx_promotion_audit_batch ON promotion_audit_log(promotion_batch_id)')
+        cursor.execute('CREATE INDEX IF NOT EXISTS idx_promotion_audit_time ON promotion_audit_log(performed_at)')
+
+        # Promotion settings table
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS promotion_settings (
+                key TEXT PRIMARY KEY,
+                value TEXT NOT NULL DEFAULT ''
             )
         ''')
 
@@ -1329,6 +1371,511 @@ class Database:
         rows = cursor.fetchall()
         conn.close()
         return [dict(r) for r in rows]
+
+    # ── Promotion Management ────────────────────────────────────────────────
+    def get_promotion_setting(self, key: str, default: str = '') -> str:
+        """Get a promotion setting value."""
+        conn = self.get_connection()
+        cursor = conn.cursor()
+        cursor.execute('SELECT value FROM promotion_settings WHERE key = ?', (str(key).strip(),))
+        row = cursor.fetchone()
+        conn.close()
+        return str(row['value']) if row else default
+
+    def set_promotion_setting(self, key: str, value: str) -> bool:
+        """Set a promotion setting value."""
+        conn = self.get_connection()
+        cursor = conn.cursor()
+        cursor.execute(
+            'INSERT OR REPLACE INTO promotion_settings (key, value) VALUES (?, ?)',
+            (str(key).strip(), str(value or ''))
+        )
+        conn.commit()
+        conn.close()
+        return True
+
+    def get_promotion_settings(self, keys: List[str]) -> Dict[str, str]:
+        """Get multiple promotion settings."""
+        return {key: self.get_promotion_setting(key, '') for key in keys}
+
+    def _get_level_sort_order(self, level: str) -> int:
+        level_name = str(level or '').strip().lower()
+        level_order = {
+            'pre-primary': 0,
+            'lower primary (grade 1-3)': 1,
+            'upper primary (grade 4-6)': 2,
+            'junior school (grade 7-9)': 3,
+        }
+        return level_order.get(level_name, 99)
+
+    def _get_class_sort_number(self, class_name: str) -> int:
+        class_label = str(class_name or '').strip().lower()
+        aliases = {
+            'baby class': -4,
+            'play group': -3,
+            'pp1': -2,
+            'pre-primary 1': -2,
+            'pp2': -1,
+            'pre-primary 2': -1,
+        }
+        if class_label in aliases:
+            return aliases[class_label]
+
+        match = re.search(r'(\d+)', class_label)
+        if match:
+            return int(match.group(1))
+        return 10_000
+
+    def get_class_progression_order(self) -> List[str]:
+        """Get the ordered list of classes for promotion progression."""
+        classes = self.get_all_classes()
+        sorted_classes = sorted(
+            classes,
+            key=lambda x: (
+                self._get_level_sort_order(x.get('level', '')),
+                self._get_class_sort_number(x.get('name', '')),
+                str(x.get('name', '')).strip().lower(),
+            )
+        )
+        return [c['name'] for c in sorted_classes]
+
+    def get_next_class(self, current_class: str) -> Optional[str]:
+        """Get the next class in the progression order."""
+        progression = self.get_class_progression_order()
+        try:
+            current_index = progression.index(current_class)
+            if current_index < len(progression) - 1:
+                return progression[current_index + 1]
+        except ValueError:
+            pass
+        return None
+
+    def get_latest_exam_session_for_class(self, class_name: str) -> Optional[Dict]:
+        """Return the most recent exam session recorded for a class."""
+        conn = self.get_connection()
+        cursor = conn.cursor()
+        cursor.execute(
+            '''
+            SELECT
+                m.term,
+                m.exam_type,
+                MAX(COALESCE(NULLIF(m.updated_at, ''), m.created_at)) AS recorded_at
+            FROM marks m
+            JOIN students s ON m.student_id = s.id
+            WHERE s.class = ?
+            GROUP BY m.term, m.exam_type
+            ORDER BY recorded_at DESC, m.term DESC, m.exam_type DESC
+            LIMIT 1
+            ''',
+            (class_name,)
+        )
+        row = cursor.fetchone()
+        conn.close()
+        return dict(row) if row else None
+
+    def _get_students_with_promotion_averages(self, class_name: str) -> Tuple[Optional[Dict], List[Dict]]:
+        latest_exam = self.get_latest_exam_session_for_class(class_name)
+        if not latest_exam:
+            return None, []
+
+        conn = self.get_connection()
+        cursor = conn.cursor()
+        cursor.execute(
+            '''
+            SELECT
+                s.id,
+                s.name,
+                s.admission_no,
+                s.class,
+                s.stream,
+                AVG(m.marks) AS average_marks,
+                COUNT(m.id) AS marks_count
+            FROM students s
+            LEFT JOIN marks m
+                ON s.id = m.student_id
+               AND m.term = ?
+               AND m.exam_type = ?
+            WHERE s.class = ?
+            GROUP BY s.id, s.name, s.admission_no, s.class, s.stream
+            ORDER BY s.name
+            ''',
+            (latest_exam['term'], latest_exam['exam_type'], class_name)
+        )
+        rows = []
+        for row in cursor.fetchall():
+            item = dict(row)
+            item['term'] = latest_exam['term']
+            item['exam_type'] = latest_exam['exam_type']
+            item['recorded_at'] = latest_exam.get('recorded_at')
+            rows.append(item)
+        conn.close()
+        return latest_exam, rows
+
+    def get_students_eligible_for_promotion(self, class_name: str, min_average: float = 50.0) -> List[Dict]:
+        """Get students eligible for promotion from a class based on their performance."""
+        _, students = self._get_students_with_promotion_averages(class_name)
+        eligible = [
+            student for student in students
+            if student.get('marks_count', 0) > 0 and student.get('average_marks') is not None
+            and float(student['average_marks']) >= float(min_average)
+        ]
+        return sorted(eligible, key=lambda item: (-float(item.get('average_marks') or 0), item.get('name', '')))
+
+    def get_students_repeating(self, class_name: str, min_average: float = 50.0) -> List[Dict]:
+        """Get students who should repeat the class based on performance."""
+        _, students = self._get_students_with_promotion_averages(class_name)
+        repeating = [
+            student for student in students
+            if student.get('marks_count', 0) > 0 and student.get('average_marks') is not None
+            and float(student['average_marks']) < float(min_average)
+        ]
+        return sorted(repeating, key=lambda item: (float(item.get('average_marks') or 0), item.get('name', '')))
+
+    def get_students_without_promotion_data(self, class_name: str) -> List[Dict]:
+        """Get students in a class who have no marks for the latest exam session."""
+        _, students = self._get_students_with_promotion_averages(class_name)
+        no_data = [student for student in students if int(student.get('marks_count') or 0) == 0]
+        return sorted(no_data, key=lambda item: item.get('name', ''))
+
+    def has_promotion_history(self, academic_year: str, student_id: str = None) -> bool:
+        """Return True when promotion decisions already exist for the academic year."""
+        conn = self.get_connection()
+        cursor = conn.cursor()
+        if student_id:
+            cursor.execute(
+                'SELECT 1 FROM promotion_history WHERE academic_year = ? AND student_id = ? LIMIT 1',
+                (academic_year, student_id)
+            )
+        else:
+            cursor.execute(
+                'SELECT 1 FROM promotion_history WHERE academic_year = ? LIMIT 1',
+                (academic_year,)
+            )
+        row = cursor.fetchone()
+        conn.close()
+        return row is not None
+
+    def _resolve_promotion_actor(self, cursor, performed_by: str = None) -> Optional[str]:
+        actor_id = str(performed_by or '').strip()
+        if not actor_id:
+            return None
+        cursor.execute('SELECT id FROM users WHERE id = ?', (actor_id,))
+        row = cursor.fetchone()
+        return row['id'] if row else None
+
+    def _insert_promotion_audit_entry(self, cursor, batch_id: str, action: str, details: str,
+                                      performed_by: str = None, performed_at: str = None) -> None:
+        cursor.execute(
+            '''INSERT INTO promotion_audit_log
+               (id, promotion_batch_id, action, details, performed_by, performed_at)
+               VALUES (?, ?, ?, ?, ?, ?)''',
+            (
+                str(uuid.uuid4()),
+                batch_id,
+                action,
+                str(details or ''),
+                performed_by,
+                performed_at or datetime.now().isoformat(),
+            )
+        )
+
+    def _write_promotion_audit_entry(self, batch_id: str, action: str, details: str,
+                                     performed_by: str = None, performed_at: str = None) -> None:
+        conn = self.get_connection()
+        cursor = conn.cursor()
+        try:
+            actor_id = self._resolve_promotion_actor(cursor, performed_by)
+            self._insert_promotion_audit_entry(cursor, batch_id, action, details, actor_id, performed_at)
+            conn.commit()
+        finally:
+            conn.close()
+
+    def promote_student(self, student_id: str, from_class: str, to_class: str,
+                       academic_year: str, status: str = 'promoted',
+                       reason: str = '', performed_by: str = None) -> Tuple[bool, str]:
+        """Promote a single student to the next class."""
+        success, message, _ = self.batch_promote_students(
+            [
+                {
+                    'student_id': student_id,
+                    'from_class': from_class,
+                    'to_class': to_class,
+                    'status': status,
+                    'reason': reason,
+                }
+            ],
+            academic_year,
+            performed_by,
+        )
+        return success, message
+
+    def batch_promote_students(self, promotions: List[Dict], academic_year: str,
+                              performed_by: str = None) -> Tuple[bool, str, Dict]:
+        """Promote multiple students in a batch with transaction support."""
+        conn = self.get_connection()
+        cursor = conn.cursor()
+        batch_id = str(uuid.uuid4())
+        now = datetime.now().isoformat()
+        results = {
+            'batch_id': batch_id,
+            'academic_year': academic_year,
+            'promoted': 0,
+            'repeating': 0,
+            'failed': 0,
+            'total': len(promotions),
+            'errors': []
+        }
+
+        try:
+            actor_id = self._resolve_promotion_actor(cursor, performed_by)
+            student_ids = [str(promo.get('student_id', '')).strip() for promo in promotions]
+            duplicate_student_ids = sorted({sid for sid in student_ids if sid and student_ids.count(sid) > 1})
+
+            if duplicate_student_ids:
+                results['failed'] = len(duplicate_student_ids)
+                results['errors'] = [f'Duplicate promotion entries for student {sid}' for sid in duplicate_student_ids]
+                self._write_promotion_audit_entry(
+                    batch_id,
+                    'BATCH_REJECTED',
+                    '; '.join(results['errors']),
+                    actor_id,
+                    now,
+                )
+                conn.close()
+                return False, 'Batch promotion rejected: duplicate students in request', results
+
+            students_by_id = {}
+            if student_ids:
+                placeholders = ','.join('?' for _ in student_ids)
+                cursor.execute(
+                    f'SELECT id, name, class, admission_no FROM students WHERE id IN ({placeholders})',
+                    student_ids
+                )
+                students_by_id = {row['id']: dict(row) for row in cursor.fetchall()}
+                cursor.execute(
+                    f'''
+                    SELECT student_id
+                    FROM promotion_history
+                    WHERE academic_year = ?
+                      AND student_id IN ({placeholders})
+                    ''',
+                    [academic_year, *student_ids]
+                )
+                already_processed = {row['student_id'] for row in cursor.fetchall()}
+            else:
+                already_processed = set()
+
+            valid_classes = {row['name'] for row in self.get_all_classes()}
+            for promo in promotions:
+                student_id = str(promo.get('student_id', '')).strip()
+                from_class = str(promo.get('from_class', '')).strip()
+                to_class = str(promo.get('to_class', '')).strip()
+                status = str(promo.get('status', 'promoted')).strip().lower() or 'promoted'
+
+                if not student_id:
+                    results['errors'].append('Promotion entry missing student_id')
+                    continue
+                if status not in ('promoted', 'repeating'):
+                    results['errors'].append(f'Unsupported promotion status "{status}" for student {student_id}')
+                    continue
+
+                student = students_by_id.get(student_id)
+                if not student:
+                    results['errors'].append(f'Student {student_id} not found')
+                    continue
+                if student_id in already_processed:
+                    results['errors'].append(f'{student["name"]} already has a promotion decision for {academic_year}')
+                    continue
+                if from_class != student['class']:
+                    results['errors'].append(
+                        f'{student["name"]} is currently in {student["class"]}, expected {from_class}'
+                    )
+                    continue
+                if not to_class:
+                    results['errors'].append(f'Promotion target missing for {student["name"]}')
+                    continue
+                if to_class != from_class and to_class not in valid_classes:
+                    results['errors'].append(f'Target class {to_class} does not exist for {student["name"]}')
+                    continue
+
+            if results['errors']:
+                results['failed'] = len(results['errors'])
+                self._write_promotion_audit_entry(
+                    batch_id,
+                    'BATCH_REJECTED',
+                    '; '.join(results['errors']),
+                    actor_id,
+                    now,
+                )
+                conn.close()
+                return False, 'Batch promotion rejected during validation', results
+
+            cursor.execute('BEGIN IMMEDIATE')
+            self._insert_promotion_audit_entry(
+                cursor,
+                batch_id,
+                'BATCH_START',
+                f'Starting batch promotion for {len(promotions)} students in {academic_year}',
+                actor_id,
+                now,
+            )
+
+            for promo in promotions:
+                student_id = str(promo.get('student_id', '')).strip()
+                from_class = str(promo.get('from_class', '')).strip()
+                to_class = str(promo.get('to_class', '')).strip()
+                status = str(promo.get('status', 'promoted')).strip().lower() or 'promoted'
+                reason = str(promo.get('reason', '')).strip()
+                student = students_by_id[student_id]
+
+                cursor.execute(
+                    'UPDATE students SET class = ?, updated_at = ? WHERE id = ?',
+                    (to_class, now, student_id)
+                )
+                cursor.execute(
+                    '''INSERT INTO promotion_history
+                       (id, student_id, from_class, to_class, promotion_date, academic_year, status, reason, created_at)
+                       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)''',
+                    (str(uuid.uuid4()), student_id, from_class, to_class, now, academic_year, status, reason, now)
+                )
+
+                if status == 'promoted':
+                    results['promoted'] += 1
+                else:
+                    results['repeating'] += 1
+
+                detail = (
+                    f'{student["name"]} ({student.get("admission_no", "")}): '
+                    f'{from_class} -> {to_class} [{status}] {reason}'
+                ).strip()
+                self._insert_promotion_audit_entry(
+                    cursor,
+                    batch_id,
+                    'STUDENT_PROCESSED',
+                    detail,
+                    actor_id,
+                    now,
+                )
+
+            self._insert_promotion_audit_entry(
+                cursor,
+                batch_id,
+                'BATCH_COMPLETE',
+                f'Completed: {results["promoted"]} promoted, {results["repeating"]} repeating, 0 failed',
+                actor_id,
+                now,
+            )
+            conn.commit()
+            conn.close()
+            message = (
+                f'Batch promotion completed: {results["promoted"]} promoted, '
+                f'{results["repeating"]} repeating'
+            )
+            return True, message, results
+        except Exception as e:
+            conn.rollback()
+            conn.close()
+            results['failed'] = len(promotions)
+            results['errors'].append(str(e))
+            self._write_promotion_audit_entry(
+                batch_id,
+                'BATCH_FAILED',
+                str(e),
+                performed_by,
+                now,
+            )
+            return False, f'Batch promotion failed: {str(e)}', results
+
+    def get_promotion_history(self, student_id: str = None, academic_year: str = None,
+                             class_name: str = None) -> List[Dict]:
+        """Get promotion history with optional filters."""
+        conn = self.get_connection()
+        cursor = conn.cursor()
+        
+        query = '''
+            SELECT ph.*, s.name as student_name, s.admission_no
+            FROM promotion_history ph
+            JOIN students s ON ph.student_id = s.id
+            WHERE 1 = 1
+        '''
+        params = []
+        
+        if student_id:
+            query += ' AND ph.student_id = ?'
+            params.append(student_id)
+        if academic_year:
+            query += ' AND ph.academic_year = ?'
+            params.append(academic_year)
+        if class_name:
+            query += ' AND (ph.from_class = ? OR ph.to_class = ?)'
+            params.extend([class_name, class_name])
+        
+        query += ' ORDER BY ph.promotion_date DESC, s.name'
+        cursor.execute(query, params)
+        rows = cursor.fetchall()
+        conn.close()
+        return [dict(r) for r in rows]
+
+    def get_promotion_audit_log(self, batch_id: str = None, limit: int = 100) -> List[Dict]:
+        """Get promotion audit log entries."""
+        conn = self.get_connection()
+        cursor = conn.cursor()
+        
+        if batch_id:
+            cursor.execute(
+                '''SELECT pal.*, u.full_name as performed_by_name
+                   FROM promotion_audit_log pal
+                   LEFT JOIN users u ON pal.performed_by = u.id
+                   WHERE pal.promotion_batch_id = ?
+                   ORDER BY pal.performed_at DESC''',
+                (batch_id,)
+            )
+        else:
+            cursor.execute(
+                '''SELECT pal.*, u.full_name as performed_by_name
+                   FROM promotion_audit_log pal
+                   LEFT JOIN users u ON pal.performed_by = u.id
+                   ORDER BY pal.performed_at DESC
+                   LIMIT ?''',
+                (limit,)
+            )
+        
+        rows = cursor.fetchall()
+        conn.close()
+        return [dict(r) for r in rows]
+
+    def get_promotion_statistics(self, academic_year: str = None) -> Dict:
+        """Get promotion statistics for an academic year."""
+        conn = self.get_connection()
+        cursor = conn.cursor()
+        
+        if academic_year:
+            cursor.execute(
+                '''SELECT 
+                       COUNT(*) as total_promotions,
+                       COALESCE(SUM(CASE WHEN status = 'promoted' THEN 1 ELSE 0 END), 0) as promoted_count,
+                       COALESCE(SUM(CASE WHEN status = 'repeating' THEN 1 ELSE 0 END), 0) as repeating_count
+                   FROM promotion_history
+                   WHERE academic_year = ?''',
+                (academic_year,)
+            )
+        else:
+            cursor.execute(
+                '''SELECT 
+                       COUNT(*) as total_promotions,
+                       COALESCE(SUM(CASE WHEN status = 'promoted' THEN 1 ELSE 0 END), 0) as promoted_count,
+                       COALESCE(SUM(CASE WHEN status = 'repeating' THEN 1 ELSE 0 END), 0) as repeating_count
+                   FROM promotion_history'''
+            )
+        
+        row = cursor.fetchone()
+        conn.close()
+        
+        return dict(row) if row else {
+            'total_promotions': 0,
+            'promoted_count': 0,
+            'repeating_count': 0
+        }
 
 
 # Global database instance
