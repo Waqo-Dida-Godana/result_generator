@@ -5,7 +5,7 @@ a = Analysis(
     ['main.py'],
     pathex=[],
     binaries=[],
-    datas=[('moas.ico', '.')],
+    datas=[('moas.ico', '.'), ('cbc_school.db', '.'), ('school_report.db', '.')],
     hiddenimports=[],
     hookspath=[],
     hooksconfig={},

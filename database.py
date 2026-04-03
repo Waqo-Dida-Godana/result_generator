@@ -6,6 +6,8 @@ Uses SQLite for local data storage
 import re
 import sqlite3
 import uuid
+import os
+import sys
 from datetime import datetime
 from typing import List, Dict, Optional, Tuple
 
@@ -14,8 +16,17 @@ DEFAULT_EXAM_TYPE = 'End-Term'
 
 class Database:
     def __init__(self, db_name: str = "school_report.db"):
-        self.db_name = db_name
+        self.db_name = self._resolve_db_path(db_name)
         self.init_database()
+
+    def _resolve_db_path(self, db_name: str) -> str:
+        if os.path.isabs(db_name):
+            return db_name
+        if getattr(sys, 'frozen', False):
+            base_dir = os.path.dirname(sys.executable)
+        else:
+            base_dir = os.path.dirname(os.path.abspath(__file__))
+        return os.path.join(base_dir, db_name)
     
     def get_connection(self) -> sqlite3.Connection:
         conn = sqlite3.connect(self.db_name)
@@ -103,6 +114,8 @@ class Database:
             except Exception:
                 pass  # column already exists
 
+        self._ensure_class_scoped_student_admission_numbers(conn, cursor)
+
         # Extend users table with role, full_name, email
         for col, defn in [
             ('role',      "TEXT NOT NULL DEFAULT 'admin'"),
@@ -121,12 +134,14 @@ class Database:
                 id               TEXT PRIMARY KEY,
                 teacher_id       TEXT NOT NULL,
                 class_name       TEXT NOT NULL,
+                stream_name      TEXT NOT NULL DEFAULT '',
                 subject          TEXT,
                 is_class_teacher INTEGER NOT NULL DEFAULT 0,
                 FOREIGN KEY (teacher_id) REFERENCES users(id) ON DELETE CASCADE,
-                UNIQUE(teacher_id, class_name, subject)
+                UNIQUE(teacher_id, class_name, stream_name, subject, is_class_teacher)
             )
         ''')
+        self._ensure_stream_scoped_teacher_assignments(conn, cursor)
         
         # School Classes table
         cursor.execute('''
@@ -278,6 +293,114 @@ class Database:
         conn.commit()
         conn.close()
 
+    def _ensure_stream_scoped_teacher_assignments(self, conn, cursor):
+        cursor.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='teacher_assignments'")
+        if not cursor.fetchone():
+            return
+
+        cursor.execute('PRAGMA table_info(teacher_assignments)')
+        columns = [row[1] for row in cursor.fetchall()]
+
+        cursor.execute('PRAGMA index_list(teacher_assignments)')
+        unique_indexes = []
+        for row in cursor.fetchall():
+            if not bool(row[2]):
+                continue
+            index_name = row[1]
+            cursor.execute(f'PRAGMA index_info("{index_name}")')
+            unique_indexes.append([info[2] for info in cursor.fetchall()])
+
+        expected_unique = ['teacher_id', 'class_name', 'stream_name', 'subject', 'is_class_teacher']
+        if 'stream_name' in columns and expected_unique in unique_indexes:
+            cursor.execute('CREATE INDEX IF NOT EXISTS idx_teacher_assignments_class_stream ON teacher_assignments(class_name, stream_name)')
+            cursor.execute('CREATE INDEX IF NOT EXISTS idx_teacher_assignments_teacher ON teacher_assignments(teacher_id)')
+            return
+
+        stream_select = 'COALESCE(stream_name, \'\')' if 'stream_name' in columns else "''"
+        cursor.execute('PRAGMA foreign_keys = OFF')
+        cursor.execute('DROP TABLE IF EXISTS teacher_assignments_new')
+        cursor.execute('''
+            CREATE TABLE teacher_assignments_new (
+                id               TEXT PRIMARY KEY,
+                teacher_id       TEXT NOT NULL,
+                class_name       TEXT NOT NULL,
+                stream_name      TEXT NOT NULL DEFAULT '',
+                subject          TEXT,
+                is_class_teacher INTEGER NOT NULL DEFAULT 0,
+                FOREIGN KEY (teacher_id) REFERENCES users(id) ON DELETE CASCADE,
+                UNIQUE(teacher_id, class_name, stream_name, subject, is_class_teacher)
+            )
+        ''')
+        cursor.execute(f'''
+            INSERT OR IGNORE INTO teacher_assignments_new (
+                id, teacher_id, class_name, stream_name, subject, is_class_teacher
+            )
+            SELECT
+                id, teacher_id, class_name, {stream_select}, subject, is_class_teacher
+            FROM teacher_assignments
+        ''')
+        cursor.execute('DROP TABLE teacher_assignments')
+        cursor.execute('ALTER TABLE teacher_assignments_new RENAME TO teacher_assignments')
+        cursor.execute('CREATE INDEX IF NOT EXISTS idx_teacher_assignments_class_stream ON teacher_assignments(class_name, stream_name)')
+        cursor.execute('CREATE INDEX IF NOT EXISTS idx_teacher_assignments_teacher ON teacher_assignments(teacher_id)')
+        cursor.execute('PRAGMA foreign_keys = ON')
+
+    def _ensure_class_scoped_student_admission_numbers(self, conn, cursor):
+        """Allow admission numbers like 1,2,3 to repeat across different classes."""
+        cursor.execute('PRAGMA index_list(students)')
+        index_rows = cursor.fetchall()
+        has_class_scoped_unique = False
+        has_global_admission_unique = False
+
+        for row in index_rows:
+            index_name = row[1]
+            is_unique = bool(row[2])
+            if not is_unique:
+                continue
+            cursor.execute(f'PRAGMA index_info("{index_name}")')
+            columns = [info[2] for info in cursor.fetchall()]
+            if columns == ['class', 'admission_no']:
+                has_class_scoped_unique = True
+            if columns == ['admission_no']:
+                has_global_admission_unique = True
+
+        if has_class_scoped_unique and not has_global_admission_unique:
+            return
+
+        cursor.execute('PRAGMA foreign_keys = OFF')
+        cursor.execute('DROP TABLE IF EXISTS students_new')
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS students_new (
+                id TEXT PRIMARY KEY,
+                name TEXT NOT NULL,
+                class TEXT NOT NULL,
+                gender TEXT NOT NULL CHECK (gender IN ('Male', 'Female')),
+                admission_no TEXT NOT NULL,
+                photo_path TEXT DEFAULT '',
+                stream TEXT NOT NULL DEFAULT '',
+                guardian_name TEXT NOT NULL DEFAULT '',
+                parent_email TEXT NOT NULL DEFAULT '',
+                created_at TEXT NOT NULL DEFAULT '',
+                updated_at TEXT NOT NULL DEFAULT ''
+            )
+        ''')
+        cursor.execute('''
+            INSERT INTO students_new (
+                id, name, class, gender, admission_no, photo_path,
+                stream, guardian_name, parent_email, created_at, updated_at
+            )
+            SELECT
+                id, name, class, gender, admission_no, photo_path,
+                stream, guardian_name, parent_email, created_at, updated_at
+            FROM students
+        ''')
+        cursor.execute('DROP TABLE students')
+        cursor.execute('ALTER TABLE students_new RENAME TO students')
+        cursor.execute('CREATE INDEX IF NOT EXISTS idx_students_class ON students(class)')
+        cursor.execute('CREATE INDEX IF NOT EXISTS idx_students_admission_no ON students(admission_no)')
+        cursor.execute('CREATE UNIQUE INDEX IF NOT EXISTS idx_students_class_admission_no ON students(class, admission_no)')
+        cursor.execute('PRAGMA foreign_keys = ON')
+
     def _migrate_marks_exam_type(self, cursor):
         """Expand marks storage to support multiple exam types per term."""
         cursor.execute("PRAGMA table_info(marks)")
@@ -412,13 +535,21 @@ class Database:
         return success
 
     # ── Assignment management ────────────────────────────────────────────────
-    def assign_subject_teacher(self, teacher_id: str, class_name: str, subject: str) -> bool:
+    def assign_subject_teacher(self, teacher_id: str, class_name: str, subject: str, stream_name: str = '') -> bool:
         conn = self.get_connection()
         cursor = conn.cursor()
         try:
+            stream_name = (stream_name or '').strip()
             cursor.execute(
-                'INSERT OR REPLACE INTO teacher_assignments (id, teacher_id, class_name, subject, is_class_teacher) VALUES (?, ?, ?, ?, 0)',
-                (str(uuid.uuid4()), teacher_id, class_name, subject)
+                '''DELETE FROM teacher_assignments
+                   WHERE teacher_id = ? AND class_name = ? AND stream_name = ? AND subject = ? AND is_class_teacher = 0''',
+                (teacher_id, class_name, stream_name, subject)
+            )
+            cursor.execute(
+                '''INSERT INTO teacher_assignments
+                   (id, teacher_id, class_name, stream_name, subject, is_class_teacher)
+                   VALUES (?, ?, ?, ?, ?, 0)''',
+                (str(uuid.uuid4()), teacher_id, class_name, stream_name, subject)
             )
             conn.commit()
             conn.close()
@@ -427,17 +558,20 @@ class Database:
             conn.close()
             return False
 
-    def assign_class_teacher(self, teacher_id: str, class_name: str) -> bool:
+    def assign_class_teacher(self, teacher_id: str, class_name: str, stream_name: str = '') -> bool:
         conn = self.get_connection()
         cursor = conn.cursor()
         try:
+            stream_name = (stream_name or '').strip()
             cursor.execute(
-                'DELETE FROM teacher_assignments WHERE class_name = ? AND is_class_teacher = 1',
-                (class_name,)
+                'DELETE FROM teacher_assignments WHERE class_name = ? AND stream_name = ? AND is_class_teacher = 1',
+                (class_name, stream_name)
             )
             cursor.execute(
-                'INSERT INTO teacher_assignments (id, teacher_id, class_name, subject, is_class_teacher) VALUES (?, ?, ?, NULL, 1)',
-                (str(uuid.uuid4()), teacher_id, class_name)
+                '''INSERT INTO teacher_assignments
+                   (id, teacher_id, class_name, stream_name, subject, is_class_teacher)
+                   VALUES (?, ?, ?, ?, NULL, 1)''',
+                (str(uuid.uuid4()), teacher_id, class_name, stream_name)
             )
             conn.commit()
             conn.close()
@@ -459,12 +593,12 @@ class Database:
         conn = self.get_connection()
         cursor = conn.cursor()
         cursor.execute('''
-            SELECT ta.id, ta.teacher_id, ta.class_name, ta.subject,
+            SELECT ta.id, ta.teacher_id, ta.class_name, ta.stream_name, ta.subject,
                    u.full_name, u.username, u.role
             FROM teacher_assignments ta
             JOIN users u ON ta.teacher_id = u.id
             WHERE ta.is_class_teacher = 0 AND ta.subject IS NOT NULL
-            ORDER BY u.full_name, ta.class_name
+            ORDER BY u.full_name, ta.class_name, ta.stream_name, ta.subject
         ''')
         rows = cursor.fetchall()
         conn.close()
@@ -474,12 +608,12 @@ class Database:
         conn = self.get_connection()
         cursor = conn.cursor()
         cursor.execute('''
-            SELECT ta.id, ta.teacher_id, ta.class_name,
+            SELECT ta.id, ta.teacher_id, ta.class_name, ta.stream_name,
                    u.full_name, u.username, u.role
             FROM teacher_assignments ta
             JOIN users u ON ta.teacher_id = u.id
             WHERE ta.is_class_teacher = 1
-            ORDER BY ta.class_name
+            ORDER BY ta.class_name, ta.stream_name
         ''')
         rows = cursor.fetchall()
         conn.close()
@@ -498,7 +632,9 @@ class Database:
         conn = self.get_connection()
         cursor = conn.cursor()
         cursor.execute(
-            'SELECT class_name, subject FROM teacher_assignments WHERE teacher_id = ? AND is_class_teacher = 0 AND subject IS NOT NULL',
+            '''SELECT class_name, stream_name, subject
+               FROM teacher_assignments
+               WHERE teacher_id = ? AND is_class_teacher = 0 AND subject IS NOT NULL''',
             (teacher_id,)
         )
         rows = cursor.fetchall()
@@ -510,7 +646,9 @@ class Database:
         conn = self.get_connection()
         cursor = conn.cursor()
         cursor.execute(
-            'SELECT class_name FROM teacher_assignments WHERE teacher_id = ? AND is_class_teacher = 1',
+            '''SELECT DISTINCT class_name
+               FROM teacher_assignments
+               WHERE teacher_id = ? AND is_class_teacher = 1''',
             (teacher_id,)
         )
         rows = cursor.fetchall()
@@ -952,14 +1090,46 @@ class Database:
         conn.close()
         return success
 
-    def get_student_by_admission_no(self, admission_no: str) -> Optional[Dict]:
+    def get_student_by_admission_no(self, admission_no: str, class_name: str = None) -> Optional[Dict]:
         """Find a student by their admission number."""
         conn = self.get_connection()
         cursor = conn.cursor()
-        cursor.execute('SELECT * FROM students WHERE admission_no = ?', (admission_no,))
+        if class_name:
+            cursor.execute(
+                'SELECT * FROM students WHERE admission_no = ? AND class = ? ORDER BY updated_at DESC, created_at DESC LIMIT 1',
+                (admission_no, class_name)
+            )
+        else:
+            cursor.execute('SELECT * FROM students WHERE admission_no = ? ORDER BY updated_at DESC, created_at DESC LIMIT 1', (admission_no,))
         row = cursor.fetchone()
         conn.close()
         return dict(row) if row else None
+
+    def get_next_class_admission_no(self, class_name: str, exclude_student_id: str = '') -> str:
+        conn = self.get_connection()
+        cursor = conn.cursor()
+        if exclude_student_id:
+            cursor.execute(
+                'SELECT admission_no FROM students WHERE class = ? AND id != ?',
+                (class_name, exclude_student_id)
+            )
+        else:
+            cursor.execute('SELECT admission_no FROM students WHERE class = ?', (class_name,))
+        rows = cursor.fetchall()
+        conn.close()
+
+        used_numbers = set()
+        for row in rows:
+            admission_no = str(row['admission_no'] or '').strip()
+            if re.fullmatch(r'\d+', admission_no):
+                value = int(admission_no)
+                if value > 0:
+                    used_numbers.add(value)
+
+        next_number = 1
+        while next_number in used_numbers:
+            next_number += 1
+        return str(next_number)
     
     def delete_student(self, student_id: str) -> bool:
         conn = self.get_connection()

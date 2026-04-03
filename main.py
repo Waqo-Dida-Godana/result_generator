@@ -5,6 +5,7 @@ Pure Tkinter • Modern UI • Full Features • Legacy DB Compatible
 """
 
 import os
+import random
 import shutil
 import sys
 import json
@@ -29,7 +30,7 @@ import csv
 import pandas as pd
 from datetime import datetime
 from reportlab.pdfgen import canvas
-from reportlab.lib.pagesizes import A4
+from reportlab.lib.pagesizes import A4, portrait
 from reportlab.lib import colors
 from reportlab.platypus import SimpleDocTemplate, Table, TableStyle, Paragraph, Spacer, Image as RLImage, PageBreak
 from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
@@ -145,6 +146,7 @@ TOPBAR_YR_BG    = OLIVE_MID
 
 # Education Levels
 LEVELS = [
+    'Pre-Primary (PP1-PP2)',
     'Lower Primary (Grade 1-3)',
     'Upper Primary (Grade 4-6)',
     'Junior School (Grade 7-9)'
@@ -153,6 +155,14 @@ ALL_SCHOOL_LEVEL = 'All School (All Levels)'
 
 # Subjects by Level
 SUBJECT_CATALOG = {
+    'Pre-Primary (PP1-PP2)': [
+        ('LANG', 'Language Activities', 'Core', False),
+        ('MATH', 'Mathematical Activities', 'Core', False),
+        ('CREA', 'Creative Activities', 'Core', False),
+        ('ENVT', 'Environmental Activities', 'Core', False),
+        ('RELG', 'Religious Activities', 'Core', False),
+        ('PRIP', 'Pastoral/ Religious Instruction Programme', 'Core', False),
+    ],
     'Lower Primary (Grade 1-3)': [
         ('LIT', 'Literacy Activities', 'Core', False),
         ('ENG', 'English Activities', 'Core', False),
@@ -206,6 +216,7 @@ SUBJECT_CATALOG = {
 }
 
 SUBJECTS_BY_LEVEL = {
+    'Pre-Primary (PP1-PP2)': [name for _, name, _, _ in SUBJECT_CATALOG['Pre-Primary (PP1-PP2)']],
     'Lower Primary (Grade 1-3)': [name for _, name, _, _ in SUBJECT_CATALOG['Lower Primary (Grade 1-3)']],
     'Upper Primary (Grade 4-6)': [name for _, name, _, _ in SUBJECT_CATALOG['Upper Primary (Grade 4-6)']],
     'Junior School (Grade 7-9)': {
@@ -216,13 +227,27 @@ SUBJECTS_BY_LEVEL = {
 
 # Classes by Level
 CLASSES_BY_LEVEL = {
+    'Pre-Primary (PP1-PP2)': ['PP1', 'PP2'],
     'Lower Primary (Grade 1-3)': ['Grade 1', 'Grade 2', 'Grade 3'],
     'Upper Primary (Grade 4-6)': ['Grade 4', 'Grade 5', 'Grade 6'],
     'Junior School (Grade 7-9)': ['Grade 7', 'Grade 8', 'Grade 9']
 }
+ALL_CLASSES = [
+    class_name
+    for level_classes in CLASSES_BY_LEVEL.values()
+    for class_name in level_classes
+]
 
 # Grading System by Level (CBC Competency Levels)
 GRADING_BY_LEVEL = {
+    'Pre-Primary (PP1-PP2)': {
+        'levels': {
+            'EE': {'label': 'Exceeding Expectation', 'description': 'Learner performs above the required level', 'points': 4},
+            'ME': {'label': 'Meeting Expectation', 'description': 'Learner understands and performs well', 'points': 3},
+            'AE': {'label': 'Approaching Expectation', 'description': 'Learner is improving but needs support', 'points': 2},
+            'BE': {'label': 'Below Expectation', 'description': 'Learner needs more help', 'points': 1}
+        }
+    },
     'Lower Primary (Grade 1-3)': {
         'levels': {
             'EE': {'label': 'Exceeding Expectation', 'description': 'Learner performs above the required level'},
@@ -253,9 +278,9 @@ GRADING_BY_LEVEL = {
     }
 }
 
-# Legacy compatibility - Default to Junior School
-SUBJECTS = SUBJECTS_BY_LEVEL['Junior School (Grade 7-9)']['core']
-CLASSES  = CLASSES_BY_LEVEL['Junior School (Grade 7-9)']
+# Legacy compatibility - Default to all-school view
+SUBJECTS = []
+CLASSES  = list(ALL_CLASSES)
 
 # ====================== CONSTANTS ==========================
 TERMS    = ['One', 'Two', 'Three']
@@ -825,8 +850,8 @@ class SchoolReportApp:
         self.root.configure(bg=CONTENT_BG)
         self.root.minsize(960, 620)
 
-        # CBC Level - Default to Junior School
-        self.current_level = 'Junior School (Grade 7-9)'
+        # CBC Level - Default to all-school view
+        self.current_level = ALL_SCHOOL_LEVEL
         
         self.current_user = None
         self.user_role = 'admin'  # Default role
@@ -870,6 +895,7 @@ class SchoolReportApp:
 
         self._ensure_default_catalog_records()
         self._ensure_default_grading_scales()
+        self.set_level(self.current_level)
         setup_treeview_style()
         self.show_login()
 
@@ -988,6 +1014,18 @@ class SchoolReportApp:
         meta = self._get_class_meta(class_name)
         abbreviation = str(meta.get('abbreviation', '') or '').strip()
         return abbreviation or class_name
+
+    def _format_class_stream_label(self, class_name, stream_name=''):
+        class_label = self._get_class_label(class_name)
+        stream_text = str(stream_name or '').strip()
+        return f'{class_label} [{stream_text}]' if stream_text else class_label
+
+    def _get_assignment_stream_options(self, class_name, include_whole_class=True):
+        values = []
+        if include_whole_class:
+            values.append('Whole Class')
+        values.extend(self._get_stream_names_for_class(class_name))
+        return values
 
     def _get_subject_label(self, subject, class_name='', multiline=False):
         meta = self._get_subject_meta(subject, class_name)
@@ -1115,6 +1153,8 @@ class SchoolReportApp:
 
     def _get_level_for_class(self, class_name):
         """Resolve the CBC level for a class name."""
+        class_name = self._match_known_class_name(class_name) or class_name
+
         for level, classes in CLASSES_BY_LEVEL.items():
             if class_name in classes:
                 return level
@@ -1300,20 +1340,175 @@ class SchoolReportApp:
         text = self._normalize_text(value)
         return re.sub(r'[^a-z0-9]+', '', text)
 
-    def _sheet_title_to_class_name(self, title):
-        title_norm = self._normalize_text(title)
-        match = re.search(r'grade\s*(\d+)', title_norm)
+    def _get_known_class_names(self):
+        class_names = []
+        for classes in CLASSES_BY_LEVEL.values():
+            for class_name in classes:
+                if class_name not in class_names:
+                    class_names.append(class_name)
+        for row in db.get_all_classes():
+            class_name = str(row.get('name', '') or '').strip()
+            if class_name and class_name not in class_names:
+                class_names.append(class_name)
+        return class_names
+
+    def _match_known_class_name(self, value):
+        raw = str(value or '').strip()
+        if not raw:
+            return ''
+
+        raw_norm = self._normalize_text(raw)
+        raw_key = self._normalize_key(raw)
+        known_classes = self._get_known_class_names()
+
+        for class_name in known_classes:
+            if self._normalize_text(class_name) == raw_norm:
+                return class_name
+
+        for class_name in known_classes:
+            if self._normalize_key(class_name) == raw_key:
+                return class_name
+
+        pp_match = re.search(r'\b(?:pp|p|preprimary)\s*([12])\b', raw_key)
+        if pp_match:
+            candidate_key = f'pp{pp_match.group(1)}'
+            for class_name in known_classes:
+                if self._normalize_key(class_name) == candidate_key:
+                    return class_name
+            return f'PP{pp_match.group(1)}'
+
+        grade_match = re.search(r'\b(?:grade|g)\s*(\d+)\b', raw_norm)
+        if grade_match:
+            candidate = f"Grade {int(grade_match.group(1))}"
+            for class_name in known_classes:
+                if self._normalize_key(class_name) == self._normalize_key(candidate):
+                    return class_name
+            return candidate
+
+        bare_grade_match = re.fullmatch(r'(\d+)', raw_key)
+        if bare_grade_match:
+            candidate = f"Grade {int(bare_grade_match.group(1))}"
+            for class_name in known_classes:
+                if self._normalize_key(class_name) == self._normalize_key(candidate):
+                    return class_name
+
+        return ''
+
+    def _get_known_stream_names(self, class_name=''):
+        class_row = db.get_class_by_name(class_name or '')
+        if not class_row:
+            return []
+        return [
+            str(stream.get('name', '') or '').strip()
+            for stream in db.get_streams_for_class(class_row['id'])
+            if str(stream.get('name', '') or '').strip()
+        ]
+
+    def _match_known_stream_name(self, value, class_name=''):
+        raw = str(value or '').strip()
+        if not raw:
+            return ''
+
+        raw_norm = self._normalize_text(raw)
+        raw_key = self._normalize_key(raw)
+        streams = self._get_known_stream_names(class_name)
+
+        for stream_name in streams:
+            if self._normalize_text(stream_name) == raw_norm:
+                return stream_name
+
+        for stream_name in streams:
+            stream_key = self._normalize_key(stream_name)
+            if raw_key and (raw_key == stream_key or raw_key in stream_key or stream_key in raw_key):
+                return stream_name
+
+        if len(raw) <= 3 and raw.isalpha():
+            return raw.upper()
+        return raw.title()
+
+    def _extract_class_from_text(self, text):
+        text_norm = self._normalize_text(text)
+        if not text_norm:
+            return ''
+
+        direct_match = self._match_known_class_name(text)
+        if direct_match:
+            return direct_match
+
+        known_classes = self._get_known_class_names()
+        for class_name in known_classes:
+            class_norm = self._normalize_text(class_name)
+            if text_norm == class_norm or class_norm in text_norm:
+                return class_name
+
+        for pattern in (
+            r'\b(?:pp|p|preprimary)\s*([12])\b',
+            r'grade\s+[a-z]+\s*\((\d+)\)',
+            r'grade\s*(\d+)',
+            r'\bg\s*(\d+)\b',
+        ):
+            match = re.search(pattern, text_norm)
+            if not match:
+                continue
+            token = match.group(1)
+            if pattern.startswith(r'\b(?:pp|p|preprimary)'):
+                candidate = self._match_known_class_name(f'PP{token}')
+                if candidate:
+                    return candidate
+                return f'PP{token}'
+
+            candidate = self._match_known_class_name(f"Grade {int(token)}")
+            if candidate:
+                return candidate
+            return f"Grade {int(token)}"
+        return ''
+
+    def _extract_stream_from_text(self, text, class_name=''):
+        text_norm = self._normalize_text(text)
+        if not text_norm:
+            return ''
+
+        match = re.search(r'(?:grade\s*\d+|grade\s+[a-z]+\s*\(\d+\)|g\s*\d+)\s*[-_/ ]*([a-z]+)\b', text_norm)
         if match:
-            return f"Grade {int(match.group(1))}"
-        return None
+            raw_stream = match.group(1)
+            if raw_stream not in {'overall', 'summary', 'report'}:
+                return self._match_known_stream_name(raw_stream, class_name)
+        return ''
+
+    def _get_sheet_context(self, sheet_name, worksheet=None):
+        header_text = ''
+        if worksheet is not None:
+            header_parts = []
+            for row in worksheet.iter_rows(min_row=1, max_row=min(6, worksheet.max_row), values_only=True):
+                for value in row:
+                    text = str(value or '').strip()
+                    if text:
+                        header_parts.append(text)
+            header_text = ' '.join(header_parts)
+
+        combined_text = ' '.join(part for part in [str(sheet_name or ''), header_text] if part).strip()
+        combined_norm = self._normalize_text(combined_text)
+        is_summary = any(flag in combined_norm for flag in ('overall report', 'overall', 'summary', 'analysis'))
+        class_name = self._extract_class_from_text(combined_text)
+        stream_name = self._extract_stream_from_text(sheet_name, class_name)
+
+        return {
+            'class_name': class_name,
+            'stream_name': stream_name,
+            'is_summary': is_summary,
+        }
+
+    def _sheet_title_to_class_name(self, title, worksheet=None):
+        return self._get_sheet_context(title, worksheet).get('class_name') or None
+
+    def _safe_excel_sheet_name(self, title, fallback='Sheet'):
+        clean = re.sub(r'[:\\/?*\[\]]+', ' ', str(title or '').strip())
+        clean = re.sub(r'\s+', ' ', clean).strip()
+        return (clean or fallback)[:31]
 
     def _generate_admission_no(self, class_name, student_name):
-        class_code = self._normalize_key(class_name).upper()[:6] or 'CLASS'
-        name_code = self._normalize_key(student_name).upper()[:4] or 'STU'
-        while True:
-            candidate = f"AUTO-{class_code}-{name_code}-{uuid.uuid4().hex[:5].upper()}"
-            if not db.get_student_by_admission_no(candidate):
-                return candidate
+        resolved_class = self._match_known_class_name(class_name) or str(class_name or '').strip()
+        return db.get_next_class_admission_no(resolved_class)
 
     def _map_sheet_subject(self, raw_subject, class_name=''):
         raw = str(raw_subject or '').strip()
@@ -1371,29 +1566,83 @@ class SchoolReportApp:
 
         return mapped
 
-    def _find_assessment_header_row(self, worksheet):
-        for row_idx in range(1, min(10, worksheet.max_row) + 1):
-            values = [self._normalize_text(cell) for cell in next(worksheet.iter_rows(min_row=row_idx, max_row=row_idx, values_only=True))]
-            if 'learner' in values and ('no.' in values or 'no' in values):
-                return row_idx
-        return None
+    def _find_assessment_header_row(self, worksheet, class_name=''):
+        name_aliases = {
+            'learner', 'learner name', 'name', 'student', 'student name',
+            'pupil', 'pupil name', 'full name', 'full_name'
+        }
+        id_aliases = {
+            'no', 'no.', 'adm', 'adm no', 'admission', 'admission no',
+            'admission_no', 'reg no', 'reg_no', 'regno'
+        }
+        excluded = {
+            'no', 'no.', 'learner', 'learner name', 'name', 'student', 'student name',
+            'pupil', 'pupil name', 'full name', 'full_name', 'total', 'total ',
+            'avg', 'average', 'psn', 'position', 'level'
+        }
+
+        best_match = None
+        max_scan_rows = min(20, worksheet.max_row)
+        for row_idx in range(1, max_scan_rows + 1):
+            raw_values = list(next(worksheet.iter_rows(min_row=row_idx, max_row=row_idx, values_only=True)))
+            values = [self._normalize_text(cell) for cell in raw_values]
+
+            name_col_idx = next((idx + 1 for idx, value in enumerate(values) if value in name_aliases), None)
+            if not name_col_idx:
+                continue
+
+            has_id_col = any(value in id_aliases for value in values)
+            subject_hits = 0
+            for col_idx, cell in enumerate(raw_values, start=1):
+                if col_idx == name_col_idx:
+                    continue
+                label = self._normalize_text(cell)
+                if not label or label in excluded:
+                    continue
+                mapped = self._map_sheet_subject(cell, class_name) if class_name else str(cell or '').strip()
+                if mapped:
+                    subject_hits += 1
+
+            score = subject_hits + (2 if has_id_col else 0)
+            if subject_hits >= 2 or (subject_hits >= 1 and has_id_col):
+                if best_match is None or score > best_match['score']:
+                    best_match = {
+                        'row': row_idx,
+                        'name_col': name_col_idx,
+                        'score': score,
+                    }
+
+        return best_match
 
     def _parse_assessment_sheet(self, worksheet):
-        header_row = self._find_assessment_header_row(worksheet)
-        if not header_row:
+        sheet_context = self._get_sheet_context(worksheet.title, worksheet)
+        if sheet_context.get('is_summary'):
             return None
 
-        class_name = self._sheet_title_to_class_name(worksheet.title)
+        class_name = sheet_context.get('class_name') or self._sheet_title_to_class_name(worksheet.title, worksheet)
         if not class_name:
             return None
 
-        excluded = {'no', 'no.', 'learner', 'total', 'total ', 'avg', 'average', 'psn', 'position', 'level'}
+        header_info = self._find_assessment_header_row(worksheet, class_name)
+        if not header_info:
+            return None
+        header_row = header_info['row']
+        learner_col_idx = header_info['name_col']
+        stream_name = sheet_context.get('stream_name', '')
+
+        excluded = {
+            'no', 'no.', 'adm', 'adm no', 'admission', 'admission no',
+            'admission_no', 'reg no', 'reg_no', 'regno',
+            'learner', 'learner name', 'name', 'student', 'student name',
+            'pupil', 'pupil name', 'full name', 'full_name',
+            'total', 'total ', 'avg', 'average', 'psn', 'position', 'level'
+        }
         header_values = [cell for cell in next(worksheet.iter_rows(min_row=header_row, max_row=header_row, values_only=True))]
 
         subject_columns = []
         for col_idx, cell in enumerate(header_values, start=1):
             label = self._normalize_text(cell)
-            if col_idx <= 2 or not label or label in excluded:
+            if col_idx == learner_col_idx or not label or label in excluded:
                 continue
             subject_columns.append((col_idx, self._map_sheet_subject(cell, class_name)))
 
@@ -1401,9 +1650,9 @@ class SchoolReportApp:
             return None
 
         students = []
-        for row in worksheet.iter_rows(min_row=header_row + 2, values_only=True):
-            learner = str(row[1] or '').strip() if len(row) > 1 else ''
-            if not learner:
+        for row in worksheet.iter_rows(min_row=header_row + 1, values_only=True):
+            learner = str(row[learner_col_idx - 1] or '').strip() if len(row) >= learner_col_idx else ''
+            if not learner or self._is_summary_student_name(learner):
                 continue
 
             marks = {}
@@ -1425,6 +1674,7 @@ class SchoolReportApp:
         return {
             'sheet_name': worksheet.title,
             'class_name': class_name,
+            'stream_name': stream_name,
             'students': students,
         }
 
@@ -1502,11 +1752,21 @@ class SchoolReportApp:
     def clear_root(self):
         self._clear()
 
+    def _get_active_db_display(self):
+        db_path = str(getattr(db, 'db_name', '') or '').strip()
+        if not db_path:
+            return 'DB: unknown'
+        return f'DB: {os.path.basename(db_path)}'
+
     def _page_header(self, title: str, subtitle: str):
         hdr = tk.Frame(self.content_frame, bg=CONTENT_BG)
         hdr.pack(fill='x', pady=(0, 22))
-        tk.Label(hdr, text=title, bg=CONTENT_BG, fg=TEXT_PRIMARY,
-                 font=(FF, 26, 'bold')).pack(anchor='w')
+        top = tk.Frame(hdr, bg=CONTENT_BG)
+        top.pack(fill='x')
+        tk.Label(top, text=title, bg=CONTENT_BG, fg=TEXT_PRIMARY,
+                 font=(FF, 26, 'bold')).pack(side='left', anchor='w')
+        tk.Label(top, text=self._get_active_db_display(), bg=CONTENT_BG, fg=TEXT_SECONDARY,
+                 font=(FF, 9, 'bold')).pack(side='right', anchor='e')
         tk.Label(hdr, text=subtitle, bg=CONTENT_BG, fg=TEXT_SECONDARY,
                  font=(FF, 11)).pack(anchor='w')
 
@@ -2075,6 +2335,14 @@ class SchoolReportApp:
         if not self.sidebar_collapsed:
             tk.Label(bot, text=email, bg=SIDEBAR_BG, fg=SIDEBAR_TEXT,
                      font=(FF, 9), anchor='w').pack(fill='x', pady=(0, 6))
+            tk.Label(
+                bot,
+                text=self._get_active_db_display(),
+                bg=SIDEBAR_BG,
+                fg='#d8ef9c',
+                font=(FF, 8, 'bold'),
+                anchor='w'
+            ).pack(fill='x', pady=(0, 6))
 
         so = tk.Frame(bot, bg=SIDEBAR_BG, cursor='hand2')
         so.pack(fill='x')
@@ -4102,6 +4370,12 @@ class SchoolReportApp:
                  font=(FF, 10), padx=12, pady=5, command=lambda: self._edit_teacher_dialog(tree)).pack(side='left', padx=5)
         tk.Button(toolbar, text='Delete Selected', bg='#e74c3c', fg='white',
                  font=(FF, 10), padx=12, pady=5, command=lambda: self._delete_teacher(tree, reload_callback=refresh_all)).pack(side='left', padx=5)
+        tk.Button(toolbar, text='Template', bg=ORANGE, fg='white',
+                 font=(FF, 10), padx=12, pady=5, command=self.download_teacher_import_template).pack(side='left', padx=5)
+        tk.Button(toolbar, text='Export Excel', bg=GREEN, fg='white',
+                 font=(FF, 10), padx=12, pady=5, command=self.export_teachers_excel).pack(side='left', padx=5)
+        tk.Button(toolbar, text='Import Excel', bg=BLUE, fg='white',
+                 font=(FF, 10), padx=12, pady=5, command=lambda: self.import_teachers_excel(on_complete=refresh_all)).pack(side='left', padx=5)
         tk.Button(toolbar, text='Assign Subject', bg='#1d4ed8', fg='white',
                  font=(FF, 10), padx=12, pady=5, command=lambda: self._assign_subject_dialog(on_saved=refresh_all)).pack(side='left', padx=5)
         tk.Button(toolbar, text='Assign Class Teacher', bg=PURPLE, fg='white',
@@ -4168,14 +4442,16 @@ class SchoolReportApp:
         subject_card.grid(row=0, column=0, sticky='nsew', padx=(0, 6))
         tk.Label(subject_card, text='Subject Teacher Assignments', bg=CARD_BG, fg=TEXT_PRIMARY,
                  font=(FF, 11, 'bold')).pack(anchor='w', padx=10, pady=(8, 4))
-        subj_cols = ('teacher', 'subject', 'class')
+        subj_cols = ('teacher', 'subject', 'class', 'stream')
         subj_tree = ttk.Treeview(subject_card, columns=subj_cols, show='headings', style='App.Treeview', height=8)
         subj_tree.heading('teacher', text='Teacher')
         subj_tree.heading('subject', text='Subject')
         subj_tree.heading('class', text='Class')
+        subj_tree.heading('stream', text='Stream')
         subj_tree.column('teacher', width=180, anchor='w')
         subj_tree.column('subject', width=170, anchor='w')
         subj_tree.column('class', width=140, anchor='w')
+        subj_tree.column('stream', width=120, anchor='center')
         subj_tree.pack(fill='both', expand=True, padx=10, pady=6)
         tk.Button(subject_card, text='Remove Selected', bg='#dc2626', fg='white',
                   font=(FF, 9, 'bold'), padx=10, pady=5,
@@ -4185,12 +4461,14 @@ class SchoolReportApp:
         class_card.grid(row=0, column=1, sticky='nsew', padx=(6, 0))
         tk.Label(class_card, text='Class Teacher Assignments', bg=CARD_BG, fg=TEXT_PRIMARY,
                  font=(FF, 11, 'bold')).pack(anchor='w', padx=10, pady=(8, 4))
-        class_cols = ('teacher', 'class')
+        class_cols = ('teacher', 'class', 'stream')
         class_tree = ttk.Treeview(class_card, columns=class_cols, show='headings', style='App.Treeview', height=8)
         class_tree.heading('teacher', text='Teacher')
         class_tree.heading('class', text='Class')
+        class_tree.heading('stream', text='Stream')
         class_tree.column('teacher', width=210, anchor='w')
         class_tree.column('class', width=180, anchor='w')
+        class_tree.column('stream', width=120, anchor='center')
         class_tree.pack(fill='both', expand=True, padx=10, pady=6)
         tk.Button(class_card, text='Remove Selected', bg='#dc2626', fg='white',
                   font=(FF, 9, 'bold'), padx=10, pady=5,
@@ -4239,13 +4517,15 @@ class SchoolReportApp:
             subj_tree.insert('', 'end', iid=assignment.get('id', str(uuid.uuid4())), values=(
                 self._get_teacher_label(assignment),
                 self._get_subject_label(assignment.get('subject', ''), assignment.get('class_name', '')),
-                self._get_class_label(assignment.get('class_name', ''))
+                self._get_class_label(assignment.get('class_name', '')),
+                assignment.get('stream_name', '') or 'Whole Class'
             ))
 
         for assignment in db.get_class_teacher_assignments():
             class_tree.insert('', 'end', iid=assignment.get('id', str(uuid.uuid4())), values=(
                 self._get_teacher_label(assignment),
-                self._get_class_label(assignment.get('class_name', ''))
+                self._get_class_label(assignment.get('class_name', '')),
+                assignment.get('stream_name', '') or 'Whole Class'
             ))
 
     def _remove_assignment_from_tree(self, tree, reload_callback=None):
@@ -4261,6 +4541,828 @@ class SchoolReportApp:
                 reload_callback()
         else:
             messagebox.showerror('Error', 'Failed to remove assignment')
+
+    def _normalize_teacher_import_role(self, value):
+        role_key = self._normalize_key(value)
+        if role_key in {'classteacher', 'class_teacher', 'class'}:
+            return 'class_teacher'
+        return 'teacher'
+
+    def _build_teacher_import_lookup(self):
+        lookup = {}
+        teachers = db.get_all_teachers()
+        for teacher in teachers:
+            candidates = [
+                teacher.get('username', ''),
+                teacher.get('full_name', ''),
+                teacher.get('abbreviation', ''),
+                self._get_teacher_label(teacher),
+            ]
+            for candidate in candidates:
+                key = self._normalize_key(candidate)
+                if key and key not in lookup:
+                    lookup[key] = teacher
+        return lookup
+
+    def _find_teacher_for_import(self, reference, lookup):
+        key = self._normalize_key(reference)
+        return lookup.get(key) if key else None
+
+    def _register_teacher_import_lookup(self, lookup, teacher):
+        candidates = [
+            teacher.get('username', ''),
+            teacher.get('full_name', ''),
+            teacher.get('abbreviation', ''),
+            self._get_teacher_label(teacher),
+        ]
+        for candidate in candidates:
+            key = self._normalize_key(candidate)
+            if key:
+                lookup[key] = teacher
+
+    def _build_teacher_template_seed_data(self, class_names):
+        teacher_names = [
+            'Ms. Orna Bogeta',
+            'Mr. Erick Onyango',
+            'Ms. Janet Omolo',
+            'Ms. Milcah Bosibo Ri',
+            'Mr. William Siwa',
+            'Ms. Linner Atieno',
+            'Mr. James Misiko',
+            'Ms. Mercy Niatha',
+            'Ms. Jully Joy',
+            'Ms. Berryl Odhiambo',
+            'Mr. Joseph Wambaa',
+            'Ms. Dorice Akoth',
+            'Mr. Wako Dida',
+            'Ms. Isab Ella Kemunto',
+            'Ms. Diana Anunda',
+            'Mr. John Otieno',
+            'Ms. Lilian Otieno',
+            'Ms. Sarah Orina',
+            'Ms. Elean Nyamora',
+            'Mr. Geoffry Asadhi',
+            'Mr. Enock Bunde',
+            'Ms. Irean Imtembo',
+            'Mr. Paul',
+            'Mrs. Phelister',
+        ]
+
+        def make_username(full_name, used):
+            cleaned = re.sub(r'^(mr|mrs|ms|miss|dr)\.?\s+', '', full_name.strip(), flags=re.IGNORECASE)
+            parts = [re.sub(r'[^a-z0-9]', '', p.lower()) for p in cleaned.split()]
+            parts = [p for p in parts if p]
+            base = ''.join(parts[:2]) or f'teacher{len(used) + 1}'
+            candidate = base
+            suffix = 2
+            while candidate in used:
+                candidate = f'{base}{suffix}'
+                suffix += 1
+            used.add(candidate)
+            return candidate
+
+        if not class_names:
+            class_names = ['Grade 1']
+
+        rng = random.Random(42)
+        class_cycle = list(class_names)
+        rng.shuffle(class_cycle)
+        class_teacher_classes = class_cycle[:min(len(class_cycle), len(teacher_names))]
+        class_teacher_usernames = set()
+        used_usernames = set()
+        teacher_rows = []
+        subject_assignment_rows = []
+        class_assignment_rows = []
+
+        for idx, full_name in enumerate(teacher_names):
+            username = make_username(full_name, used_usernames)
+            role = 'class_teacher' if idx < len(class_teacher_classes) else 'teacher'
+            abbreviation = self._generate_short_label(full_name, 'teacher')
+            assigned_class = rng.choice(class_names)
+            stream_options = self._get_stream_names_for_class(assigned_class)
+            assigned_stream = rng.choice(stream_options) if stream_options else ''
+            subject_options = self._get_subjects_for_selected_class(assigned_class, TERMS[0]) or self.get_current_subjects()
+            assigned_subject = rng.choice(subject_options) if subject_options else ''
+            class_teacher_stream_options = self._get_stream_names_for_class(class_teacher_classes[idx]) if idx < len(class_teacher_classes) else []
+            class_teacher_stream = rng.choice(class_teacher_stream_options) if class_teacher_stream_options else ''
+
+            teacher_rows.append({
+                'full_name': full_name,
+                'username': username,
+                'role': role,
+                'abbreviation': abbreviation,
+                'password (optional)': username,
+            })
+            subject_assignment_rows.append({
+                'teacher_username': username,
+                'class': assigned_class,
+                'stream': assigned_stream,
+                'subject': assigned_subject,
+            })
+
+            if role == 'class_teacher' and username not in class_teacher_usernames:
+                class_assignment_rows.append({
+                    'teacher_username': username,
+                    'class': class_teacher_classes[idx],
+                    'stream': class_teacher_stream,
+                })
+                class_teacher_usernames.add(username)
+
+        return teacher_rows, subject_assignment_rows, class_assignment_rows
+
+    def _show_teacher_import_preview_dialog(self, preview_rows, stats):
+        top = tk.Toplevel(self.root)
+        top.title('Teacher Import Preview')
+        top.geometry('1120x660')
+        top.configure(bg=CONTENT_BG)
+        top.transient(self.root)
+        top.grab_set()
+        top.resizable(True, True)
+        top.minsize(980, 560)
+
+        shell_bo, shell_bi = _card_colors('mint')
+        outer = tk.Frame(top, bg=shell_bo)
+        outer.pack(fill='both', expand=True, padx=16, pady=16)
+        body = tk.Frame(outer, bg=shell_bi, padx=18, pady=16)
+        body.pack(fill='both', expand=True, padx=1, pady=1)
+        body.grid_columnconfigure(0, weight=1)
+        body.grid_rowconfigure(3, weight=1)
+
+        tk.Label(
+            body,
+            text='Teacher Workbook Import Preview',
+            bg=shell_bi,
+            fg=TEXT_PRIMARY,
+            font=(FF, 13, 'bold')
+        ).grid(row=0, column=0, sticky='w')
+
+        tk.Label(
+            body,
+            text='Review valid rows and skipped rows before saving teachers and assignments.',
+            bg=shell_bi,
+            fg=TEXT_SECONDARY,
+            font=(FF, 10)
+        ).grid(row=1, column=0, sticky='w', pady=(4, 12))
+
+        stats_row = tk.Frame(body, bg=shell_bi)
+        stats_row.grid(row=2, column=0, sticky='ew', pady=(0, 12))
+        stat_items = [
+            ('Rows Found', str(stats.get('total_rows', 0)), '#EEF3FF', BLUE),
+            ('Ready To Import', str(stats.get('valid_rows', 0)), '#EAF4EC', GREEN),
+            ('Skipped', str(stats.get('skipped_rows', 0)), '#FFF1F0', '#dc2626'),
+            ('Sheets', stats.get('sheet_summary', '-'), '#FFF6E8', ORANGE),
+        ]
+        for label_text, value_text, chip_bg, chip_fg in stat_items:
+            chip = tk.Frame(stats_row, bg=chip_bg, padx=12, pady=8)
+            chip.pack(side='left', padx=(0, 10))
+            tk.Label(chip, text=label_text, bg=chip_bg, fg=TEXT_SECONDARY,
+                     font=(FF, 9, 'bold')).pack(anchor='w')
+            tk.Label(chip, text=value_text, bg=chip_bg, fg=chip_fg,
+                     font=(FF, 11, 'bold')).pack(anchor='w')
+
+        frame = tk.Frame(body, bg=CARD_BG)
+        frame.grid(row=3, column=0, sticky='nsew', pady=(0, 12))
+        cols = ('sheet', 'row', 'action', 'target', 'status', 'details')
+        tv = ttk.Treeview(frame, columns=cols, show='headings', style='App.Treeview', height=16)
+        headings = {
+            'sheet': 'Sheet',
+            'row': 'Row',
+            'action': 'Action',
+            'target': 'Target',
+            'status': 'Status',
+            'details': 'Details',
+        }
+        widths = {
+            'sheet': 190,
+            'row': 70,
+            'action': 170,
+            'target': 250,
+            'status': 110,
+            'details': 410,
+        }
+        for col in cols:
+            tv.heading(col, text=headings[col])
+            tv.column(col, width=widths[col], minwidth=70, anchor='w' if col not in ('row', 'status') else 'center')
+
+        ysb = ttk.Scrollbar(frame, orient='vertical', command=tv.yview, style='App.Vertical.TScrollbar')
+        xsb = ttk.Scrollbar(frame, orient='horizontal', command=tv.xview, style='App.Vertical.TScrollbar')
+        tv.configure(yscrollcommand=ysb.set, xscrollcommand=xsb.set)
+        tv.grid(row=0, column=0, sticky='nsew', padx=(0, 4), pady=4)
+        ysb.grid(row=0, column=1, sticky='ns', pady=4)
+        xsb.grid(row=1, column=0, sticky='ew', padx=(0, 4))
+        frame.grid_rowconfigure(0, weight=1)
+        frame.grid_columnconfigure(0, weight=1)
+        tv.tag_configure('ready', background='#eaf7ee', foreground='#1f5130')
+        tv.tag_configure('skip', background='#fff1f0', foreground='#9f1239')
+
+        for item in preview_rows:
+            status_key = str(item.get('status', '')).strip().lower()
+            row_tag = 'ready' if status_key == 'ready' else 'skip' if status_key == 'skip' else ''
+            tv.insert('', 'end', values=(
+                item.get('sheet', ''),
+                item.get('row', ''),
+                item.get('action', ''),
+                item.get('target', ''),
+                item.get('status', ''),
+                item.get('details', ''),
+            ), tags=(row_tag,) if row_tag else ())
+
+        decision = {'ok': False}
+        footer = tk.Frame(body, bg='#f7fbe8', padx=14, pady=12)
+        footer.grid(row=4, column=0, sticky='ew')
+        footer.grid_columnconfigure(0, weight=1)
+
+        footer_text = (
+            f"Ready rows: {stats.get('valid_rows', 0)}   "
+            f"Skipped rows: {stats.get('skipped_rows', 0)}"
+        )
+        tk.Label(
+            footer,
+            text=footer_text,
+            bg='#f7fbe8',
+            fg=TEXT_SECONDARY,
+            font=(FF, 10, 'bold')
+        ).grid(row=0, column=0, sticky='w')
+
+        btn_row = tk.Frame(footer, bg='#f7fbe8')
+        btn_row.grid(row=0, column=1, sticky='e')
+        tk.Button(
+            btn_row, text='Cancel', bg=LEMON_SOFT, fg=TEXT_PRIMARY, font=(FF, 10, 'bold'),
+            padx=18, pady=10, command=top.destroy
+        ).pack(side='left', padx=(0, 10))
+        tk.Button(
+            btn_row, text='Import Now', bg=GREEN, fg='white', font=(FF, 11, 'bold'),
+            padx=22, pady=10, command=lambda: (decision.__setitem__('ok', True), top.destroy())
+        ).pack(side='right')
+
+        top.bind('<Return>', lambda _e: (decision.__setitem__('ok', True), top.destroy()))
+        top.bind('<Escape>', lambda _e: top.destroy())
+
+        self.root.wait_window(top)
+        return decision['ok']
+
+    def download_teacher_import_template(self):
+        file_path = filedialog.asksaveasfilename(
+            title='Save Teacher Import Template',
+            defaultextension='.xlsx',
+            filetypes=[('Excel files', '*.xlsx')],
+            initialfile='teacher_import_template.xlsx'
+        )
+        if not file_path:
+            return
+
+        try:
+            class_names = db.get_class_progression_order() or self.get_current_classes()
+            if not class_names:
+                class_names = ['Grade 1']
+            teacher_rows, subject_assignment_rows, class_assignment_rows = self._build_teacher_template_seed_data(class_names)
+
+            subject_rows = []
+            stream_rows = []
+            for class_name in class_names:
+                subjects = self._get_subjects_for_selected_class(class_name, TERMS[0]) or self.get_current_subjects()
+                for subject in subjects:
+                    subject_rows.append({'class': class_name, 'subject': subject})
+                stream_names = self._get_stream_names_for_class(class_name)
+                if stream_names:
+                    for stream_name in stream_names:
+                        stream_rows.append({'class': class_name, 'stream': stream_name})
+                else:
+                    stream_rows.append({'class': class_name, 'stream': ''})
+
+            with pd.ExcelWriter(file_path, engine='openpyxl') as writer:
+                pd.DataFrame({
+                    'Instructions': [
+                        'Use the Teachers sheet to add or update teachers by username.',
+                        'For new teachers, leave password blank to use the username as the starting password.',
+                        'Use teacher_username in assignment sheets so the app can match teachers correctly.',
+                        'Use the stream column when assigning a teacher to a specific stream such as Green or Yellow.',
+                        'Leave stream blank to assign the teacher to the whole class.',
+                        'Subject Assignments adds or updates subject-teacher links.',
+                        'Class Teacher Assignments replaces the class teacher for that exact class/stream target.',
+                    ]
+                }).to_excel(writer, sheet_name='Instructions', index=False)
+
+                pd.DataFrame(teacher_rows).to_excel(writer, sheet_name='Teachers', index=False)
+                pd.DataFrame(subject_assignment_rows).to_excel(writer, sheet_name='Subject Assignments', index=False)
+                pd.DataFrame(class_assignment_rows).to_excel(writer, sheet_name='Class Teacher Assignments', index=False)
+
+                pd.DataFrame({'class': class_names}).to_excel(writer, sheet_name='Classes Reference', index=False)
+                pd.DataFrame(stream_rows).to_excel(writer, sheet_name='Streams Reference', index=False)
+                pd.DataFrame(subject_rows or [{'class': class_names[0], 'subject': ''}]).to_excel(
+                    writer, sheet_name='Subjects Reference', index=False
+                )
+
+            messagebox.showinfo(
+                'Template Ready',
+                f'Teacher import template saved to:\n{file_path}\n\n'
+                'Use the Teachers screen to import the filled workbook.'
+            )
+        except Exception as exc:
+            messagebox.showerror('Template Error', f'Failed to create teacher template:\n{exc}')
+
+    def export_teachers_excel(self):
+        file_path = filedialog.asksaveasfilename(
+            title='Export Teachers Workbook',
+            defaultextension='.xlsx',
+            filetypes=[('Excel files', '*.xlsx')],
+            initialfile='teachers_export.xlsx'
+        )
+        if not file_path:
+            return
+
+        try:
+            teachers = db.get_all_teachers()
+            subject_assignments = db.get_subject_teacher_assignments()
+            class_assignments = db.get_class_teacher_assignments()
+            class_names = db.get_class_progression_order() or self.get_current_classes()
+            if not class_names:
+                class_names = ['Grade 1']
+
+            subject_rows = []
+            stream_rows = []
+            for class_name in class_names:
+                subjects = self._get_subjects_for_selected_class(class_name, TERMS[0]) or self.get_current_subjects()
+                for subject in subjects:
+                    subject_rows.append({'class': class_name, 'subject': subject})
+                stream_names = self._get_stream_names_for_class(class_name)
+                if stream_names:
+                    for stream_name in stream_names:
+                        stream_rows.append({'class': class_name, 'stream': stream_name})
+                else:
+                    stream_rows.append({'class': class_name, 'stream': ''})
+
+            teacher_rows = [
+                {
+                    'full_name': teacher.get('full_name', ''),
+                    'username': teacher.get('username', ''),
+                    'role': teacher.get('role', 'teacher'),
+                    'abbreviation': teacher.get('abbreviation', ''),
+                    'password (optional)': '',
+                }
+                for teacher in teachers
+            ]
+
+            subject_assignment_rows = [
+                {
+                    'teacher_username': assignment.get('username', ''),
+                    'teacher_name': assignment.get('full_name', ''),
+                    'class': assignment.get('class_name', ''),
+                    'stream': assignment.get('stream_name', ''),
+                    'subject': assignment.get('subject', ''),
+                }
+                for assignment in subject_assignments
+            ]
+
+            class_assignment_rows = [
+                {
+                    'teacher_username': assignment.get('username', ''),
+                    'teacher_name': assignment.get('full_name', ''),
+                    'class': assignment.get('class_name', ''),
+                    'stream': assignment.get('stream_name', ''),
+                }
+                for assignment in class_assignments
+            ]
+
+            with pd.ExcelWriter(file_path, engine='openpyxl') as writer:
+                pd.DataFrame({
+                    'Instructions': [
+                        'This workbook was exported from Teachers Management.',
+                        'Edit the Teachers, Subject Assignments, and Class Teacher Assignments sheets as needed.',
+                        'Use the stream column for class-specific streams like Green or Yellow.',
+                        'Leave password blank if you do not want to change an existing teacher password.',
+                        'Import the edited workbook from the same Teachers screen using Import Excel.',
+                    ]
+                }).to_excel(writer, sheet_name='Instructions', index=False)
+
+                pd.DataFrame(
+                    teacher_rows or [{
+                        'full_name': '',
+                        'username': '',
+                        'role': 'teacher',
+                        'abbreviation': '',
+                        'password (optional)': '',
+                    }]
+                ).to_excel(writer, sheet_name='Teachers', index=False)
+
+                pd.DataFrame(
+                    subject_assignment_rows or [{
+                        'teacher_username': '',
+                        'teacher_name': '',
+                        'class': class_names[0],
+                        'stream': '',
+                        'subject': '',
+                    }]
+                ).to_excel(writer, sheet_name='Subject Assignments', index=False)
+
+                pd.DataFrame(
+                    class_assignment_rows or [{
+                        'teacher_username': '',
+                        'teacher_name': '',
+                        'class': class_names[0],
+                        'stream': '',
+                    }]
+                ).to_excel(writer, sheet_name='Class Teacher Assignments', index=False)
+
+                pd.DataFrame({'class': class_names}).to_excel(writer, sheet_name='Classes Reference', index=False)
+                pd.DataFrame(stream_rows).to_excel(writer, sheet_name='Streams Reference', index=False)
+                pd.DataFrame(subject_rows or [{'class': class_names[0], 'subject': ''}]).to_excel(
+                    writer, sheet_name='Subjects Reference', index=False
+                )
+
+            messagebox.showinfo('Export Complete', f'Teacher workbook exported to:\n{file_path}')
+        except Exception as exc:
+            messagebox.showerror('Export Error', f'Failed to export teacher workbook:\n{exc}')
+
+    def import_teachers_excel(self, on_complete=None):
+        file_path = filedialog.askopenfilename(
+            title='Import Teachers Workbook',
+            filetypes=[('Excel files', '*.xlsx *.xls')]
+        )
+        if not file_path:
+            return
+
+        try:
+            workbook = pd.ExcelFile(file_path)
+            sheet_lookup = {self._normalize_key(name): name for name in workbook.sheet_names}
+
+            teachers_sheet = next((sheet_lookup[key] for key in (
+                'teachers', 'teacher', 'staff'
+            ) if key in sheet_lookup), None)
+            subject_sheet = next((sheet_lookup[key] for key in (
+                'subjectassignments', 'subjectassignment', 'subject_assignment'
+            ) if key in sheet_lookup), None)
+            class_sheet = next((sheet_lookup[key] for key in (
+                'classteacherassignments', 'classteacherassignment', 'class_teacher_assignments'
+            ) if key in sheet_lookup), None)
+
+            if not any([teachers_sheet, subject_sheet, class_sheet]):
+                messagebox.showerror(
+                    'Import Error',
+                    'Workbook not recognized.\n\nExpected at least one of these sheets:\n'
+                    'Teachers\nSubject Assignments\nClass Teacher Assignments'
+                )
+                return
+
+            def clean(value):
+                if pd.isna(value):
+                    return ''
+                text = str(value).strip()
+                return '' if text.lower() == 'nan' else text
+
+            def pick(row, *keys):
+                for key in keys:
+                    if key in row and clean(row.get(key)):
+                        return clean(row.get(key))
+                return ''
+
+            class_names = db.get_class_progression_order() or self.get_current_classes()
+            known_classes = set(class_names)
+            preview_rows = []
+            teacher_actions = []
+            subject_actions = []
+            class_actions = []
+            total_rows = 0
+
+            teacher_lookup = self._build_teacher_import_lookup()
+
+            if teachers_sheet:
+                teachers_df = workbook.parse(teachers_sheet)
+                teachers_df.columns = [self._normalize_key(col) for col in teachers_df.columns]
+
+                for idx, row in teachers_df.iterrows():
+                    total_rows += 1
+                    full_name = pick(row, 'fullname', 'name')
+                    username = pick(row, 'username', 'teacherusername')
+                    role = self._normalize_teacher_import_role(row.get('role', 'teacher'))
+                    abbreviation = pick(row, 'abbreviation', 'abbr')
+                    password = pick(row, 'passwordoptional', 'password', 'temppassword')
+
+                    if not any([full_name, username, abbreviation]):
+                        continue
+                    if not full_name or not username:
+                        preview_rows.append({
+                            'sheet': teachers_sheet,
+                            'row': idx + 2,
+                            'action': 'Teacher',
+                            'target': username or full_name or '-',
+                            'status': 'Skip',
+                            'details': 'full_name and username are required',
+                        })
+                        continue
+
+                    existing = self._find_teacher_for_import(username, teacher_lookup)
+                    action = 'Update Teacher' if existing else 'Add Teacher'
+                    preview_rows.append({
+                        'sheet': teachers_sheet,
+                        'row': idx + 2,
+                        'action': action,
+                        'target': f'{full_name} ({username})',
+                        'status': 'Ready',
+                        'details': f'Role: {role}, Label: {abbreviation or "-"}',
+                    })
+                    teacher_actions.append({
+                        'mode': 'update' if existing else 'add',
+                        'row': idx + 2,
+                        'sheet': teachers_sheet,
+                        'teacher_id': existing.get('id', '') if existing else '',
+                        'full_name': full_name,
+                        'username': username,
+                        'role': role,
+                        'abbreviation': abbreviation,
+                        'password': password or username,
+                    })
+                    self._register_teacher_import_lookup(teacher_lookup, {
+                        'id': existing.get('id', '') if existing else '',
+                        'full_name': full_name,
+                        'username': username,
+                        'role': role,
+                        'abbreviation': abbreviation,
+                    })
+
+            if subject_sheet:
+                subject_df = workbook.parse(subject_sheet)
+                subject_df.columns = [self._normalize_key(col) for col in subject_df.columns]
+
+                for idx, row in subject_df.iterrows():
+                    total_rows += 1
+                    teacher_ref = pick(row, 'teacherusername', 'username', 'teacher')
+                    raw_class = pick(row, 'class', 'classname')
+                    raw_stream = pick(row, 'stream', 'classstream')
+                    raw_subject = pick(row, 'subject', 'learningarea')
+
+                    if not any([teacher_ref, raw_class, raw_stream, raw_subject]):
+                        continue
+                    if not all([teacher_ref, raw_class, raw_subject]):
+                        preview_rows.append({
+                            'sheet': subject_sheet,
+                            'row': idx + 2,
+                            'action': 'Subject Assignment',
+                            'target': teacher_ref or raw_subject or '-',
+                            'status': 'Skip',
+                            'details': 'teacher_username, class, and subject are required',
+                        })
+                        continue
+
+                    teacher = self._find_teacher_for_import(teacher_ref, teacher_lookup)
+                    class_name = self._match_known_class_name(raw_class) or raw_class
+                    stream_name = self._match_known_stream_name(raw_stream, class_name) if raw_stream else ''
+                    if class_name not in known_classes:
+                        preview_rows.append({
+                            'sheet': subject_sheet,
+                            'row': idx + 2,
+                            'action': 'Subject Assignment',
+                            'target': f'{teacher_ref} -> {raw_subject}',
+                            'status': 'Skip',
+                            'details': f'Unknown class "{raw_class}"',
+                        })
+                        continue
+                    if not teacher:
+                        preview_rows.append({
+                            'sheet': subject_sheet,
+                            'row': idx + 2,
+                            'action': 'Subject Assignment',
+                            'target': f'{teacher_ref} -> {raw_subject}',
+                            'status': 'Skip',
+                            'details': f'Teacher "{teacher_ref}" not found',
+                        })
+                        continue
+                    if raw_stream and not stream_name:
+                        preview_rows.append({
+                            'sheet': subject_sheet,
+                            'row': idx + 2,
+                            'action': 'Subject Assignment',
+                            'target': f'{teacher_ref} -> {class_name}',
+                            'status': 'Skip',
+                            'details': f'Stream "{raw_stream}" not found in {class_name}',
+                        })
+                        continue
+
+                    subject_name = self._map_sheet_subject(raw_subject, class_name)
+                    valid_subjects = self._get_subjects_for_selected_class(class_name, TERMS[0]) or self.get_current_subjects()
+                    if subject_name not in valid_subjects:
+                        preview_rows.append({
+                            'sheet': subject_sheet,
+                            'row': idx + 2,
+                            'action': 'Subject Assignment',
+                            'target': f'{teacher.get("username", teacher_ref)} -> {class_name}',
+                            'status': 'Skip',
+                            'details': f'Subject "{raw_subject}" not valid for {class_name}',
+                        })
+                        continue
+
+                    preview_rows.append({
+                        'sheet': subject_sheet,
+                        'row': idx + 2,
+                        'action': 'Subject Assignment',
+                        'target': f'{teacher.get("username", teacher_ref)} -> {self._format_class_stream_label(class_name, stream_name)}',
+                        'status': 'Ready',
+                        'details': subject_name,
+                    })
+                    subject_actions.append({
+                        'sheet': subject_sheet,
+                        'row': idx + 2,
+                        'teacher_username': teacher.get('username', teacher_ref),
+                        'class_name': class_name,
+                        'stream_name': stream_name,
+                        'subject_name': subject_name,
+                    })
+
+            if class_sheet:
+                class_df = workbook.parse(class_sheet)
+                class_df.columns = [self._normalize_key(col) for col in class_df.columns]
+
+                for idx, row in class_df.iterrows():
+                    total_rows += 1
+                    teacher_ref = pick(row, 'teacherusername', 'username', 'teacher')
+                    raw_class = pick(row, 'class', 'classname')
+                    raw_stream = pick(row, 'stream', 'classstream')
+
+                    if not any([teacher_ref, raw_class, raw_stream]):
+                        continue
+                    if not all([teacher_ref, raw_class]):
+                        preview_rows.append({
+                            'sheet': class_sheet,
+                            'row': idx + 2,
+                            'action': 'Class Teacher',
+                            'target': teacher_ref or raw_class or '-',
+                            'status': 'Skip',
+                            'details': 'teacher_username and class are required',
+                        })
+                        continue
+
+                    teacher = self._find_teacher_for_import(teacher_ref, teacher_lookup)
+                    class_name = self._match_known_class_name(raw_class) or raw_class
+                    stream_name = self._match_known_stream_name(raw_stream, class_name) if raw_stream else ''
+                    if class_name not in known_classes:
+                        preview_rows.append({
+                            'sheet': class_sheet,
+                            'row': idx + 2,
+                            'action': 'Class Teacher',
+                            'target': f'{teacher_ref} -> {raw_class}',
+                            'status': 'Skip',
+                            'details': f'Unknown class "{raw_class}"',
+                        })
+                        continue
+                    if not teacher:
+                        preview_rows.append({
+                            'sheet': class_sheet,
+                            'row': idx + 2,
+                            'action': 'Class Teacher',
+                            'target': f'{teacher_ref} -> {class_name}',
+                            'status': 'Skip',
+                            'details': f'Teacher "{teacher_ref}" not found',
+                        })
+                        continue
+                    if raw_stream and not stream_name:
+                        preview_rows.append({
+                            'sheet': class_sheet,
+                            'row': idx + 2,
+                            'action': 'Class Teacher',
+                            'target': f'{teacher_ref} -> {class_name}',
+                            'status': 'Skip',
+                            'details': f'Stream "{raw_stream}" not found in {class_name}',
+                        })
+                        continue
+
+                    preview_rows.append({
+                        'sheet': class_sheet,
+                        'row': idx + 2,
+                        'action': 'Class Teacher',
+                        'target': f'{teacher.get("username", teacher_ref)} -> {self._format_class_stream_label(class_name, stream_name)}',
+                        'status': 'Ready',
+                        'details': 'Will replace current class teacher for this class/stream',
+                    })
+                    class_actions.append({
+                        'sheet': class_sheet,
+                        'row': idx + 2,
+                        'teacher_username': teacher.get('username', teacher_ref),
+                        'class_name': class_name,
+                        'stream_name': stream_name,
+                    })
+
+            valid_rows = len([row for row in preview_rows if row.get('status') == 'Ready'])
+            skipped_rows = len([row for row in preview_rows if row.get('status') == 'Skip'])
+            sheet_names = [name for name in [teachers_sheet, subject_sheet, class_sheet] if name]
+            if not preview_rows:
+                messagebox.showwarning('No Data', 'No teacher rows or assignment rows were found in the workbook.')
+                return
+
+            if not self._show_teacher_import_preview_dialog(preview_rows, {
+                'total_rows': total_rows,
+                'valid_rows': valid_rows,
+                'skipped_rows': skipped_rows,
+                'sheet_summary': ', '.join(sheet_names),
+            }):
+                return
+
+            progress_dialog, status_label, percent_label, progress = self._open_progress_dialog(
+                'Importing Teachers', 'Preparing teacher import...'
+            )
+            total_actions = max(1, len(teacher_actions) + len(subject_actions) + len(class_actions))
+            processed = 0
+            teachers_added = 0
+            teachers_updated = 0
+            subject_links = 0
+            class_links = 0
+            runtime_skipped = []
+
+            for action in teacher_actions:
+                processed += 1
+                self._update_progress_dialog(
+                    progress_dialog, status_label, percent_label, progress,
+                    processed, total_actions,
+                    f'Processing teacher row {action["row"]} ({processed}/{total_actions})'
+                )
+                if action['mode'] == 'update':
+                    success, msg = db.update_teacher(
+                        action['teacher_id'],
+                        action['full_name'],
+                        action['username'],
+                        action['role'],
+                        action['abbreviation'],
+                        action['password']
+                    )
+                    if success:
+                        teachers_updated += 1
+                    else:
+                        runtime_skipped.append(f'{action["sheet"]} row {action["row"]}: {msg}')
+                else:
+                    success, msg = db.add_teacher(
+                        action['full_name'],
+                        action['username'],
+                        action['password'],
+                        action['role'],
+                        action['abbreviation']
+                    )
+                    if success:
+                        teachers_added += 1
+                    else:
+                        runtime_skipped.append(f'{action["sheet"]} row {action["row"]}: {msg}')
+
+            teacher_lookup = self._build_teacher_import_lookup()
+
+            for action in subject_actions:
+                processed += 1
+                self._update_progress_dialog(
+                    progress_dialog, status_label, percent_label, progress,
+                    processed, total_actions,
+                    f'Processing subject assignment row {action["row"]} ({processed}/{total_actions})'
+                )
+                teacher = self._find_teacher_for_import(action['teacher_username'], teacher_lookup)
+                if not teacher:
+                    runtime_skipped.append(f'{action["sheet"]} row {action["row"]}: teacher "{action["teacher_username"]}" not found at save time')
+                    continue
+                if db.assign_subject_teacher(teacher['id'], action['class_name'], action['subject_name'], action.get('stream_name', '')):
+                    subject_links += 1
+                else:
+                    runtime_skipped.append(f'{action["sheet"]} row {action["row"]}: could not save assignment')
+
+            for action in class_actions:
+                processed += 1
+                self._update_progress_dialog(
+                    progress_dialog, status_label, percent_label, progress,
+                    processed, total_actions,
+                    f'Processing class teacher row {action["row"]} ({processed}/{total_actions})'
+                )
+                teacher = self._find_teacher_for_import(action['teacher_username'], teacher_lookup)
+                if not teacher:
+                    runtime_skipped.append(f'{action["sheet"]} row {action["row"]}: teacher "{action["teacher_username"]}" not found at save time')
+                    continue
+                if db.assign_class_teacher(teacher['id'], action['class_name'], action.get('stream_name', '')):
+                    class_links += 1
+                else:
+                    runtime_skipped.append(f'{action["sheet"]} row {action["row"]}: could not save assignment')
+
+            try:
+                progress_dialog.destroy()
+            except Exception:
+                pass
+
+            if callable(on_complete):
+                on_complete()
+            else:
+                self.show_teachers()
+
+            msg = (
+                'Teacher workbook imported successfully.\n\n'
+                f'Teachers added: {teachers_added}\n'
+                f'Teachers updated: {teachers_updated}\n'
+                f'Subject assignments saved: {subject_links}\n'
+                f'Class teacher assignments saved: {class_links}'
+            )
+            all_skipped = [row for row in preview_rows if row.get('status') == 'Skip']
+            skipped_messages = [
+                f'{row.get("sheet", "")} row {row.get("row", "")}: {row.get("details", "")}'
+                for row in all_skipped
+            ] + runtime_skipped
+            if skipped_messages:
+                preview = '\n'.join(skipped_messages[:12])
+                extra = '' if len(skipped_messages) <= 12 else f'\n...and {len(skipped_messages) - 12} more'
+                msg += f'\n\nSkipped rows: {len(skipped_messages)}\n{preview}{extra}'
+            messagebox.showinfo('Import Complete', msg)
+        except Exception as exc:
+            messagebox.showerror('Import Error', f'Failed to import teacher workbook:\n{exc}')
 
     def _open_teacher_dialog(self, teacher_row=None):
         dialog = tk.Toplevel(self.root)
@@ -4574,14 +5676,16 @@ class SchoolReportApp:
         subj_frame = tk.Frame(container, bg=CARD_BG, relief='flat', bd=1)
         subj_frame.pack(fill='x', padx=10, pady=5)
         
-        cols = ('teacher', 'subject', 'class')
+        cols = ('teacher', 'subject', 'class', 'stream')
         subj_tree = ttk.Treeview(subj_frame, columns=cols, show='headings', height=8)
         subj_tree.heading('teacher', text='Teacher')
         subj_tree.heading('subject', text='Subject')
         subj_tree.heading('class', text='Class')
+        subj_tree.heading('stream', text='Stream')
         subj_tree.column('teacher', width=150)
         subj_tree.column('subject', width=150)
         subj_tree.column('class', width=150)
+        subj_tree.column('stream', width=110)
         subj_tree.pack(fill='x', padx=10, pady=10)
         
         assignments = db.get_subject_teacher_assignments()
@@ -4589,7 +5693,8 @@ class SchoolReportApp:
             subj_tree.insert('', 'end', values=(
                 self._get_teacher_label(a),
                 self._get_subject_label(a.get('subject', ''), a.get('class_name', '')),
-                self._get_class_label(a.get('class_name', ''))
+                self._get_class_label(a.get('class_name', '')),
+                a.get('stream_name', '') or 'Whole Class'
             ))
         
         # Class Teacher Assignments
@@ -4599,19 +5704,22 @@ class SchoolReportApp:
         class_frame = tk.Frame(container, bg=CARD_BG, relief='flat', bd=1)
         class_frame.pack(fill='x', padx=10, pady=5)
         
-        cols = ('teacher', 'class')
+        cols = ('teacher', 'class', 'stream')
         class_tree = ttk.Treeview(class_frame, columns=cols, show='headings', height=5)
         class_tree.heading('teacher', text='Teacher')
         class_tree.heading('class', text='Class')
+        class_tree.heading('stream', text='Stream')
         class_tree.column('teacher', width=200)
         class_tree.column('class', width=200)
+        class_tree.column('stream', width=110)
         class_tree.pack(fill='x', padx=10, pady=10)
         
         class_assignments = db.get_class_teacher_assignments()
         for a in class_assignments:
             class_tree.insert('', 'end', values=(
                 self._get_teacher_label(a),
-                self._get_class_label(a.get('class_name', ''))
+                self._get_class_label(a.get('class_name', '')),
+                a.get('stream_name', '') or 'Whole Class'
             ))
         
         # Buttons
@@ -4885,6 +5993,12 @@ class SchoolReportApp:
                  font=(FF, 10), padx=15, pady=5, command=lambda: self._open_teacher_dialog()).pack(side='left', padx=5)
         tk.Button(toolbar, text='Edit Selected', bg=BLUE, fg='white',
                  font=(FF, 10), padx=15, pady=5, command=lambda: self._edit_teacher_dialog(tree)).pack(side='left', padx=5)
+        tk.Button(toolbar, text='Template', bg=ORANGE, fg='white',
+                 font=(FF, 10), padx=15, pady=5, command=self.download_teacher_import_template).pack(side='left', padx=5)
+        tk.Button(toolbar, text='Export Excel', bg=GREEN, fg='white',
+                 font=(FF, 10), padx=15, pady=5, command=self.export_teachers_excel).pack(side='left', padx=5)
+        tk.Button(toolbar, text='Import Excel', bg='#1d4ed8', fg='white',
+                 font=(FF, 10), padx=15, pady=5, command=lambda: self.import_teachers_excel(on_complete=self.show_teachers)).pack(side='left', padx=5)
         
         tk.Button(toolbar, text='Refresh', bg='#666', fg='white',
                  font=(FF, 10), padx=15, pady=5, command=self.show_teachers).pack(side='left', padx=5)
@@ -4925,12 +6039,12 @@ class SchoolReportApp:
             for sa in subject_assignments:
                 if sa['teacher_id'] == teacher['id']:
                     assignments.append(
-                        f"{self._get_subject_label(sa['subject'], sa['class_name'])} ({self._get_class_label(sa['class_name'])})"
+                        f"{self._get_subject_label(sa['subject'], sa['class_name'])} ({self._format_class_stream_label(sa['class_name'], sa.get('stream_name', ''))})"
                     )
             
             for ca in class_assignments:
                 if ca['teacher_id'] == teacher['id']:
-                    assignments.append(f"Class Teacher: {self._get_class_label(ca['class_name'])}")
+                    assignments.append(f"Class Teacher: {self._format_class_stream_label(ca['class_name'], ca.get('stream_name', ''))}")
             
             role_label = 'Subject Teacher' if teacher.get('role') == 'teacher' else 'Class Teacher'
             assignment_text = ', '.join(assignments) if assignments else 'No assignments'
@@ -4987,7 +6101,7 @@ class SchoolReportApp:
         
         dialog = tk.Toplevel(self.root)
         dialog.title('Assign Subject to Teacher')
-        dialog.geometry('430x380')
+        dialog.geometry('430x450')
         dialog.transient(self.root)
         dialog.grab_set()
         dialog.resizable(False, False)
@@ -5004,6 +6118,12 @@ class SchoolReportApp:
         class_cb = ttk.Combobox(dialog, textvariable=class_var, values=classes,
                                state='readonly', font=(FF, 10))
         class_cb.pack(fill='x', padx=20)
+
+        tk.Label(dialog, text='Select Stream:', font=(FF, 11)).pack(pady=(15, 5))
+        stream_var = tk.StringVar(value='Whole Class')
+        stream_cb = ttk.Combobox(dialog, textvariable=stream_var, values=['Whole Class'],
+                                 state='readonly', font=(FF, 10))
+        stream_cb.pack(fill='x', padx=20)
         
         tk.Label(dialog, text='Select Subject:', font=(FF, 11)).pack(pady=(15, 5))
         subject_var = tk.StringVar()
@@ -5017,6 +6137,10 @@ class SchoolReportApp:
             subject_cb.configure(values=values)
             if subject_var.get() not in values:
                 subject_var.set(values[0] if values else '')
+            stream_values = self._get_assignment_stream_options(selected_class)
+            stream_cb.configure(values=stream_values)
+            if stream_var.get() not in stream_values:
+                stream_var.set(stream_values[0] if stream_values else 'Whole Class')
 
         class_cb.bind('<<ComboboxSelected>>', refresh_subject_options)
         
@@ -5028,8 +6152,9 @@ class SchoolReportApp:
             # Get selected teacher ID
             selected_idx = teacher_cb.current()
             teacher_id = teachers[selected_idx]['id']
+            stream_name = '' if stream_var.get() == 'Whole Class' else stream_var.get().strip()
             
-            success = db.assign_subject_teacher(teacher_id, class_var.get(), subject_var.get())
+            success = db.assign_subject_teacher(teacher_id, class_var.get(), subject_var.get(), stream_name)
             if success:
                 messagebox.showinfo('Success', 'Subject assigned successfully!')
                 dialog.destroy()
@@ -5059,7 +6184,7 @@ class SchoolReportApp:
         
         dialog = tk.Toplevel(self.root)
         dialog.title('Assign Class Teacher')
-        dialog.geometry('430x320')
+        dialog.geometry('430x390')
         dialog.transient(self.root)
         dialog.grab_set()
         dialog.resizable(False, False)
@@ -5076,6 +6201,20 @@ class SchoolReportApp:
         class_cb = ttk.Combobox(dialog, textvariable=class_var, values=classes,
                                state='readonly', font=(FF, 10))
         class_cb.pack(fill='x', padx=20)
+
+        tk.Label(dialog, text='Select Stream:', font=(FF, 11)).pack(pady=(15, 5))
+        stream_var = tk.StringVar(value='Whole Class')
+        stream_cb = ttk.Combobox(dialog, textvariable=stream_var, values=['Whole Class'],
+                                 state='readonly', font=(FF, 10))
+        stream_cb.pack(fill='x', padx=20)
+
+        def refresh_stream_options(event=None):
+            stream_values = self._get_assignment_stream_options(class_var.get().strip())
+            stream_cb.configure(values=stream_values)
+            if stream_var.get() not in stream_values:
+                stream_var.set(stream_values[0] if stream_values else 'Whole Class')
+
+        class_cb.bind('<<ComboboxSelected>>', refresh_stream_options)
         
         def save_assignment():
             if not all([teacher_var.get(), class_var.get()]):
@@ -5084,8 +6223,9 @@ class SchoolReportApp:
             
             selected_idx = teacher_cb.current()
             teacher_id = teachers[selected_idx]['id']
+            stream_name = '' if stream_var.get() == 'Whole Class' else stream_var.get().strip()
             
-            success = db.assign_class_teacher(teacher_id, class_var.get())
+            success = db.assign_class_teacher(teacher_id, class_var.get(), stream_name)
             if success:
                 messagebox.showinfo('Success', 'Class teacher assigned successfully!')
                 dialog.destroy()
@@ -5095,6 +6235,8 @@ class SchoolReportApp:
                     self.show_teachers()
             else:
                 messagebox.showerror('Error', 'Failed to assign class teacher')
+
+        refresh_stream_options()
         
         btn_row = tk.Frame(dialog, bg=dialog.cget('bg'))
         btn_row.pack(fill='x', pady=(18, 20), padx=20)
@@ -6224,6 +7366,8 @@ class SchoolReportApp:
         cls_cb.set(cls)
         cls_cb.pack(fill='x', ipady=4, pady=(0, 10))
 
+        last_suggested_adm = {'value': ''}
+
         tk.Label(card, text='Stream', bg=sd_bi, fg=TEXT_SECONDARY,
                  font=(FF, 10, 'bold'), anchor='w').pack(fill='x', pady=(0, 3))
         stream_cb = ttk.Combobox(card, style='App.TCombobox')
@@ -6242,8 +7386,27 @@ class SchoolReportApp:
             else:
                 stream_cb.set(current or stream)
 
+        def refresh_admission_no(force=False):
+            class_name = cls_cb.get().strip()
+            if not class_name:
+                return
+            current = adm_e.get().strip()
+            suggested = db.get_next_class_admission_no(class_name)
+            if force or not current or current == last_suggested_adm['value']:
+                adm_e.delete(0, 'end')
+                adm_e.insert(0, suggested)
+            last_suggested_adm['value'] = suggested
+
         refresh_streams()
-        cls_cb.bind('<<ComboboxSelected>>', lambda e: refresh_streams())
+        if not str(adm or '').strip():
+            refresh_admission_no(force=True)
+
+        def on_class_selected(_event=None):
+            refresh_streams()
+            if not str(adm or '').strip():
+                refresh_admission_no()
+
+        cls_cb.bind('<<ComboboxSelected>>', on_class_selected)
 
         tk.Label(card, text='Gender', bg=sd_bi, fg=TEXT_SECONDARY,
                  font=(FF, 10, 'bold'), anchor='w').pack(fill='x', pady=(0, 3))
@@ -6260,14 +7423,14 @@ class SchoolReportApp:
         cancel.bind('<Button-1>', lambda e: dlg.destroy())
 
         def do_save():
-            if not adm_e.get().strip():
-                messagebox.showerror('Error', 'Admission No is required', parent=dlg)
-                return
             if not name_e.get().strip():
                 messagebox.showerror('Error', 'Name is required', parent=dlg)
                 return
-            on_save(
-                adm_e.get().strip(),
+            admission_no = adm_e.get().strip() or self._generate_admission_no(cls_cb.get(), name_e.get().strip())
+            adm_e.delete(0, 'end')
+            adm_e.insert(0, admission_no)
+            saved = on_save(
+                admission_no,
                 name_e.get().strip(),
                 cls_cb.get(),
                 gen_cb.get(),
@@ -6276,7 +7439,8 @@ class SchoolReportApp:
                 parent_email_e.get().strip(),
                 stream_cb.get().strip(),
             )
-            dlg.destroy()
+            if saved is not False:
+                dlg.destroy()
 
         save = tk.Label(btn_row, text='Save', bg=BLUE, fg='white',
                         font=(FF, 10, 'bold'), padx=20, pady=8, cursor='hand2')
@@ -6285,8 +7449,13 @@ class SchoolReportApp:
 
     def add_student(self):
         def on_save(adm, name, cls, gender, photo, guardian_name, parent_email, stream):
+            existing = db.get_student_by_admission_no(adm, cls)
+            if existing:
+                messagebox.showerror('Duplicate Admission No', f'Admission No {adm} already exists in {cls}.', parent=self.root)
+                return False
             db.add_student(name, cls, gender, adm, photo, guardian_name, parent_email, stream)
             self.load_students()
+            return True
         self._student_dialog('Add Student', on_save=on_save)
 
     def edit_student(self):
@@ -6300,8 +7469,13 @@ class SchoolReportApp:
         photo = tags[1] if len(tags) > 1 else ""
         student = next((row for row in db.get_all_students() if row.get('id') == sid), {})
         def on_save(a, n, c, g, p, guardian_name, parent_email, stream):
+            existing = db.get_student_by_admission_no(a, c)
+            if existing and existing.get('id') != sid:
+                messagebox.showerror('Duplicate Admission No', f'Admission No {a} already exists in {c}.', parent=self.root)
+                return False
             db.update_student(sid, n, c, g, a, p, guardian_name, parent_email, stream)
             self.load_students()
+            return True
         self._student_dialog(
             'Edit Student',
             student.get('admission_no', ''),
@@ -6336,7 +7510,7 @@ class SchoolReportApp:
         if hasattr(self, 'students_import_class_var'):
             selected_target = (self.students_import_class_var.get() or '').strip()
             if selected_target and selected_target != 'Use Class From File':
-                import_target_class = selected_target
+                import_target_class = self._match_known_class_name(selected_target) or selected_target
 
         file_path = filedialog.askopenfilename(
             title="Select Excel File",
@@ -6359,23 +7533,17 @@ class SchoolReportApp:
                 'photo_path': {'photo', 'photo_path', 'photo path', 'image', 'image_path'},
             }
 
-            known_classes = [row.get('name', '') for row in db.get_all_classes() if row.get('name', '')]
-
             def clean_value(value):
                 value = str(value or '').strip()
                 return '' if value.lower() == 'nan' else value
-
-            def resolve_sheet_class(sheet_name):
-                norm_sheet = self._normalize_text(sheet_name)
-                for cls_name in known_classes:
-                    if self._normalize_text(cls_name) == norm_sheet:
-                        return cls_name
-                return ''
 
             prepared_sheets = []
             total_rows = 0
             for sheet_name, raw_df in workbook.items():
                 if raw_df is None or raw_df.empty:
+                    continue
+                sheet_context = self._get_sheet_context(str(sheet_name))
+                if sheet_context.get('is_summary'):
                     continue
                 df = raw_df.copy()
                 df.columns = [self._normalize_text(c) for c in df.columns]
@@ -6397,7 +7565,8 @@ class SchoolReportApp:
                     'stream_col': find_col('stream'),
                     'gender_col': find_col('gender'),
                     'photo_col': find_col('photo_path'),
-                    'sheet_default_class': resolve_sheet_class(str(sheet_name)),
+                    'sheet_default_class': sheet_context.get('class_name', ''),
+                    'sheet_default_stream': sheet_context.get('stream_name', ''),
                 })
                 total_rows += len(df.index)
 
@@ -6410,53 +7579,93 @@ class SchoolReportApp:
 
             current_classes = self.get_current_classes()
             default_class = current_classes[0] if current_classes else 'Grade 1'
+            default_class = self._match_known_class_name(default_class) or default_class
 
             def show_import_preview_dialog():
                 top = tk.Toplevel(self.root)
                 top.title('Import Preview')
-                top.geometry('860x520')
+                top.geometry('1040x620')
+                top.configure(bg=CONTENT_BG)
                 top.transient(self.root)
                 top.grab_set()
-                top.resizable(False, False)
+                top.resizable(True, True)
+                top.minsize(920, 540)
+
+                shell_bo, shell_bi = _card_colors('mint')
+                outer = tk.Frame(top, bg=shell_bo)
+                outer.pack(fill='both', expand=True, padx=16, pady=16)
+                body = tk.Frame(outer, bg=shell_bi, padx=18, pady=16)
+                body.pack(fill='both', expand=True, padx=1, pady=1)
 
                 tk.Label(
-                    top,
+                    body,
                     text='Workbook Import Preview',
-                    bg=CONTENT_BG,
+                    bg=shell_bi,
                     fg=TEXT_PRIMARY,
-                    font=(FF, 12, 'bold')
-                ).pack(anchor='w', padx=16, pady=(14, 4))
+                    font=(FF, 13, 'bold')
+                ).pack(anchor='w')
 
                 scope_txt = import_target_class if import_target_class else 'Use class from each sheet/row'
                 tk.Label(
-                    top,
+                    body,
                     text=f'Selected import scope: {scope_txt}',
-                    bg=CONTENT_BG,
+                    bg=shell_bi,
                     fg=TEXT_SECONDARY,
                     font=(FF, 10)
-                ).pack(anchor='w', padx=16, pady=(0, 10))
+                ).pack(anchor='w', pady=(4, 12))
 
-                frame = tk.Frame(top, bg=CARD_BG)
-                frame.pack(fill='both', expand=True, padx=16, pady=(0, 12))
+                stats = tk.Frame(body, bg=shell_bi)
+                stats.pack(fill='x', pady=(0, 12))
+                stat_items = [
+                    ('Sheets Ready', str(len(prepared_sheets)), '#EAF4EC', GREEN),
+                    ('Rows Found', str(total_rows), '#EEF3FF', BLUE),
+                    ('Fallback Class', default_class, '#FFF6E8', ORANGE),
+                ]
+                for label_text, value_text, chip_bg, chip_fg in stat_items:
+                    chip = tk.Frame(stats, bg=chip_bg, padx=12, pady=8)
+                    chip.pack(side='left', padx=(0, 10))
+                    tk.Label(chip, text=label_text, bg=chip_bg, fg=TEXT_SECONDARY,
+                             font=(FF, 9, 'bold')).pack(anchor='w')
+                    tk.Label(chip, text=value_text, bg=chip_bg, fg=chip_fg,
+                             font=(FF, 11, 'bold')).pack(anchor='w')
+
+                tk.Label(
+                    body,
+                    text='Review how each worksheet will be mapped before importing.',
+                    bg=shell_bi,
+                    fg=TEXT_SECONDARY,
+                    font=(FF, 9)
+                ).pack(anchor='w', pady=(0, 8))
+
+                frame = tk.Frame(body, bg=CARD_BG)
+                frame.pack(fill='both', expand=True, pady=(0, 12))
                 cols = ('sheet', 'rows', 'name_col', 'class_col', 'mapped')
-                tv = ttk.Treeview(frame, columns=cols, show='headings', style='App.Treeview')
+                tv = ttk.Treeview(frame, columns=cols, show='headings', style='App.Treeview', height=15)
                 tv.heading('sheet', text='Sheet')
                 tv.heading('rows', text='Rows')
                 tv.heading('name_col', text='Name Column')
                 tv.heading('class_col', text='Class Column')
                 tv.heading('mapped', text='Mapped Class')
-                tv.column('sheet', width=220, anchor='w')
-                tv.column('rows', width=70, anchor='center')
-                tv.column('name_col', width=150, anchor='w')
-                tv.column('class_col', width=150, anchor='w')
-                tv.column('mapped', width=220, anchor='w')
+                tv.column('sheet', width=260, minwidth=180, anchor='w')
+                tv.column('rows', width=80, minwidth=70, anchor='center')
+                tv.column('name_col', width=170, minwidth=130, anchor='w')
+                tv.column('class_col', width=170, minwidth=130, anchor='w')
+                tv.column('mapped', width=320, minwidth=220, anchor='w')
                 sb = ttk.Scrollbar(frame, orient='vertical', command=tv.yview, style='App.Vertical.TScrollbar')
-                tv.configure(yscrollcommand=sb.set)
-                tv.pack(side='left', fill='both', expand=True, padx=(0, 4), pady=4)
-                sb.pack(side='right', fill='y', pady=4)
+                xsb = ttk.Scrollbar(frame, orient='horizontal', command=tv.xview, style='App.Vertical.TScrollbar')
+                tv.configure(yscrollcommand=sb.set, xscrollcommand=xsb.set)
+                tv.grid(row=0, column=0, sticky='nsew', padx=(0, 4), pady=4)
+                sb.grid(row=0, column=1, sticky='ns', pady=4)
+                xsb.grid(row=1, column=0, sticky='ew', padx=(0, 4))
+                frame.grid_rowconfigure(0, weight=1)
+                frame.grid_columnconfigure(0, weight=1)
 
                 for pack in prepared_sheets:
-                    mapped = import_target_class or pack.get('sheet_default_class') or f"From '{pack.get('class_col') or 'class'}' column / fallback {default_class}"
+                    mapped_class = import_target_class or pack.get('sheet_default_class') or f"From '{pack.get('class_col') or 'class'}' column / fallback {default_class}"
+                    if pack.get('sheet_default_stream'):
+                        mapped = f'{mapped_class} [{pack["sheet_default_stream"]}]'
+                    else:
+                        mapped = mapped_class
                     class_col_label = pack.get('class_col') or '-'
                     tv.insert('', 'end', values=(
                         pack.get('sheet_name', ''),
@@ -6467,8 +7676,8 @@ class SchoolReportApp:
                     ))
 
                 decision = {'ok': False}
-                btn_row = tk.Frame(top, bg=CONTENT_BG)
-                btn_row.pack(fill='x', padx=16, pady=(0, 14))
+                btn_row = tk.Frame(body, bg=shell_bi)
+                btn_row.pack(fill='x')
                 tk.Button(
                     btn_row, text='Cancel', bg=LEMON_SOFT, fg=TEXT_PRIMARY, font=(FF, 10, 'bold'),
                     padx=18, pady=8, command=top.destroy
@@ -6476,7 +7685,7 @@ class SchoolReportApp:
                 tk.Button(
                     btn_row, text='Proceed Import', bg=GREEN, fg='white', font=(FF, 10, 'bold'),
                     padx=18, pady=8, command=lambda: (decision.__setitem__('ok', True), top.destroy())
-                ).pack(side='left', padx=(8, 0))
+                ).pack(side='right')
 
                 self.root.wait_window(top)
                 return decision['ok']
@@ -6492,6 +7701,7 @@ class SchoolReportApp:
             updated_count  = 0
             generated_count = 0
             processed = 0
+            class_import_summary = {}
             for sheet_pack in prepared_sheets:
                 sheet_name = sheet_pack['sheet_name']
                 df = sheet_pack['df']
@@ -6502,6 +7712,7 @@ class SchoolReportApp:
                 gender_col = sheet_pack['gender_col']
                 photo_col = sheet_pack['photo_col']
                 sheet_default_class = sheet_pack['sheet_default_class']
+                sheet_default_stream = sheet_pack.get('sheet_default_stream', '')
 
                 for index, (_, row) in enumerate(df.iterrows(), start=1):
                     self._update_progress_dialog(
@@ -6524,17 +7735,31 @@ class SchoolReportApp:
                         cls = import_target_class
                     elif not cls and sheet_default_class:
                         cls = sheet_default_class
+                    cls = self._match_known_class_name(cls) or cls
+                    if not stream and sheet_default_stream:
+                        stream = sheet_default_stream
                     if not cls:
                         cls = default_class
                     if gender not in ('Male', 'Female'):
                         gender = 'Male'
+
+                    if cls not in class_import_summary:
+                        class_import_summary[cls] = {
+                            'rows': 0,
+                            'added': 0,
+                            'updated': 0,
+                            'generated': 0,
+                        }
+                    class_import_summary[cls]['rows'] += 1
+
                     if not admission_no:
                         admission_no = self._generate_admission_no(cls, name)
                         generated_count += 1
+                        class_import_summary[cls]['generated'] += 1
 
                     # Upsert: update existing student (preserving photo if not provided),
                     # or add new student.
-                    existing = db.get_student_by_admission_no(admission_no)
+                    existing = db.get_student_by_admission_no(admission_no, cls)
                     if existing:
                         db.update_student(
                             existing['id'],
@@ -6548,9 +7773,11 @@ class SchoolReportApp:
                             stream or existing.get('stream', '')
                         )
                         updated_count += 1
+                        class_import_summary[cls]['updated'] += 1
                     else:
                         db.add_student(name, cls, gender, admission_no, photo_path, '', '', stream)
                         imported_count += 1
+                        class_import_summary[cls]['added'] += 1
 
             self._update_progress_dialog(
                 progress_dialog, status_label, percent_label, progress,
@@ -6560,12 +7787,23 @@ class SchoolReportApp:
             self.load_students()
             progress_dialog.destroy()
             scope_note = f"\nImport target class: {import_target_class}" if import_target_class else "\nImport target class: From file values"
+            class_order_lookup = {name: index for index, name in enumerate(db.get_class_progression_order())}
+            ordered_classes = sorted(
+                class_import_summary.items(),
+                key=lambda item: (class_order_lookup.get(item[0], 999), item[0])
+            )
+            breakdown_lines = []
+            for class_name, stats in ordered_classes:
+                breakdown_lines.append(
+                    f"{class_name}: rows {stats['rows']}, added {stats['added']}, updated {stats['updated']}, generated adm {stats['generated']}"
+                )
             messagebox.showinfo("Import Complete",
                                 f"Done!  {imported_count} new student(s) added, "
                                 f"{updated_count} updated.\n"
                                 f"Generated admission numbers: {generated_count}\n"
                                 f"Sheets processed: {len(prepared_sheets)}\n"
                                 f"Existing photos were preserved where no new photo was supplied."
+                                f"\n\nClass breakdown:\n" + "\n".join(breakdown_lines) +
                                 f"{scope_note}")
              
         except Exception as e:
@@ -6576,7 +7814,7 @@ class SchoolReportApp:
             messagebox.showerror("Import Error", f"Failed to import Excel file: {str(e)}")
 
     def export_excel(self):
-        """Export all students to an Excel file"""
+        """Export students to a workbook with one sheet per class."""
         file_path = filedialog.asksaveasfilename(
             title="Export Students",
             defaultextension=".xlsx",
@@ -6588,14 +7826,46 @@ class SchoolReportApp:
         
         try:
             students = db.get_all_students()
-            df = pd.DataFrame(students)
-            df.to_excel(file_path, index=False)
-            messagebox.showinfo("Export Complete", f"Exported {len(students)} students to: {file_path}")
+            export_columns = [
+                'admission_no', 'name', 'class', 'stream', 'gender',
+                'photo_path', 'guardian_name', 'parent_email'
+            ]
+
+            def build_df(rows):
+                cleaned_rows = []
+                for student in rows:
+                    cleaned_rows.append({
+                        column: student.get(column, '')
+                        for column in export_columns
+                    })
+                return pd.DataFrame(cleaned_rows, columns=export_columns)
+
+            all_df = build_df(students)
+            class_order = db.get_class_progression_order()
+            grouped = {class_name: [] for class_name in class_order}
+            for student in students:
+                grouped.setdefault(student.get('class', '') or 'Unassigned', []).append(student)
+
+            with pd.ExcelWriter(file_path, engine='openpyxl') as writer:
+                all_df.to_excel(writer, sheet_name='All Students', index=False)
+                written_sheet_count = 1
+                for class_name, class_students in grouped.items():
+                    if not class_students:
+                        continue
+                    sheet_title = self._safe_excel_sheet_name(class_name, f'Class {written_sheet_count}')
+                    build_df(class_students).to_excel(writer, sheet_name=sheet_title, index=False)
+                    written_sheet_count += 1
+
+            messagebox.showinfo(
+                "Export Complete",
+                f"Exported {len(students)} students to:\n{file_path}\n\n"
+                f"Workbook structure: 1 'All Students' sheet plus {max(0, written_sheet_count - 1)} class sheet(s)."
+            )
         except Exception as e:
             messagebox.showerror("Error", f"Failed to export: {str(e)}")
 
     def download_template(self):
-        """Download an Excel template for adding students"""
+        """Download a student-import template workbook with multiple class sheets."""
         file_path = filedialog.asksaveasfilename(
             title="Save Template",
             defaultextension=".xlsx",
@@ -6606,23 +7876,80 @@ class SchoolReportApp:
             return
         
         try:
-            template_data = {
-                'name': ['John Doe', 'Jane Smith', 'Michael Johnson'],
-                'class': ['Grade 7', 'Grade 8', 'Grade 9'],
-                'stream': ['Blue', 'Red', ''],
-                'admission_no (optional)': ['001', '', '003'],
-                'gender (optional)': ['Male', '', 'Female'],
-                'photo_path': ['', '', '']
-            }
-            df = pd.DataFrame(template_data)
-            df.to_excel(file_path, index=False)
-            messagebox.showinfo("Template Created", f"Template saved to: {file_path}")
+            template_columns = [
+                'name',
+                'class',
+                'stream',
+                'admission_no (optional)',
+                'gender (optional)',
+                'photo_path',
+            ]
+
+            class_names = db.get_class_progression_order() or self.get_current_classes()
+            if not class_names:
+                class_names = ['Grade 1']
+
+            with pd.ExcelWriter(file_path, engine='openpyxl') as writer:
+                instructions_df = pd.DataFrame({
+                    'Instructions': [
+                        'Fill learner rows in any class sheet.',
+                        'You can leave admission_no empty and the app will auto-generate it.',
+                        'If a class sheet already identifies the class, the class column can stay blank.',
+                        'Use the stream column when a class has multiple streams.',
+                    ]
+                })
+                instructions_df.to_excel(writer, sheet_name='Instructions', index=False)
+
+                all_students_df = pd.DataFrame([
+                    {
+                        'name': 'John Doe',
+                        'class': class_names[0],
+                        'stream': '',
+                        'admission_no (optional)': '001',
+                        'gender (optional)': 'Male',
+                        'photo_path': '',
+                    },
+                    {
+                        'name': 'Jane Smith',
+                        'class': class_names[min(1, len(class_names) - 1)],
+                        'stream': '',
+                        'admission_no (optional)': '',
+                        'gender (optional)': 'Female',
+                        'photo_path': '',
+                    },
+                ], columns=template_columns)
+                all_students_df.to_excel(writer, sheet_name='All Students', index=False)
+
+                for class_name in class_names:
+                    stream_names = self._get_known_stream_names(class_name)
+                    sample_stream = stream_names[0] if stream_names else ''
+                    class_df = pd.DataFrame([
+                        {
+                            'name': '',
+                            'class': class_name,
+                            'stream': sample_stream,
+                            'admission_no (optional)': '',
+                            'gender (optional)': '',
+                            'photo_path': '',
+                        }
+                    ], columns=template_columns)
+                    class_df.to_excel(
+                        writer,
+                        sheet_name=self._safe_excel_sheet_name(class_name, class_name),
+                        index=False
+                    )
+
+            messagebox.showinfo(
+                "Template Created",
+                f"Template saved to:\n{file_path}\n\n"
+                "Workbook structure: Instructions, All Students, and one sheet per class."
+            )
         except Exception as e:
             messagebox.showerror("Error", f"Failed to create template: {str(e)}")
 
     # ==================== ENTER MARKS ====================
     def show_marks_entry(self):
-        """Show class selection page with all classes (Grade 1-9) and their streams"""
+        """Show class selection page with all school classes and their streams."""
         self.clear_frame()
         self._set_nav('Enter Marks')
         self._page_header('Enter Marks', 'Select a class and stream to enter marks')
@@ -6639,6 +7966,23 @@ class SchoolReportApp:
             if 'red' in name:
                 return ('#D32F2F', '#FFFFFF', '#B71C1C', '#EF9A9A')
             return (OLIVE_PRIMARY, '#FFFFFF', OLIVE_DARK, '#C5D29A')
+
+        actions = tk.Frame(self.content_frame, bg=CONTENT_BG)
+        actions.pack(fill='x', padx=10, pady=(0, 6))
+
+        tk.Label(
+            actions,
+            text='Need to load a workbook for the whole school? Import one multi-sheet results file here.',
+            bg=CONTENT_BG,
+            fg=TEXT_SECONDARY,
+            font=(FF, 10)
+        ).pack(side='left')
+        self._toolbar_btn(
+            actions,
+            '\U0001f4e5  Import Whole School Results',
+            self.import_whole_school_marks_excel,
+            bg=PURPLE
+        ).pack(side='right')
 
         # Create scrollable container for class cards
         canvas_outer = tk.Frame(self.content_frame, bg=CONTENT_BG)
@@ -6669,17 +8013,10 @@ class SchoolReportApp:
             canvas.itemconfigure(canvas_window, width=event.width)
         canvas.bind('<Configure>', _sync_canvas_width)
 
-        # Get all classes from Grade 1-9
-        all_classes = []
-        for level_name, classes in CLASSES_BY_LEVEL.items():
-            for class_name in classes:
-                all_classes.append(class_name)
-
-        # Group classes by grade level for better organization
         grade_levels = {
-            'Lower Primary (Grade 1-3)': ['Grade 1', 'Grade 2', 'Grade 3'],
-            'Upper Primary (Grade 4-6)': ['Grade 4', 'Grade 5', 'Grade 6'],
-            'Junior School (Grade 7-9)': ['Grade 7', 'Grade 8', 'Grade 9']
+            level_name: list(CLASSES_BY_LEVEL.get(level_name, []))
+            for level_name in LEVELS
+            if CLASSES_BY_LEVEL.get(level_name)
         }
 
         card_themes_list = list(CARD_THEMES.keys())
@@ -7371,6 +8708,359 @@ class SchoolReportApp:
         except Exception as exc:
             messagebox.showerror('Error', f'Could not create template:\n{exc}')
 
+    def import_whole_school_marks_excel(self):
+        """Import a multi-sheet workbook that contains results for many classes."""
+        dlg = tk.Toplevel(self.root)
+        dlg.title('Import Whole School Results')
+        dlg.geometry('430x250')
+        dlg.configure(bg=CONTENT_BG)
+        dlg.transient(self.root)
+        dlg.grab_set()
+        dlg.resizable(False, False)
+
+        card_bo, card_bi = _card_colors('mint')
+        outer = tk.Frame(dlg, bg=card_bo)
+        outer.place(relx=0.5, rely=0.5, anchor='center')
+        card = tk.Frame(outer, bg=card_bi, padx=24, pady=20)
+        card.pack(padx=1, pady=1)
+
+        tk.Label(
+            card,
+            text='Import Whole School Results',
+            bg=card_bi,
+            fg=TEXT_PRIMARY,
+            font=(FF, 12, 'bold')
+        ).pack(anchor='w')
+        tk.Label(
+            card,
+            text='Choose the term and exam, then import a workbook where each class has its own sheet. Summary sheets are skipped automatically.',
+            bg=card_bi,
+            fg=TEXT_SECONDARY,
+            font=(FF, 9),
+            justify='left',
+            wraplength=360
+        ).pack(anchor='w', pady=(6, 14))
+
+        term_var = tk.StringVar(value=TERMS[0])
+        exam_var = tk.StringVar(value=DEFAULT_EXAM_TYPE)
+
+        row = tk.Frame(card, bg=card_bi)
+        row.pack(fill='x', pady=(0, 10))
+        tk.Label(row, text='Term:', bg=card_bi, fg=TEXT_SECONDARY, font=(FF, 10)).pack(side='left')
+        ttk.Combobox(
+            row,
+            textvariable=term_var,
+            values=TERMS,
+            state='readonly',
+            width=12,
+            style='App.TCombobox'
+        ).pack(side='left', padx=(8, 18), ipady=3)
+        tk.Label(row, text='Exam:', bg=card_bi, fg=TEXT_SECONDARY, font=(FF, 10)).pack(side='left')
+        ttk.Combobox(
+            row,
+            textvariable=exam_var,
+            values=EXAM_TYPES,
+            state='readonly',
+            width=12,
+            style='App.TCombobox'
+        ).pack(side='left', padx=(8, 0), ipady=3)
+
+        result = {'ok': False}
+
+        def proceed():
+            dlg.destroy()
+            file_path = filedialog.askopenfilename(
+                title='Select Whole School Results File',
+                filetypes=[('Excel files', '*.xlsx *.xls')]
+            )
+            if not file_path:
+                return
+            result['ok'] = self._import_marks_workbook(file_path, term_var.get(), exam_var.get())
+
+        btn_row = tk.Frame(card, bg=card_bi)
+        btn_row.pack(fill='x', pady=(8, 0))
+        tk.Button(
+            btn_row,
+            text='Cancel',
+            bg=LEMON_SOFT,
+            fg=TEXT_PRIMARY,
+            font=(FF, 10, 'bold'),
+            relief='flat',
+            padx=16,
+            pady=8,
+            command=dlg.destroy
+        ).pack(side='left')
+        tk.Button(
+            btn_row,
+            text='Choose Workbook',
+            bg=PURPLE,
+            fg='white',
+            font=(FF, 10, 'bold'),
+            relief='flat',
+            padx=16,
+            pady=8,
+            command=proceed
+        ).pack(side='right')
+
+        self.root.wait_window(dlg)
+        if result['ok']:
+            self.show_marks_entry()
+
+    def _import_marks_workbook(self, file_path, term, exam_type, class_name=''):
+        """Import marks from either a class workbook or a whole-school workbook."""
+        progress_dialog = None
+        try:
+            import openpyxl
+
+            wb = openpyxl.load_workbook(file_path, data_only=True)
+            progress_dialog, status_label, percent_label, progress = self._open_progress_dialog(
+                'Importing Marks', 'Scanning workbook sheets...'
+            )
+
+            parsed_sheets = []
+            skipped_sheets = []
+            total_sheets = len(wb.worksheets)
+            for sheet_index, ws in enumerate(wb.worksheets, start=1):
+                self._update_progress_dialog(
+                    progress_dialog, status_label, percent_label, progress,
+                    sheet_index - 1, total_sheets,
+                    f'Scanning sheet {sheet_index} of {total_sheets}: {ws.title}'
+                )
+                parsed = self._parse_assessment_sheet(ws)
+                if parsed:
+                    parsed_sheets.append(parsed)
+                elif not self._get_sheet_context(ws.title, ws).get('is_summary'):
+                    skipped_sheets.append(ws.title)
+
+            if parsed_sheets:
+                total_updated = 0
+                total_created = 0
+                affected_targets = []
+                total_students = sum(len(parsed['students']) for parsed in parsed_sheets)
+                processed_students = 0
+                class_import_summary = {}
+
+                for parsed in parsed_sheets:
+                    sheet_class = parsed['class_name']
+                    stream_name = parsed.get('stream_name', '')
+                    target_label = f'{sheet_class} [{stream_name}]' if stream_name else sheet_class
+                    affected_targets.append(target_label)
+                    if sheet_class not in class_import_summary:
+                        class_import_summary[sheet_class] = {
+                            'updated': 0,
+                            'created': 0,
+                            'sheets': set(),
+                        }
+                    class_import_summary[sheet_class]['sheets'].add(parsed.get('sheet_name', target_label))
+                    if stream_name:
+                        existing_students = db.get_students_by_class_and_stream(sheet_class, stream_name)
+                        if not existing_students:
+                            existing_students = db.get_students_by_class(sheet_class)
+                    else:
+                        existing_students = db.get_students_by_class(sheet_class)
+                    name_to_student = {
+                        self._normalize_key(student['name']): student
+                        for student in existing_students
+                    }
+
+                    for item in parsed['students']:
+                        processed_students += 1
+                        self._update_progress_dialog(
+                            progress_dialog, status_label, percent_label, progress,
+                            processed_students, total_students,
+                            f'Importing {item["name"].strip()} into {sheet_class} ({processed_students}/{total_students})'
+                        )
+                        name_key = self._normalize_key(item['name'])
+                        student = name_to_student.get(name_key)
+                        if not student:
+                            admission_no = self._generate_admission_no(sheet_class, item['name'])
+                            student = db.add_student(
+                                item['name'].strip(),
+                                sheet_class,
+                                'Male',
+                                admission_no,
+                                '',
+                                '',
+                                '',
+                                stream_name
+                            )
+                            name_to_student[name_key] = student
+                            total_created += 1
+                            class_import_summary[sheet_class]['created'] += 1
+
+                        current_marks = db.get_student_marks(student['id'], term, exam_type)
+                        current_marks.update(item['marks'])
+                        db.save_student_marks(student['id'], current_marks, term, exam_type)
+                        total_updated += 1
+                        class_import_summary[sheet_class]['updated'] += 1
+
+                self._update_progress_dialog(
+                    progress_dialog, status_label, percent_label, progress,
+                    total_students, total_students,
+                    'Refreshing marks grid...'
+                )
+                if getattr(self, 'marks_class_cb', None) and self.marks_class_cb.winfo_exists():
+                    self._load_marks_table()
+                progress_dialog.destroy()
+                affected_targets = sorted(set(affected_targets))
+                class_order_lookup = {name: index for index, name in enumerate(db.get_class_progression_order())}
+                ordered_classes = sorted(
+                    class_import_summary.items(),
+                    key=lambda item: (class_order_lookup.get(item[0], 999), item[0])
+                )
+                breakdown_lines = []
+                for class_name, stats in ordered_classes:
+                    breakdown_lines.append(
+                        f"{class_name}: sheets {len(stats['sheets'])}, updated {stats['updated']}, created {stats['created']}"
+                    )
+                messagebox.showinfo(
+                    'Import Complete',
+                    f'Assessment workbook imported successfully.\n\n'
+                    f'Term: {term}\n'
+                    f'Exam: {exam_type}\n'
+                    f'Sheets imported: {len(parsed_sheets)}\n'
+                    f'Sheets skipped: {len(skipped_sheets)}\n'
+                    f'Targets: {", ".join(affected_targets)}\n'
+                    f'Student records updated: {total_updated}\n'
+                    f'New students created with auto admission numbers: {total_created}\n\n'
+                    f'Class breakdown:\n' + '\n'.join(breakdown_lines) +
+                    (
+                        '\n\nSkipped sheets:\n' + '\n'.join(skipped_sheets[:12])
+                        + (f'\n... and {len(skipped_sheets) - 12} more' if len(skipped_sheets) > 12 else '')
+                        if skipped_sheets else ''
+                    )
+                )
+                return True
+
+            if not class_name:
+                progress_dialog.destroy()
+                messagebox.showwarning(
+                    'Unsupported Layout',
+                    'Whole-school import needs a multi-sheet workbook where each class is on its own sheet.\n\n'
+                    'Tip: use the per-class Import Marks button for flat single-class tables.'
+                )
+                return False
+
+            subjects = self._get_subjects_for_selected_class(class_name, term, exam_type)
+            df = pd.read_excel(file_path)
+            total_rows = len(df.index)
+            self._update_progress_dialog(
+                progress_dialog, status_label, percent_label, progress,
+                0, max(1, total_rows),
+                'Workbook did not match assessment layout. Using flat table import...'
+            )
+
+            df.columns = [str(c).strip().lower() for c in df.columns]
+
+            adm_aliases = {'admission_no', 'adm_no', 'admission no', 'adm no',
+                           'admission', 'adm', 'reg_no', 'reg no', 'regno'}
+            name_aliases = {'name', 'student_name', 'student name', 'learner',
+                            'learner name', 'full_name', 'fullname', 'pupil', 'student'}
+
+            adm_col = next((c for c in df.columns if c in adm_aliases), None)
+            name_col = next((c for c in df.columns if c in name_aliases), None)
+
+            if not adm_col and not name_col:
+                progress_dialog.destroy()
+                messagebox.showerror(
+                    'No Identifier Column Found',
+                    'The file needs at least one column to identify students.\n\n'
+                    'Accepted column names for admission number:\n'
+                    '  admission_no, adm_no, admission, reg_no\n\n'
+                    'Accepted column names for student name:\n'
+                    '  name, learner, student_name, full_name'
+                )
+                return False
+
+            subj_col_map = {}
+            for subj in subjects:
+                subj_lower = subj.strip().lower()
+                if subj_lower in df.columns:
+                    subj_col_map[subj] = subj_lower
+
+            if not subj_col_map:
+                progress_dialog.destroy()
+                messagebox.showwarning(
+                    'No Subject Columns Found',
+                    f'No matching subject columns were found in this file.\n\nExpected subject columns:\n'
+                    + ', '.join(subjects)
+                )
+                return False
+
+            students = db.get_students_by_class(class_name)
+            adm_to_sid = {s['admission_no'].strip(): s['id'] for s in students}
+            name_to_sid = {s['name'].strip().lower(): s['id'] for s in students}
+
+            updated = 0
+            skipped = 0
+            not_found = []
+
+            for index, (_, row) in enumerate(df.iterrows(), start=1):
+                self._update_progress_dialog(
+                    progress_dialog, status_label, percent_label, progress,
+                    index - 1, total_rows,
+                    f'Importing marks row {index} of {total_rows}...'
+                )
+
+                def _clean(val):
+                    value = str(val).strip()
+                    return '' if value.lower() == 'nan' else value
+
+                adm = _clean(row[adm_col]) if adm_col else ''
+                name_key = _clean(row[name_col]).lower() if name_col else ''
+
+                sid = adm_to_sid.get(adm) or name_to_sid.get(name_key)
+                if not sid:
+                    label = adm or name_key
+                    if label:
+                        not_found.append(label)
+                    continue
+
+                marks = {}
+                for subj, col in subj_col_map.items():
+                    raw = row.get(col)
+                    if raw is not None and str(raw).strip() not in ('', 'nan'):
+                        try:
+                            marks[subj] = min(100, max(0, int(float(raw))))
+                        except (ValueError, TypeError):
+                            pass
+
+                if marks:
+                    db.save_student_marks(sid, marks, term, exam_type)
+                    updated += 1
+                else:
+                    skipped += 1
+
+            self._update_progress_dialog(
+                progress_dialog, status_label, percent_label, progress,
+                total_rows, total_rows,
+                'Refreshing marks grid...'
+            )
+            if getattr(self, 'marks_class_cb', None) and self.marks_class_cb.winfo_exists():
+                self._load_marks_table()
+            progress_dialog.destroy()
+
+            used_id = f'"{adm_col}"' if adm_col else f'"{name_col}"'
+            msg = f'Import complete! (matched by {used_id})\n\nUpdated students: {updated}'
+            if skipped:
+                msg += f'\nSkipped rows with no valid marks: {skipped}'
+            if not_found:
+                msg += (f'\nIdentifiers not found in {class_name}: {len(not_found)}\n'
+                        + ', '.join(not_found[:10]))
+                if len(not_found) > 10:
+                    msg += f' ... and {len(not_found) - 10} more'
+            messagebox.showinfo('Import Complete', msg)
+            return True
+
+        except Exception as exc:
+            if progress_dialog is not None:
+                try:
+                    progress_dialog.destroy()
+                except Exception:
+                    pass
+            messagebox.showerror('Import Error', f'Failed to import marks:\n{exc}')
+            return False
+
     def import_marks_excel(self):
         """Import marks from an Excel file into the current class & term.
 
@@ -7389,6 +9079,9 @@ class SchoolReportApp:
         )
         if not file_path:
             return
+
+        self._import_marks_workbook(file_path, term, exam_type, cls)
+        return
 
         try:
             import openpyxl
@@ -7412,14 +9105,21 @@ class SchoolReportApp:
             if parsed_sheets:
                 total_updated = 0
                 total_created = 0
-                affected_classes = []
+                affected_targets = []
                 total_students = sum(len(parsed['students']) for parsed in parsed_sheets)
                 processed_students = 0
 
                 for parsed in parsed_sheets:
                     class_name = parsed['class_name']
-                    affected_classes.append(class_name)
-                    existing_students = db.get_students_by_class(class_name)
+                    stream_name = parsed.get('stream_name', '')
+                    target_label = f'{class_name} [{stream_name}]' if stream_name else class_name
+                    affected_targets.append(target_label)
+                    if stream_name:
+                        existing_students = db.get_students_by_class_and_stream(class_name, stream_name)
+                        if not existing_students:
+                            existing_students = db.get_students_by_class(class_name)
+                    else:
+                        existing_students = db.get_students_by_class(class_name)
                     name_to_student = {
                         self._normalize_key(student['name']): student
                         for student in existing_students
@@ -7436,7 +9136,16 @@ class SchoolReportApp:
                         student = name_to_student.get(name_key)
                         if not student:
                             admission_no = self._generate_admission_no(class_name, item['name'])
-                            student = db.add_student(item['name'].strip(), class_name, 'Male', admission_no, '')
+                            student = db.add_student(
+                                item['name'].strip(),
+                                class_name,
+                                'Male',
+                                admission_no,
+                                '',
+                                '',
+                                '',
+                                stream_name
+                            )
                             name_to_student[name_key] = student
                             total_created += 1
 
@@ -7452,11 +9161,12 @@ class SchoolReportApp:
                 )
                 self._load_marks_table()
                 progress_dialog.destroy()
-                affected_classes = sorted(set(affected_classes))
+                affected_targets = sorted(set(affected_targets))
                 messagebox.showinfo(
                     'Import Complete',
                     f'Assessment workbook imported successfully.\n\n'
-                    f'Classes: {", ".join(affected_classes)}\n'
+                    f'Sheets imported: {len(parsed_sheets)}\n'
+                    f'Targets: {", ".join(affected_targets)}\n'
                     f'Student records updated: {total_updated}\n'
                     f'New students created with auto admission numbers: {total_created}'
                 )
@@ -8167,13 +9877,31 @@ class SchoolReportApp:
         """Build the styled PDF report card used by preview/print flows."""
         try:
             s = result['student']
+            context = self._get_report_card_context(result, term, exam_type)
+            layout = self._get_report_layout_profile(context)
+            cls_level = context['class_level']
+            is_pp = context['is_pp']
+            subjects = context['subjects']
+            facilitator = context.get('class_teacher_name') or ''
+            comment_text = context.get('comment_text') or ''
+            pp_scales = context.get('grade_scales', [])
+            pp_codes = context.get('grade_codes', ['EE', 'ME', 'AE', 'BE'])
+            theme = self._get_level_theme(cls_level)
+            pdf_title_color = colors.HexColor(theme['title'])
+            pdf_grid_color = colors.HexColor(theme['grid'])
+            pdf_line_color = colors.HexColor(theme['line'])
+            pdf_muted_color = colors.HexColor(theme['muted'])
+            pdf_header_bg = colors.HexColor(theme['header_bg'])
+            pdf_accent_soft = colors.HexColor(theme.get('accent_soft', theme['header_bg']))
+            
             styles = getSampleStyleSheet()
             
             # Custom styles
-            styles.add(ParagraphStyle(name='SchoolName', parent=styles['Heading1'], fontName='Helvetica-Bold', fontSize=20, textColor=colors.HexColor("#1b5e20"), alignment=1))
-            styles.add(ParagraphStyle(name='SchoolInfo', parent=styles['Normal'], fontSize=9, textColor=colors.gray, alignment=1))
-            styles.add(ParagraphStyle(name='ReportTitle', parent=styles['Heading2'], fontName='Helvetica-Bold', fontSize=16, textColor=colors.HexColor("#4CAF50"), alignment=1, spaceBefore=10, spaceAfter=10))
+            styles.add(ParagraphStyle(name='SchoolName', parent=styles['Heading1'], fontName='Helvetica-Bold', fontSize=20, textColor=pdf_title_color, alignment=1))
+            styles.add(ParagraphStyle(name='SchoolInfo', parent=styles['Normal'], fontSize=layout['pdf_normal_font'], textColor=colors.gray, alignment=1))
+            styles.add(ParagraphStyle(name='ReportTitle', parent=styles['Heading2'], fontName='Helvetica-Bold', fontSize=layout['pdf_title_font'], textColor=pdf_title_color, alignment=1, spaceBefore=8, spaceAfter=8))
             styles.add(ParagraphStyle(name='FooterLine', parent=styles['Normal'], fontSize=8, textColor=colors.HexColor("#666666"), alignment=1))
+            styles.add(ParagraphStyle(name='LegendText', parent=styles['Normal'], fontSize=layout['pdf_legend_font'], alignment=1))
 
             letterhead_assets = get_letterhead_assets()
             header_path = letterhead_assets['header_path']
@@ -8194,14 +9922,14 @@ class SchoolReportApp:
                     return min_height
 
             page_inner_width = A4[0] - 40
-            header_height = _image_height(header_path, page_inner_width, 80, 120)
-            footer_height = _image_height(footer_path, page_inner_width, 45, 90)
-            top_margin = header_height + 28
-            bottom_margin = footer_height + 28
+            header_height = _image_height(header_path, page_inner_width, layout['pdf_header_min'], layout['pdf_header_max'])
+            footer_height = _image_height(footer_path, page_inner_width, layout['pdf_footer_min'], layout['pdf_footer_max'])
+            top_margin = header_height + 20
+            bottom_margin = footer_height + 20
 
             doc = SimpleDocTemplate(
                 file_path,
-                pagesize=A4,
+                pagesize=portrait(A4),
                 rightMargin=20,
                 leftMargin=20,
                 topMargin=top_margin,
@@ -8214,17 +9942,19 @@ class SchoolReportApp:
                 elements.append(Paragraph("MT OLIVES ADVENTIST SCHOOL", styles['SchoolName']))
             divider = Table([['']], colWidths=[520], rowHeights=[2])
             divider.setStyle(TableStyle([
-                ('BACKGROUND', (0,0), (-1,-1), colors.HexColor("#1b5e20")),
+                ('BACKGROUND', (0,0), (-1,-1), pdf_title_color),
                 ('LEFTPADDING', (0,0), (-1,-1), 0),
                 ('RIGHTPADDING', (0,0), (-1,-1), 0),
                 ('TOPPADDING', (0,0), (-1,-1), 0),
                 ('BOTTOMPADDING', (0,0), (-1,-1), 0),
             ]))
             elements.append(divider)
-            elements.append(Spacer(1, 12))
-            border_table = Table([[Paragraph("LEARNER ASSESSMENT REPORT CARD", styles['ReportTitle'])]], colWidths=[260])
+            elements.append(Spacer(1, layout['pdf_section_gap']))
+            
+            rpt_title_text = self._get_report_title_for_level(cls_level, is_pp).replace('\n', '<br/>')
+            border_table = Table([[Paragraph(rpt_title_text, styles['ReportTitle'])]], colWidths=[layout['pdf_title_width']])
             border_table.setStyle(TableStyle([
-                ('BOX', (0,0), (-1,-1), 1, colors.HexColor("#d32f2f")),
+                ('BOX', (0,0), (-1,-1), 1, pdf_title_color),
                 ('LEFTPADDING', (0,0), (-1,-1), 14),
                 ('RIGHTPADDING', (0,0), (-1,-1), 14),
                 ('TOPPADDING', (0,0), (-1,-1), 8),
@@ -8232,107 +9962,271 @@ class SchoolReportApp:
                 ('ALIGN', (0,0), (-1,-1), 'CENTER'),
             ]))
             elements.append(border_table)
-            elements.append(Spacer(1, 12))
+            elements.append(Spacer(1, layout['pdf_section_gap']))
 
             # Student Info Grid
             stream_display = s.get('stream', '').strip() or s.get('admission_no', '')
-            info_data = [
-                ["NAME", s['name'].upper(), "GRADE", s['class']],
-                ["STREAM", stream_display, "YEAR", "2026"],
-                ["TERM", f"{term} / {exam_type}", "GENDER", s['gender']]
-            ]
-            info_table = Table(info_data, colWidths=[80, 200, 80, 160])
-            info_table.setStyle(TableStyle([
+            if is_pp:
+                info_data = [
+                    ["GRADE", s['class'], "TERM", term.upper(), "YEAR", context.get('year', str(datetime.now().year))],
+                    ["NAME OF THE LEARNER", s['name'].upper(), "NAME OF THE FACILITATOR", (facilitator or " ").upper()]
+                ]
+                info_table = Table(info_data, colWidths=[105, 150, 125, 140])
+            else:
+                info_data = [
+                    ["GRADE", s['class'], "TERM", term.upper(), "YEAR", context.get('year', str(datetime.now().year))],
+                    ["NAME OF THE LEARNER", s['name'].upper(), "NAME OF THE FACILITATOR", (facilitator or " ").upper()],
+                    ["STREAM / ADM NO", stream_display, "GENDER", s['gender']]
+                ]
+                info_table = Table(info_data, colWidths=[105, 155, 125, 135])
+
+            info_style = [
                 ('FONTNAME', (0,0), (-1,-1), 'Helvetica-Bold'),
-                ('FONTSIZE', (0,0), (-1,-1), 10),
-                ('LINEBELOW', (1,0), (1,0), 0.5, colors.gray),
-                ('LINEBELOW', (3,0), (3,0), 0.5, colors.gray),
-                ('LINEBELOW', (1,1), (1,1), 0.5, colors.gray),
-                ('LINEBELOW', (3,1), (3,1), 0.5, colors.gray),
-                ('LINEBELOW', (1,2), (1,2), 0.5, colors.gray),
-                ('LINEBELOW', (3,2), (3,2), 0.5, colors.gray),
-                ('BOTTOMPADDING', (0,0), (-1,-1), 10),
-                ('TOPPADDING', (0,0), (-1,-1), 10),
-            ]))
+                ('FONTSIZE', (0,0), (-1,-1), layout['pdf_normal_font']),
+                ('BOTTOMPADDING', (0,0), (-1,-1), layout['pdf_row_pad']),
+                ('TOPPADDING', (0,0), (-1,-1), layout['pdf_row_pad']),
+            ]
+            if is_pp:
+                info_style.extend([
+                    ('LINEBELOW', (1,0), (1,0), 0.7, pdf_line_color),
+                    ('LINEBELOW', (3,0), (3,0), 0.7, pdf_line_color),
+                    ('LINEBELOW', (1,1), (1,1), 0.7, pdf_line_color),
+                    ('LINEBELOW', (3,1), (3,1), 0.7, pdf_line_color),
+                ])
+            else:
+                info_style.extend([
+                    ('LINEBELOW', (1,0), (1,0), 0.7, pdf_line_color),
+                    ('LINEBELOW', (3,0), (3,0), 0.7, pdf_line_color),
+                    ('LINEBELOW', (1,1), (1,1), 0.7, pdf_line_color),
+                    ('LINEBELOW', (3,1), (3,1), 0.7, pdf_line_color),
+                    ('LINEBELOW', (1,2), (1,2), 0.7, pdf_line_color),
+                    ('LINEBELOW', (3,2), (3,2), 0.7, pdf_line_color),
+                ])
+            info_table.setStyle(TableStyle(info_style))
             elements.append(info_table)
-            elements.append(Spacer(1, 10))
+            elements.append(Spacer(1, layout['pdf_section_gap']))
+
+            if is_pp:
+                legend_data = [
+                    [
+                        Paragraph(
+                            f"<b>{scale['display']}</b><br/>{scale['label']}",
+                            styles['LegendText']
+                        )
+                        for scale in pp_scales
+                    ]
+                ]
+                legend_width = 130 if layout['scale'] >= 0.95 else 118
+                legend_table = Table(legend_data, colWidths=[legend_width] * max(1, len(pp_scales)))
+                elements.append(legend_table)
+                elements.append(Spacer(1, layout['pdf_section_gap']))
+            elif context.get('grade_scales'):
+                legend_data = [[
+                    Paragraph(
+                        f"<b>{scale['display']}</b><br/>{int(float(scale['min_mark']))}-{int(float(scale['max_mark'])) if scale.get('max_mark') not in ('', None) else ''}<br/>{scale['label']}"
+                        if scale.get('min_mark') not in ('', None) and scale.get('max_mark') not in ('', None)
+                        else f"<b>{scale['display']}</b><br/>{scale['label']}",
+                        styles['LegendText']
+                    )
+                    for scale in context.get('grade_scales', [])
+                ]]
+                legend_width = 104 if layout['scale'] >= 0.95 else 96
+                legend_table = Table(legend_data, colWidths=[legend_width] * max(1, len(context.get('grade_scales', []))))
+                elements.append(legend_table)
+                elements.append(Spacer(1, layout['pdf_section_gap']))
 
             # Marks Table
-            marks_header = ["LEARNING AREA", "MARKS", "AVG", "PERFORMANCE LEVEL"]
-            marks_data = [marks_header]
-            subjects = result.get('subjects', self._get_subjects_for_class(s['class'], term, exam_type))
-            
-            for subj in subjects:
-                mk = result['marks'].get(subj, 0)
-                # Subject grade
-                subj_grade = self._get_grade_code_for_class(mk, s.get('class', ''))
-                subj_label = self._get_subject_label(subj, s.get('class', ''))
-                marks_data.append([subj_label, mk, mk, self._get_grade_name_for_class(subj_grade, s.get('class', ''))])
-            
-            # Summary Rows
-            possible = result.get('possible_total', len(subjects) * 100)
-            marks_data.append(["Total Scores", f"{result['total']}/{possible}", f"{result['average']}/100", f"Level: {result['level']}"])
-            marks_data.append(["Average Scores", f"{result['average']}/100", "", f"Position: {result['position']}"])
-
-            marks_table = Table(marks_data, colWidths=[150, 100, 100, 170])
-            marks_table_style = [
-                ('BACKGROUND', (0,0), (-1,0), colors.HexColor("#DDEBF7")),
-                ('TEXTCOLOR', (0,0), (-1,0), colors.HexColor("#1b5e20")),
-                ('FONTNAME', (0,0), (-1,0), 'Helvetica-Bold'),
-                ('GRID', (0,0), (-1,-3), 0.5, colors.gray),
-                ('FONTSIZE', (0,0), (-1,-1), 9),
-                ('BOTTOMPADDING', (0,0), (-1,-1), 8),
-                ('TOPPADDING', (0,0), (-1,-1), 8),
-                ('BACKGROUND', (0,-2), (-1,-1), colors.HexColor("#D0F0E0")),
-                ('FONTNAME', (0,-2), (-1,-1), 'Helvetica-Bold'),
-            ]
-            for row_index, subject in enumerate(subjects, start=1):
-                subject_style = self._get_subject_colors(subject, s.get('class', ''))
-                marks_table_style.extend([
-                    ('BACKGROUND', (0, row_index), (0, row_index), colors.HexColor(subject_style['soft'])),
-                    ('TEXTCOLOR', (0, row_index), (0, row_index), colors.HexColor(subject_style['dark_text'])),
-                    ('TEXTCOLOR', (3, row_index), (3, row_index), colors.HexColor("#d32f2f")),
-                    ('FONTNAME', (3, row_index), (3, row_index), 'Helvetica-Oblique'),
+            if is_pp:
+                term_marks = self._get_student_term_marks(s['id'], term)
+                assess_types = ['Opener', 'Mid-Term', 'End-Term']
+                
+                top_header = ["LEARNING AREAS"]
+                sub_header = [""]
+                assessment_titles = ['1st ASSESSMENT', '2nd ASSESSMENT', '3rd ASSESSMENT']
+                for title in assessment_titles:
+                    top_header.extend([title] + [""] * (len(pp_codes) - 1))
+                    sub_header.extend([scale['display'] for scale in pp_scales])
+                marks_data = [top_header, sub_header]
+                
+                for subj in subjects:
+                    subj_label = subj
+                    row = [subj_label]
+                    for et in assess_types:
+                        m_dict = term_marks.get(et, {})
+                        mk = m_dict.get(subj, 0)
+                        grade = self._get_grade_code_for_class(mk, s.get('class', '')) if mk else ''
+                        for subcol in pp_codes:
+                            row.append(str(mk) if grade == subcol else "")
+                    marks_data.append(row)
+                
+                col_widths = [layout['pdf_marks_left_width_pp']] + [layout['pdf_marks_code_width_pp']] * (len(pp_codes) * 3)
+                marks_table = Table(marks_data, colWidths=col_widths, repeatRows=2)
+                
+                marks_table_style = [
+                    ('BOX', (0,0), (-1,-1), 0.8, pdf_grid_color),
+                    ('LINEBELOW', (0,0), (-1,0), 0.6, pdf_grid_color),
+                    ('LINEBELOW', (0,1), (-1,1), 0.5, pdf_grid_color),
+                    ('FONTNAME', (0,0), (-1,1), 'Helvetica-Bold'),
+                    ('FONTSIZE', (0,0), (-1,1), layout['pdf_normal_font']),
+                    ('FONTSIZE', (0,2), (-1,-1), layout['pdf_normal_font']),
+                    ('ALIGN', (0,0), (-1,-1), 'CENTER'),
+                    ('ALIGN', (0,0), (0,-1), 'LEFT'),
+                    ('SPAN', (0,0), (0,1)),
+                    ('BACKGROUND', (0,0), (-1,1), pdf_header_bg),
+                    ('TEXTCOLOR', (0,0), (-1,1), pdf_muted_color),
+                ]
+                current_col = 1
+                for _ in assess_types:
+                    marks_table_style.append(
+                        ('SPAN', (current_col, 0), (current_col + len(pp_codes) - 1, 0))
+                    )
+                    current_col += len(pp_codes)
+                for row_index in range(2, len(marks_data)):
+                    row_bg = colors.white if row_index % 2 == 0 else pdf_accent_soft
+                    marks_table_style.append(('BACKGROUND', (0, row_index), (-1, row_index), row_bg))
+                    marks_table_style.append(('LINEBELOW', (0, row_index), (-1, row_index), 0.35, pdf_grid_color))
+                marks_table.setStyle(TableStyle(marks_table_style))
+                elements.append(marks_table)
+            else:
+                marks_data = [
+                    ["LEARNING AREAS", "1ST ASSESSMENT", "2ND ASSESSMENT", "3RD ASSESSMENT", "AVERAGE", "GRADE / REMARK"],
+                    ["", "Opener", "Mid-Term", "End-Term", "Score", "Result"]
+                ]
+                term_marks = self._get_student_term_marks(s['id'], term)
+                
+                for subj in subjects:
+                    opener = term_marks.get('Opener', {}).get(subj, '')
+                    mid_term = term_marks.get('Mid-Term', {}).get(subj, '')
+                    end_term = term_marks.get('End-Term', {}).get(subj, result['marks'].get(subj, ''))
+                    numeric_marks = []
+                    for raw in (opener, mid_term, end_term):
+                        try:
+                            if str(raw).strip() != '':
+                                numeric_marks.append(float(raw))
+                        except (TypeError, ValueError):
+                            continue
+                    avg_mark = round(sum(numeric_marks) / len(numeric_marks), 1) if numeric_marks else 0
+                    subj_grade = self._get_grade_code_for_class(avg_mark, s.get('class', ''))
+                    marks_data.append([
+                        subj,
+                        opener if str(opener).strip() != '' else '',
+                        mid_term if str(mid_term).strip() != '' else '',
+                        end_term if str(end_term).strip() != '' else '',
+                        avg_mark,
+                        f"{subj_grade} {self._get_grade_name_for_class(subj_grade, s.get('class', ''))}"
+                    ])
+                
+                marks_data.append([
+                    f"Subjects Taken: {len(subjects)}",
+                    f"Total: {result['total']}/{result.get('possible_total', len(subjects) * 100)}",
+                    f"Avg: {result['average']}",
+                    f"Position: {result['position']} / {total_students}",
+                    "",
+                    ""
                 ])
-            marks_table.setStyle(TableStyle(marks_table_style))
-            elements.append(marks_table)
-            elements.append(Spacer(1, 10))
 
-            # Performance Trend Chart
-            drawing = Drawing(400, 150)
-            bc = VerticalBarChart()
-            bc.x = 50
-            bc.y = 20
-            bc.height = 100
-            bc.width = 350
-            bc.data = [[result['marks'].get(sub, 0) for sub in subjects]]
-            bc.strokeColor = colors.black
-            bc.valueAxis.valueMin = 0
-            bc.valueAxis.valueMax = 100
-            bc.valueAxis.valueStep = 25
-            bc.categoryAxis.labels.boxAnchor = 'ne'
-            bc.categoryAxis.labels.angle = 30
-            bc.categoryAxis.categoryNames = subjects
+                marks_table = Table(marks_data, colWidths=layout['pdf_marks_widths_standard'], repeatRows=2)
+                marks_table_style = [
+                    ('BOX', (0,0), (-1,-1), 0.8, pdf_grid_color),
+                    ('LINEBELOW', (0,0), (-1,0), 0.6, pdf_grid_color),
+                    ('LINEBELOW', (0,1), (-1,1), 0.5, pdf_grid_color),
+                    ('FONTNAME', (0,0), (-1,1), 'Helvetica-Bold'),
+                    ('FONTSIZE', (0,0), (-1,-1), layout['pdf_normal_font']),
+                    ('ALIGN', (0,0), (-1,-1), 'CENTER'),
+                    ('ALIGN', (0,0), (0,-1), 'LEFT'),
+                    ('ALIGN', (5,0), (5,-1), 'LEFT'),
+                    ('BACKGROUND', (0,0), (-1,0), pdf_header_bg),
+                    ('BACKGROUND', (1,1), (-1,1), pdf_accent_soft),
+                    ('BACKGROUND', (0,1), (0,1), pdf_header_bg),
+                    ('TEXTCOLOR', (0,0), (-1,1), pdf_muted_color),
+                    ('BOTTOMPADDING', (0,0), (-1,-1), layout['pdf_row_pad']),
+                    ('TOPPADDING', (0,0), (-1,-1), layout['pdf_row_pad']),
+                    ('BACKGROUND', (0,-1), (-1,-1), pdf_accent_soft),
+                    ('FONTNAME', (0,-1), (-1,-1), 'Helvetica-Bold'),
+                    ('SPAN', (0,0), (0,1)),
+                ]
+                for row_index, subject in enumerate(subjects, start=2):
+                    row_fill = colors.white if row_index % 2 == 0 else pdf_accent_soft
+                    marks_table_style.extend([
+                        ('BACKGROUND', (0, row_index), (-1, row_index), row_fill),
+                        ('TEXTCOLOR', (4, row_index), (4, row_index), pdf_title_color),
+                        ('FONTNAME', (4, row_index), (4, row_index), 'Helvetica-Bold'),
+                        ('LINEBELOW', (0, row_index), (-1, row_index), 0.35, pdf_grid_color),
+                    ])
+                marks_table.setStyle(TableStyle(marks_table_style))
+                elements.append(marks_table)
             
-            for i, subj in enumerate(subjects):
-                subject_style = self._get_subject_colors(subj, s.get('class', ''))
-                bc.bars[0, i].fillColor = colors.HexColor(subject_style['base'])
-
-            drawing.add(bc)
-            elements.append(drawing)
+            elements.append(Spacer(1, layout['pdf_section_gap']))
             
             # Comments Section
-            comments_data = [
-                [Paragraph("Class Teacher's Comment: <font color='gray'><i>Fair performance. Keep working harder.</i></font>", styles['Normal'])],
-                [Spacer(1, 10)],
-                [Paragraph("Head Teacher's Comment: <font color='gray'><i>Encourage the learner to improve.</i></font>", styles['Normal'])]
-            ]
-            comments_table = Table(comments_data, colWidths=[520])
-            comments_table.setStyle(TableStyle([
-                ('BOX', (0,0), (-1,0), 0.5, colors.gray),
-                ('BOX', (0,2), (-1,2), 0.5, colors.gray),
-            ]))
-            elements.append(comments_table)
+            if is_pp:
+                comments_data = [
+                    [Paragraph(f"<b>General Comments:</b> <font color='#555'>{comment_text or ' '}</font>", styles['Normal'])],
+                    [Spacer(1, 15)],
+                    [Table([
+                        [Paragraph("Class Teacher Signature: ...................................", styles['Normal']),
+                         Paragraph("Head Teacher Signature: ...................................", styles['Normal'])]
+                    ], colWidths=[260, 260])],
+                    [Spacer(1, 10)],
+                    [Table([
+                        [Paragraph("Opening Date: __________________", styles['Normal']),
+                         Paragraph("Closing Date: __________________", styles['Normal'])]
+                    ], colWidths=[260, 260])]
+                ]
+                comments_table = Table(comments_data, colWidths=[520])
+                elements.append(comments_table)
+            else:
+                comments_table = Table(
+                    [[Paragraph(f"<b>General Comments</b><br/><font color='#4f4f4f'>{comment_text or ' '}</font>", styles['Normal'])]],
+                    colWidths=[520]
+                )
+                comments_table.setStyle(TableStyle([
+                    ('BOX', (0,0), (-1,-1), 0.8, pdf_grid_color),
+                    ('BACKGROUND', (0,0), (-1,-1), pdf_accent_soft),
+                    ('LEFTPADDING', (0,0), (-1,-1), 10),
+                    ('RIGHTPADDING', (0,0), (-1,-1), 10),
+                    ('TOPPADDING', (0,0), (-1,-1), layout['pdf_row_pad']),
+                    ('BOTTOMPADDING', (0,0), (-1,-1), layout['pdf_row_pad'] + 1),
+                ]))
+                elements.append(comments_table)
+                elements.append(Spacer(1, layout['pdf_section_gap']))
+
+                sign_table = Table([
+                    [
+                        Paragraph(f"<b>Class Teacher Signature</b><br/><br/>__________________________<br/>{facilitator or ' '}", styles['Normal']),
+                        Paragraph("<b>Head Teacher Signature</b><br/><br/>__________________________", styles['Normal']),
+                    ]
+                ], colWidths=[252, 252])
+                sign_table.setStyle(TableStyle([
+                    ('BOX', (0,0), (-1,-1), 0.8, pdf_grid_color),
+                    ('BACKGROUND', (0,0), (-1,-1), colors.white),
+                    ('BACKGROUND', (0,0), (0,0), pdf_accent_soft),
+                    ('BACKGROUND', (1,0), (1,0), pdf_accent_soft),
+                    ('LEFTPADDING', (0,0), (-1,-1), 10),
+                    ('RIGHTPADDING', (0,0), (-1,-1), 10),
+                    ('TOPPADDING', (0,0), (-1,-1), layout['pdf_row_pad']),
+                    ('BOTTOMPADDING', (0,0), (-1,-1), layout['pdf_row_pad'] + 1),
+                ]))
+                elements.append(sign_table)
+                elements.append(Spacer(1, max(6, layout['pdf_section_gap'] - 2)))
+
+                date_table = Table([
+                    [
+                        Paragraph("<b>Opening Date</b><br/><br/>__________________________", styles['Normal']),
+                        Paragraph("<b>Closing Date</b><br/><br/>__________________________", styles['Normal']),
+                    ]
+                ], colWidths=[252, 252])
+                date_table.setStyle(TableStyle([
+                    ('BOX', (0,0), (-1,-1), 0.8, pdf_grid_color),
+                    ('BACKGROUND', (0,0), (-1,-1), colors.white),
+                    ('BACKGROUND', (0,0), (0,0), pdf_accent_soft),
+                    ('BACKGROUND', (1,0), (1,0), pdf_accent_soft),
+                    ('LEFTPADDING', (0,0), (-1,-1), 10),
+                    ('RIGHTPADDING', (0,0), (-1,-1), 10),
+                    ('TOPPADDING', (0,0), (-1,-1), layout['pdf_row_pad']),
+                    ('BOTTOMPADDING', (0,0), (-1,-1), layout['pdf_row_pad'] + 1),
+                ]))
+                elements.append(date_table)
 
             footer_text = " | ".join(footer_lines) if footer_lines else "In God We Excel"
 
@@ -9127,10 +11021,679 @@ class SchoolReportApp:
         self._render_report_card(self._rc_paper, result, len(results),
                                  self.rc_term_cb.get(), exam_type)
 
+    def _get_student_term_marks(self, student_id, term):
+        """Fetch marks for all exam types for a student in a specific term."""
+        term_marks = {}
+        for et in EXAM_TYPES:
+            m = db.get_student_marks(student_id, term, et)
+            if m:
+                term_marks[et] = m
+        return term_marks
+
+    def _is_pre_primary_level(self, level_name):
+        level_key = self._normalize_text(level_name)
+        return level_key.startswith('pre-primary')
+
+    def _get_catalog_subject_names_for_level(self, level_name):
+        catalog = SUBJECT_CATALOG.get(level_name, [])
+        if isinstance(catalog, dict):
+            entries = list(catalog.get('core', [])) + list(catalog.get('optional', []))
+        else:
+            entries = list(catalog)
+        return [name for _, name, _, _ in entries]
+
+    def _get_class_teacher_name(self, class_name, stream_name=''):
+        def alias_keys(value):
+            raw_value = str(value or '').strip()
+            matched_value = self._match_known_class_name(raw_value)
+            keys = set()
+            for candidate in [raw_value, matched_value]:
+                candidate = str(candidate or '').strip()
+                if not candidate:
+                    continue
+                keys.add(self._normalize_key(candidate))
+                keys.add(self._normalize_key(self._get_class_label(candidate)))
+            return {key for key in keys if key}
+
+        target_keys = alias_keys(class_name)
+        if not target_keys:
+            return ''
+
+        target_stream = self._match_known_stream_name(stream_name, class_name) or str(stream_name or '').strip()
+        stream_matches = []
+        class_matches = []
+        for row in db.get_class_teacher_assignments():
+            if not (target_keys & alias_keys(row.get('class_name', ''))):
+                continue
+            assigned_stream = self._match_known_stream_name(row.get('stream_name', ''), row.get('class_name', '')) or str(row.get('stream_name', '') or '').strip()
+            if target_stream and assigned_stream == target_stream:
+                stream_matches.append(row)
+            elif not assigned_stream:
+                class_matches.append(row)
+        if stream_matches:
+            return str(stream_matches[0].get('full_name', '') or '').strip()
+        if class_matches:
+            return str(class_matches[0].get('full_name', '') or '').strip()
+        return ''
+
+    def _get_report_comment_text(self, student_id, class_name, term):
+        comment_row = db.get_student_comment(student_id, term)
+        if comment_row and str(comment_row.get('comment_text', '') or '').strip():
+            return str(comment_row.get('comment_text', '') or '').strip()
+        class_comments = db.get_class_comments(class_name, term)
+        return str(class_comments.get(student_id, '') or '').strip()
+
+    def _get_report_card_context(self, result, term, exam_type=DEFAULT_EXAM_TYPE):
+        student = result['student']
+        class_name = student.get('class', '')
+        class_level = self._get_level_for_class(class_name)
+        is_pp = self._is_pre_primary_level(class_level)
+
+        subjects = list(result.get('subjects') or self._get_subjects_for_class(class_name, term, exam_type))
+        catalog_subjects = self._get_catalog_subject_names_for_level(class_level)
+        if catalog_subjects:
+            ordered_subjects = [subject for subject in catalog_subjects if subject in subjects]
+            for subject in subjects:
+                if subject not in ordered_subjects:
+                    ordered_subjects.append(subject)
+            subjects = ordered_subjects
+
+        grade_scales = list(self._get_class_grading_scale(class_name))
+        level_meta = GRADING_BY_LEVEL.get(class_level, {}).get('levels', {})
+        display_grade_scales = []
+        for scale in grade_scales:
+            code = str(scale.get('grade_code', '') or '').strip()
+            if not code:
+                continue
+            if is_pp and code == 'IE':
+                continue
+            points = level_meta.get(code, {}).get('points')
+            display_grade_scales.append({
+                'code': code,
+                'label': str(scale.get('grade_name', '') or code).strip(),
+                'points': points,
+                'display': f'{code}({points})' if points is not None else code,
+                'min_mark': scale.get('min_mark'),
+                'max_mark': scale.get('max_mark'),
+            })
+        if not display_grade_scales:
+            fallback_codes = ['EE', 'ME', 'AE', 'BE'] if is_pp else ['EE', 'ME', 'AE', 'BE', 'IE']
+            display_grade_scales = [
+                {
+                    'code': code,
+                    'label': str(level_meta.get(code, {}).get('label', '') or code).strip(),
+                    'points': level_meta.get(code, {}).get('points'),
+                    'display': f"{code}({level_meta.get(code, {}).get('points')})"
+                               if level_meta.get(code, {}).get('points') is not None else code,
+                    'min_mark': '',
+                    'max_mark': '',
+                }
+                for code in fallback_codes
+            ]
+
+        return {
+            'class_level': class_level,
+            'is_pp': is_pp,
+            'subjects': subjects,
+            'grade_scales': display_grade_scales,
+            'grade_codes': [scale['code'] for scale in display_grade_scales],
+            'class_teacher_name': self._get_class_teacher_name(class_name, student.get('stream', '')),
+            'comment_text': self._get_report_comment_text(student.get('id'), class_name, term),
+            'year': str(datetime.now().year),
+        }
+
+    def _get_report_title_for_level(self, class_level, is_pp):
+        if is_pp:
+            return 'ASSESSMENT SUMMARY REPORT\nPRE-PRIMARY'
+        level_short = {
+            'Lower Primary (Grade 1-3)': 'LOWER PRIMARY',
+            'Upper Primary (Grade 4-6)': 'UPPER PRIMARY',
+            'Junior School (Grade 7-9)': 'JUNIOR SCHOOL',
+        }.get(class_level, 'LEARNER')
+        return f'ASSESSMENT SUMMARY REPORT\n{level_short}'
+
+    def _get_level_theme(self, class_level):
+        palette = {
+            'Pre-Primary (PP1-PP2)': {
+                'title': '#7a7f3f',
+                'grid': '#ddd4b6',
+                'line': '#ba9a52',
+                'muted': '#6a653d',
+                'header_bg': '#f8f3e7',
+                'accent_soft': '#fdf9ef',
+            },
+            'Lower Primary (Grade 1-3)': {
+                'title': OLIVE_PRIMARY,
+                'grid': '#d7cfad',
+                'line': '#b38b41',
+                'muted': OLIVE_DARK,
+                'header_bg': '#f7f3e6',
+                'accent_soft': '#fcf8ee',
+            },
+            'Upper Primary (Grade 4-6)': {
+                'title': '#5f6b3e',
+                'grid': '#decfa5',
+                'line': '#b78f43',
+                'muted': '#545937',
+                'header_bg': '#faf3e2',
+                'accent_soft': '#fdf8ec',
+            },
+            'Junior School (Grade 7-9)': {
+                'title': '#8a6822',
+                'grid': '#e5d09b',
+                'line': '#bf8f31',
+                'muted': '#6d571f',
+                'header_bg': '#fbf0da',
+                'accent_soft': '#fff8e8',
+            },
+        }
+        return palette.get(class_level, palette['Upper Primary (Grade 4-6)'])
+
+    def _get_report_layout_profile(self, context):
+        subject_count = max(1, len(context.get('subjects', [])))
+        is_pp = bool(context.get('is_pp'))
+
+        scale = 1.0
+        if subject_count >= 11:
+            scale = 0.84
+        elif subject_count >= 9:
+            scale = 0.9
+        elif subject_count >= 7:
+            scale = 0.95
+
+        if is_pp:
+            scale = max(scale, 0.92)
+
+        title_font = 15 if scale >= 0.95 else 14
+        body_font = 9 if scale >= 0.95 else 8
+        hand_font = 11 if scale >= 0.95 else 10
+        comment_font = 11 if scale >= 0.95 else 10
+        row_pad = 6 if scale >= 0.95 else 4
+        compact_gap = 10 if scale >= 0.95 else 8
+
+        return {
+            'subject_count': subject_count,
+            'scale': scale,
+            'title_font': title_font,
+            'meta_font': body_font,
+            'table_header_font': body_font,
+            'table_sub_font': 7,
+            'table_row_font': body_font,
+            'hand_font': hand_font,
+            'comment_font': comment_font,
+            'row_pad': row_pad,
+            'section_gap': compact_gap,
+            'line_field_width': 250 if scale >= 0.95 else 220,
+            'preview_header_width': 620 if scale >= 0.95 else 580,
+            'preview_footer_width': 620 if scale >= 0.95 else 580,
+            'preview_title_padx': 88 if scale >= 0.95 else 72,
+            'preview_comment_wrap': 620 if scale >= 0.95 else 590,
+            'pdf_title_font': 16 if scale >= 0.95 else 14,
+            'pdf_normal_font': 9 if scale >= 0.95 else 8,
+            'pdf_legend_font': 8 if scale >= 0.95 else 7,
+            'pdf_row_pad': 8 if scale >= 0.95 else 5,
+            'pdf_section_gap': 12 if scale >= 0.95 else 8,
+            'pdf_header_min': 70 if scale >= 0.95 else 58,
+            'pdf_header_max': 110 if scale >= 0.95 else 86,
+            'pdf_footer_min': 40 if scale >= 0.95 else 28,
+            'pdf_footer_max': 72 if scale >= 0.95 else 52,
+            'pdf_title_width': 380,
+            'pdf_marks_widths_standard': [150, 58, 58, 58, 60, 136] if scale >= 0.95 else [142, 54, 54, 54, 54, 142],
+            'pdf_marks_left_width_pp': 160 if scale >= 0.95 else 146,
+            'pdf_marks_code_width_pp': 28 if scale >= 0.95 else 24,
+        }
+
+    def _render_report_letterhead(self, parent, layout=None):
+        assets = get_letterhead_assets()
+        header_path = assets.get('header_path')
+        using_header = False
+        if header_path and os.path.exists(header_path):
+            try:
+                header_img = get_processed_letterhead_image(header_path, 'header')
+                if header_img is not None:
+                    header_width = (layout or {}).get('preview_header_width', 620)
+                    header_img = header_img.resize(
+                        (header_width, int(header_img.height * header_width / header_img.width)),
+                        Image.LANCZOS
+                    )
+                    header_photo = ImageTk.PhotoImage(header_img)
+                    header_label = tk.Label(parent, image=header_photo, bg='white')
+                    header_label.image = header_photo
+                    header_label.pack(pady=(0, 8))
+                    using_header = True
+            except Exception as exc:
+                print(f'Failed to load letterhead header: {exc}')
+
+        if not using_header:
+            tk.Label(parent, text='MT OLIVES ADVENTIST SCHOOL',
+                     bg='white', fg='#1b5e20', font=(FF, 15, 'bold')).pack()
+            tk.Label(parent, text='In God We Excel',
+                     bg='white', fg='#7b8794', font=(FF, 9, 'italic')).pack(pady=(0, 8))
+
+    def _render_report_footer_image(self, parent, layout=None):
+        assets = get_letterhead_assets()
+        footer_path = assets.get('footer_path')
+        if footer_path and os.path.exists(footer_path):
+            try:
+                footer_img = Image.open(footer_path)
+                footer_width = (layout or {}).get('preview_footer_width', 620)
+                footer_img = footer_img.resize(
+                    (footer_width, int(footer_img.height * footer_width / footer_img.width)),
+                    Image.LANCZOS
+                )
+                footer_photo = ImageTk.PhotoImage(footer_img)
+                footer_label = tk.Label(parent, image=footer_photo, bg='white')
+                footer_label.image = footer_photo
+                footer_label.pack(pady=(10, 0))
+            except Exception as exc:
+                print(f'Failed to load letterhead footer: {exc}')
+
+    def _render_preprimary_report_card(self, parent, result, total_students, term, exam_type, context):
+        s = result['student']
+        class_name = s.get('class', '')
+        grade_text = class_name
+        teacher_name = context.get('class_teacher_name') or '________________'
+        comment_text = context.get('comment_text') or ' '
+        term_marks = self._get_student_term_marks(s['id'], term)
+        subjects = context.get('subjects', [])
+        scales = context.get('grade_scales', [])
+        scale_codes = context.get('grade_codes', ['EE', 'ME', 'AE', 'BE'])
+        year_text = context.get('year', str(datetime.now().year))
+        open_date = ''
+        close_date = ''
+        layout = self._get_report_layout_profile(context)
+
+        theme = self._get_level_theme(context.get('class_level', ''))
+        title_color = theme['title']
+        grid_border = theme['grid']
+        line_color = theme['line']
+        text_muted = theme['muted']
+        header_bg = theme['header_bg']
+        accent_soft = theme.get('accent_soft', '#f7f7f7')
+
+        def line_field(parent_widget, label, value, width=None, show_line=True):
+            wrap = tk.Frame(parent_widget, bg='white')
+            wrap.pack(fill='x', pady=2)
+            tk.Label(
+                wrap, text=label, bg='white', fg=text_muted,
+                font=(FF, layout['meta_font'], 'bold'), anchor='w'
+            ).pack(side='left')
+            value_wrap = tk.Frame(wrap, bg='white')
+            value_wrap.pack(side='left', fill='x', expand=True, padx=(8, 0))
+            tk.Label(
+                value_wrap, text=value, bg='white', fg='#2b2b2b',
+                font=('Comic Sans MS', layout['hand_font']), anchor='w'
+            ).pack(anchor='w')
+            if show_line:
+                line = tk.Frame(value_wrap, bg=line_color, height=1, width=width or layout['line_field_width'])
+                line.pack(fill='x', pady=(2, 0))
+
+        self._render_report_letterhead(parent, layout)
+
+        tk.Label(
+            parent,
+            text='ASSESSMENT SUMMARY REPORT\nPRE-PRIMARY',
+            bg='white',
+            fg=title_color,
+            font=(FF, layout['title_font'], 'bold'),
+            justify='center'
+        ).pack(pady=(6, 16))
+        tk.Frame(parent, bg=title_color, height=3).pack(fill='x', padx=layout['preview_title_padx'], pady=(0, 14))
+
+        meta = tk.Frame(parent, bg='white')
+        meta.pack(fill='x', pady=(0, 4))
+        meta.columnconfigure(0, weight=1)
+        meta.columnconfigure(1, weight=1)
+        meta.columnconfigure(2, weight=1)
+        for col, (label, value) in enumerate([
+            ('GRADE:', grade_text),
+            ('TERM:', term.upper()),
+            ('YEAR:', year_text),
+        ]):
+            cell = tk.Frame(meta, bg='white')
+            cell.grid(row=0, column=col, sticky='ew', padx=(0, 10 if col < 2 else 0))
+            tk.Label(cell, text=label, bg='white', fg=text_muted, font=(FF, layout['meta_font'], 'bold')).pack(side='left')
+            inner = tk.Frame(cell, bg='white')
+            inner.pack(side='left', fill='x', expand=True, padx=(6, 0))
+            tk.Label(inner, text=value, bg='white', fg='#2b2b2b', font=('Comic Sans MS', max(9, layout['hand_font'] - 1))).pack(anchor='w')
+            tk.Frame(inner, bg=line_color, height=1).pack(fill='x', pady=(2, 0))
+
+        info = tk.Frame(parent, bg='white')
+        info.pack(fill='x', pady=(6, 10))
+        line_field(info, 'Name of the Learner:', s.get('name', ''))
+        line_field(info, 'Name of the Facilitator:', teacher_name)
+
+        legend = tk.Frame(parent, bg=grid_border, padx=1, pady=1)
+        legend.pack(fill='x', pady=(0, 10))
+        legend_inner = tk.Frame(legend, bg='white')
+        legend_inner.pack(fill='x')
+        for idx, scale in enumerate(scales):
+            cell = tk.Frame(legend_inner, bg='white', padx=8, pady=layout['row_pad'])
+            cell.grid(row=0, column=idx, sticky='nsew')
+            legend_inner.grid_columnconfigure(idx, weight=1)
+            tk.Label(cell, text=scale['display'], bg='white', fg=title_color, font=(FF, layout['table_header_font'], 'bold')).pack()
+            tk.Label(cell, text=scale['label'], bg='white', fg=text_muted, font=(FF, layout['table_sub_font'] + 1, 'bold')).pack()
+
+        tbl = tk.Frame(parent, bg=grid_border, padx=1, pady=1)
+        tbl.pack(fill='x', pady=(0, 12))
+        tbl_inner = tk.Frame(tbl, bg='white')
+        tbl_inner.pack(fill='x')
+        table_cell_pad = (0, 0)
+
+        assessments = ['Opener', 'Mid-Term', 'End-Term']
+        assessment_titles = ['1st ASSESSMENT', '2nd ASSESSMENT', '3rd ASSESSMENT']
+
+        tk.Label(
+            tbl_inner, text='LEARNING AREAS', bg=header_bg, fg=text_muted,
+            font=(FF, layout['table_header_font'], 'bold'), anchor='w', padx=8, pady=layout['row_pad'] + 1
+        ).grid(row=0, column=0, rowspan=2, sticky='nsew', padx=table_cell_pad[0], pady=table_cell_pad[1])
+
+        current_col = 1
+        for idx, title in enumerate(assessment_titles):
+            tk.Label(
+                tbl_inner, text=title, bg=header_bg, fg=text_muted,
+                font=(FF, layout['table_header_font'], 'bold'), pady=layout['row_pad']
+            ).grid(row=0, column=current_col, columnspan=len(scale_codes), sticky='nsew', padx=table_cell_pad[0], pady=table_cell_pad[1])
+            for code_idx, scale in enumerate(scales):
+                tk.Label(
+                    tbl_inner, text=scale['display'], bg=accent_soft, fg=text_muted,
+                    font=(FF, layout['table_sub_font'], 'bold'), pady=max(3, layout['row_pad'] - 1)
+                ).grid(row=1, column=current_col + code_idx, sticky='nsew', padx=table_cell_pad[0], pady=table_cell_pad[1])
+            current_col += len(scale_codes)
+
+        tbl_inner.grid_columnconfigure(0, weight=3)
+        for col in range(1, 1 + len(scale_codes) * len(assessments)):
+            tbl_inner.grid_columnconfigure(col, weight=1)
+
+        for row_index, subject in enumerate(subjects, start=2):
+            row_bg = '#ffffff' if row_index % 2 == 0 else accent_soft
+            tk.Label(
+                tbl_inner, text=subject, bg=row_bg, fg='#425a70',
+                font=(FF, layout['table_row_font'], 'bold'), anchor='w', justify='left', padx=8, pady=layout['row_pad']
+            ).grid(row=row_index, column=0, sticky='nsew', padx=table_cell_pad[0], pady=table_cell_pad[1])
+            current_col = 1
+            for assessment in assessments:
+                marks_map = term_marks.get(assessment, {})
+                mark = marks_map.get(subject, '')
+                grade = self._get_grade_code_for_class(mark, class_name) if str(mark).strip() not in ('', 'None') else ''
+                for code in scale_codes:
+                    cell_text = str(mark) if grade == code else ''
+                    tk.Label(
+                        tbl_inner, text=cell_text, bg=row_bg, fg='#2f2f2f',
+                        font=(FF, layout['table_row_font']), pady=layout['row_pad']
+                    ).grid(row=row_index, column=current_col, sticky='nsew', padx=table_cell_pad[0], pady=table_cell_pad[1])
+                    current_col += 1
+
+        comment_shell = tk.Frame(parent, bg=grid_border, padx=1, pady=1)
+        comment_shell.pack(fill='x', pady=(4, 10))
+        comment_card = tk.Frame(comment_shell, bg=accent_soft, padx=10, pady=8)
+        comment_card.pack(fill='x')
+        tk.Label(
+            comment_card, text='General Comments', bg=accent_soft, fg=title_color,
+            font=(FF, layout['meta_font'], 'bold'), anchor='w'
+        ).pack(anchor='w')
+        tk.Label(
+            comment_card, text=comment_text, bg=accent_soft, fg='#2f2f2f',
+            font=('Comic Sans MS', layout['comment_font']), justify='left', anchor='w', wraplength=layout['preview_comment_wrap']
+        ).pack(anchor='w', pady=(4, 6))
+        tk.Frame(comment_card, bg=line_color, height=1).pack(fill='x')
+
+        footer_shell = tk.Frame(parent, bg=grid_border, padx=1, pady=1)
+        footer_shell.pack(fill='x', pady=(10, 0))
+        footer_card = tk.Frame(footer_shell, bg='white', padx=10, pady=10)
+        footer_card.pack(fill='x')
+
+        sign_row = tk.Frame(footer_card, bg='white')
+        sign_row.pack(fill='x', pady=(0, 10))
+        for idx, label in enumerate(['Class Teacher Signature', 'Head Teacher Signature']):
+            cell = tk.Frame(sign_row, bg=accent_soft, padx=10, pady=8)
+            cell.grid(row=0, column=idx, sticky='ew', padx=(0, 16 if idx == 0 else 0))
+            sign_row.grid_columnconfigure(idx, weight=1)
+            tk.Label(cell, text=label, bg=accent_soft, fg=title_color, font=(FF, layout['meta_font'], 'bold')).pack(anchor='w')
+            spacer = tk.Frame(cell, bg=accent_soft, height=14)
+            spacer.pack(fill='x')
+            tk.Frame(cell, bg=line_color, height=1).pack(fill='x', pady=(2, 2))
+            if idx == 0 and teacher_name.strip('_ '):
+                tk.Label(cell, text=teacher_name, bg=accent_soft, fg='#2f2f2f', font=(FF, layout['table_row_font'])).pack(anchor='w')
+
+        date_row = tk.Frame(footer_card, bg='white')
+        date_row.pack(fill='x')
+        for idx, (label, value) in enumerate([('Opening Date', open_date), ('Closing Date', close_date)]):
+            cell = tk.Frame(date_row, bg=accent_soft, padx=10, pady=8)
+            cell.grid(row=0, column=idx, sticky='ew', padx=(0, 16 if idx == 0 else 0))
+            date_row.grid_columnconfigure(idx, weight=1)
+            tk.Label(cell, text=label, bg=accent_soft, fg=title_color, font=(FF, layout['meta_font'], 'bold')).pack(anchor='w')
+            spacer = tk.Frame(cell, bg=accent_soft, height=14)
+            spacer.pack(fill='x')
+            tk.Frame(cell, bg=line_color, height=1).pack(fill='x', pady=(2, 0))
+
+        self._render_report_footer_image(parent, layout)
+
+    def _render_standard_report_card(self, parent, result, total_students, term, exam_type, context):
+        s = result['student']
+        marks = result['marks']
+        class_name = s.get('class', '')
+        stream_text = s.get('stream', '').strip() or s.get('admission_no', '') or 'N/A'
+        teacher_name = context.get('class_teacher_name') or '________________'
+        comment_text = context.get('comment_text') or ' '
+        subjects = context.get('subjects', [])
+        scales = context.get('grade_scales', [])
+        year_text = context.get('year', str(datetime.now().year))
+        theme = self._get_level_theme(context.get('class_level', ''))
+        layout = self._get_report_layout_profile(context)
+        title_color = theme['title']
+        grid_border = theme['grid']
+        line_color = theme['line']
+        text_muted = theme['muted']
+        header_bg = theme['header_bg']
+        accent_soft = theme.get('accent_soft', '#f7f7f7')
+        open_date = ''
+        close_date = ''
+        term_marks = self._get_student_term_marks(s['id'], term)
+
+        def line_field(parent_widget, label, value, width=None, show_line=True):
+            wrap = tk.Frame(parent_widget, bg='white')
+            wrap.pack(fill='x', pady=2)
+            tk.Label(
+                wrap, text=label, bg='white', fg=text_muted,
+                font=(FF, layout['meta_font'], 'bold'), anchor='w'
+            ).pack(side='left')
+            value_wrap = tk.Frame(wrap, bg='white')
+            value_wrap.pack(side='left', fill='x', expand=True, padx=(8, 0))
+            tk.Label(
+                value_wrap, text=value, bg='white', fg='#2b2b2b',
+                font=('Comic Sans MS', max(9, layout['hand_font'] - 1)), anchor='w'
+            ).pack(anchor='w')
+            if show_line:
+                tk.Frame(value_wrap, bg=line_color, height=1, width=width or layout['line_field_width']).pack(fill='x', pady=(2, 0))
+
+        self._render_report_letterhead(parent, layout)
+
+        tk.Label(
+            parent,
+            text=self._get_report_title_for_level(context.get('class_level', ''), False),
+            bg='white',
+            fg=title_color,
+            font=(FF, layout['title_font'], 'bold'),
+            justify='center'
+        ).pack(pady=(6, 16))
+        tk.Frame(parent, bg=title_color, height=3).pack(fill='x', padx=layout['preview_title_padx'], pady=(0, 14))
+
+        meta = tk.Frame(parent, bg='white')
+        meta.pack(fill='x', pady=(0, 4))
+        meta.columnconfigure(0, weight=1)
+        meta.columnconfigure(1, weight=1)
+        meta.columnconfigure(2, weight=1)
+        for col, (label, value) in enumerate([
+            ('GRADE:', class_name),
+            ('TERM:', term.upper()),
+            ('YEAR:', year_text),
+        ]):
+            cell = tk.Frame(meta, bg='white')
+            cell.grid(row=0, column=col, sticky='ew', padx=(0, 10 if col < 2 else 0))
+            tk.Label(cell, text=label, bg='white', fg=text_muted, font=(FF, layout['meta_font'], 'bold')).pack(side='left')
+            inner = tk.Frame(cell, bg='white')
+            inner.pack(side='left', fill='x', expand=True, padx=(6, 0))
+            tk.Label(inner, text=value, bg='white', fg='#2b2b2b', font=('Comic Sans MS', max(9, layout['hand_font'] - 1))).pack(anchor='w')
+            tk.Frame(inner, bg=line_color, height=1).pack(fill='x', pady=(2, 0))
+
+        info = tk.Frame(parent, bg='white')
+        info.pack(fill='x', pady=(6, 10))
+        line_field(info, 'Name of the Learner:', s.get('name', ''))
+        line_field(info, 'Name of the Facilitator:', teacher_name)
+
+        info_row = tk.Frame(parent, bg='white')
+        info_row.pack(fill='x', pady=(0, 10))
+        info_row.columnconfigure(0, weight=1)
+        info_row.columnconfigure(1, weight=1)
+        left_meta = tk.Frame(info_row, bg='white')
+        left_meta.grid(row=0, column=0, sticky='ew', padx=(0, 10))
+        right_meta = tk.Frame(info_row, bg='white')
+        right_meta.grid(row=0, column=1, sticky='ew')
+        line_field(left_meta, 'Stream / Adm No:', stream_text)
+        line_field(right_meta, 'Gender:', s.get('gender', ''))
+
+        if scales:
+            legend = tk.Frame(parent, bg=grid_border, padx=1, pady=1)
+            legend.pack(fill='x', pady=(0, 10))
+            legend_inner = tk.Frame(legend, bg='white')
+            legend_inner.pack(fill='x')
+            for idx, scale in enumerate(scales):
+                cell = tk.Frame(legend_inner, bg='white', padx=6, pady=layout['row_pad'])
+                cell.grid(row=0, column=idx, sticky='nsew')
+                legend_inner.grid_columnconfigure(idx, weight=1)
+                range_txt = ''
+                if scale.get('min_mark') not in ('', None) and scale.get('max_mark') not in ('', None):
+                    range_txt = f"{int(float(scale['min_mark']))}-{int(float(scale['max_mark']))}"
+                tk.Label(cell, text=scale['display'], bg='white', fg=title_color, font=(FF, layout['table_header_font'], 'bold')).pack()
+                if range_txt:
+                    tk.Label(cell, text=range_txt, bg='white', fg='#2b2b2b', font=(FF, layout['table_sub_font'] + 1, 'bold')).pack()
+                tk.Label(cell, text=scale['label'], bg='white', fg=text_muted, font=(FF, layout['table_sub_font'], 'bold'), wraplength=110, justify='center').pack()
+
+        tbl = tk.Frame(parent, bg=grid_border, padx=1, pady=1)
+        tbl.pack(fill='x', pady=(0, 12))
+        tbl_inner = tk.Frame(tbl, bg='white')
+        tbl_inner.pack(fill='x')
+        table_cell_pad = (0, 0)
+        tk.Label(
+            tbl_inner, text='LEARNING AREAS', bg=header_bg, fg=text_muted,
+            font=(FF, layout['table_header_font'], 'bold'), anchor='w', padx=8, pady=layout['row_pad'] + 1
+        ).grid(row=0, column=0, rowspan=2, sticky='nsew', padx=table_cell_pad[0], pady=table_cell_pad[1])
+
+        grouped_headers = [
+            ('1ST ASSESSMENT', 'Opener'),
+            ('2ND ASSESSMENT', 'Mid-Term'),
+            ('3RD ASSESSMENT', 'End-Term'),
+            ('AVERAGE', 'Score'),
+            ('GRADE / REMARK', 'Result'),
+        ]
+        for idx, (header, sublabel) in enumerate(grouped_headers, start=1):
+            tbl_inner.grid_columnconfigure(idx, weight=2 if idx == 5 else 1)
+            tk.Label(
+                tbl_inner, text=header, bg=header_bg, fg=text_muted,
+                font=(FF, layout['table_header_font'], 'bold'), padx=8, pady=layout['row_pad'] + 1,
+                anchor='center'
+            ).grid(row=0, column=idx, sticky='nsew', padx=table_cell_pad[0], pady=table_cell_pad[1])
+            tk.Label(
+                tbl_inner, text=sublabel, bg=accent_soft, fg=text_muted,
+                font=(FF, layout['table_sub_font'], 'bold'), padx=6, pady=max(3, layout['row_pad'] - 1)
+            ).grid(row=1, column=idx, sticky='nsew', padx=table_cell_pad[0], pady=table_cell_pad[1])
+        tbl_inner.grid_columnconfigure(0, weight=3)
+
+        for row_index, subject in enumerate(subjects, start=2):
+            opener = term_marks.get('Opener', {}).get(subject, '')
+            mid_term = term_marks.get('Mid-Term', {}).get(subject, '')
+            end_term = term_marks.get('End-Term', {}).get(subject, marks.get(subject, ''))
+            numeric_marks = []
+            for raw in (opener, mid_term, end_term):
+                try:
+                    if str(raw).strip() != '':
+                        numeric_marks.append(float(raw))
+                except (TypeError, ValueError):
+                    continue
+            avg_mark = round(sum(numeric_marks) / len(numeric_marks), 1) if numeric_marks else 0
+            grade = self._get_grade_code_for_class(avg_mark, class_name)
+            remark = self._get_grade_name_for_class(grade, class_name)
+            row_bg = '#ffffff' if row_index % 2 else accent_soft
+            tk.Label(tbl_inner, text=subject, bg=row_bg, fg='#425a70',
+                     font=(FF, layout['table_row_font'], 'bold'), anchor='w', justify='left', padx=8, pady=layout['row_pad']
+                     ).grid(row=row_index, column=0, sticky='nsew', padx=table_cell_pad[0], pady=table_cell_pad[1])
+            for col, value in enumerate([opener, mid_term, end_term], start=1):
+                tk.Label(tbl_inner, text='' if str(value).strip() == '' else str(value), bg=row_bg, fg='#2f2f2f',
+                         font=(FF, layout['table_row_font']), pady=layout['row_pad']).grid(row=row_index, column=col, sticky='nsew', padx=table_cell_pad[0], pady=table_cell_pad[1])
+            tk.Label(tbl_inner, text=str(avg_mark), bg=row_bg, fg=title_color,
+                     font=(FF, layout['table_row_font'], 'bold'), pady=layout['row_pad']).grid(row=row_index, column=4, sticky='nsew', padx=table_cell_pad[0], pady=table_cell_pad[1])
+            tk.Label(tbl_inner, text=f'{grade}  {remark}', bg=row_bg, fg='#2f2f2f',
+                     font=(FF, layout['table_row_font']), pady=layout['row_pad'], anchor='w').grid(row=row_index, column=5, sticky='nsew', padx=table_cell_pad[0], pady=table_cell_pad[1])
+
+        summary_row = len(subjects) + 2
+        summary_bg = accent_soft
+        summary_values = [
+            f"Subjects Taken: {len(subjects)}",
+            f"Total: {result['total']}/{result.get('possible_total', len(subjects) * 100)}",
+            f"Avg: {result['average']}",
+            f"Position: {result['position']} / {total_students}",
+            '',
+            '',
+        ]
+        for col, value in enumerate(summary_values):
+            tk.Label(tbl_inner, text=value, bg=summary_bg, fg=title_color,
+                     font=(FF, layout['table_row_font'], 'bold'), padx=8, pady=layout['row_pad'] + 1,
+                     anchor='w' if col == 0 else 'center'
+                     ).grid(row=summary_row, column=col, sticky='nsew', padx=table_cell_pad[0], pady=table_cell_pad[1])
+
+        comment_shell = tk.Frame(parent, bg=grid_border, padx=1, pady=1)
+        comment_shell.pack(fill='x', pady=(4, 10))
+        comment_card = tk.Frame(comment_shell, bg=accent_soft, padx=10, pady=8)
+        comment_card.pack(fill='x')
+        tk.Label(
+            comment_card, text='General Comments', bg=accent_soft, fg=title_color,
+            font=(FF, layout['meta_font'], 'bold'), anchor='w'
+        ).pack(anchor='w')
+        tk.Label(
+            comment_card, text=comment_text, bg=accent_soft, fg='#2f2f2f',
+            font=('Comic Sans MS', layout['comment_font']), justify='left', anchor='w', wraplength=layout['preview_comment_wrap']
+        ).pack(anchor='w', pady=(4, 6))
+        tk.Frame(comment_card, bg=line_color, height=1).pack(fill='x')
+
+        footer_shell = tk.Frame(parent, bg=grid_border, padx=1, pady=1)
+        footer_shell.pack(fill='x', pady=(10, 0))
+        footer_card = tk.Frame(footer_shell, bg='white', padx=10, pady=10)
+        footer_card.pack(fill='x')
+
+        sign_row = tk.Frame(footer_card, bg='white')
+        sign_row.pack(fill='x', pady=(0, 10))
+        for idx, label in enumerate(['Class Teacher Signature', 'Head Teacher Signature']):
+            cell = tk.Frame(sign_row, bg=accent_soft, padx=10, pady=8)
+            cell.grid(row=0, column=idx, sticky='ew', padx=(0, 16 if idx == 0 else 0))
+            sign_row.grid_columnconfigure(idx, weight=1)
+            tk.Label(cell, text=label, bg=accent_soft, fg=title_color, font=(FF, layout['meta_font'], 'bold')).pack(anchor='w')
+            spacer = tk.Frame(cell, bg=accent_soft, height=14)
+            spacer.pack(fill='x')
+            tk.Frame(cell, bg=line_color, height=1).pack(fill='x', pady=(2, 2))
+            if idx == 0 and teacher_name.strip('_ '):
+                tk.Label(cell, text=teacher_name, bg=accent_soft, fg='#2f2f2f', font=(FF, layout['table_row_font'])).pack(anchor='w')
+
+        date_row = tk.Frame(footer_card, bg='white')
+        date_row.pack(fill='x')
+        for idx, (label, value) in enumerate([('Opening Date', open_date), ('Closing Date', close_date)]):
+            cell = tk.Frame(date_row, bg=accent_soft, padx=10, pady=8)
+            cell.grid(row=0, column=idx, sticky='ew', padx=(0, 16 if idx == 0 else 0))
+            date_row.grid_columnconfigure(idx, weight=1)
+            tk.Label(cell, text=label, bg=accent_soft, fg=title_color, font=(FF, layout['meta_font'], 'bold')).pack(anchor='w')
+            spacer = tk.Frame(cell, bg=accent_soft, height=14)
+            spacer.pack(fill='x')
+            tk.Frame(cell, bg=line_color, height=1).pack(fill='x', pady=(2, 0))
+
+        self._render_report_footer_image(parent, layout)
+
     def _render_report_card(self, parent, result, total_students, term, exam_type=DEFAULT_EXAM_TYPE):
         """Render the full styled visual report card into parent."""
         s     = result['student']
         marks = result['marks']
+        context = self._get_report_card_context(result, term, exam_type)
+        cls_level = context['class_level']
+        is_pp = context['is_pp']
 
         SCH_BLUE = '#1b5e20'
         RED_ACC  = '#c62828'
@@ -9143,7 +11706,14 @@ class SchoolReportApp:
         def get_grade(m):
             return self._get_grade_code_for_class(m, s.get('class', ''))
 
-        subjects = result.get('subjects', self._get_subjects_for_class(s.get('class', ''), term, exam_type))
+        subjects = context['subjects']
+
+        if is_pp:
+            self._render_preprimary_report_card(parent, result, total_students, term, exam_type, context)
+            return
+
+        self._render_standard_report_card(parent, result, total_students, term, exam_type, context)
+        return
 
         # School Header - Try to use letterhead image
         letterhead_assets = get_letterhead_assets()
@@ -9189,17 +11759,26 @@ class SchoolReportApp:
         title_border.pack(pady=(0, 14))
         title_inner = tk.Frame(title_border, bg='white', padx=30, pady=7)
         title_inner.pack(padx=2, pady=2)
-        tk.Label(title_inner, text='LEARNER ASSESSMENT REPORT CARD',
+        rpt_title = 'ASSESSMENT SUMMARY REPORT PRE-PRIMARY' if is_pp else 'LEARNER ASSESSMENT REPORT CARD'
+        tk.Label(title_inner, text=rpt_title,
                  bg='white', fg=TTL_ORG, font=(FF, 12, 'bold')).pack()
 
         # Student Info grid
         grade_num = s.get('class', 'Grade 7').replace('Grade ', '')
         stream_display = s.get('stream', '').strip() or s.get('admission_no', '')
-        info_rows = [
-            ('NAME',   s['name'],         'GRADE',  grade_num),
-            ('STREAM', stream_display, 'YEAR',   '2026'),
-            ('TERM',   f'{term} / {exam_type}', 'GENDER', s['gender']),
-        ]
+        facilitator = s.get('facilitator', 'Oma Moriasi')  # In a real app this would come from db or teacher profile
+        if is_pp:
+            info_rows = [
+                ('GRADE',  grade_num,         'TERM',  term.upper()),
+                ('YEAR',   '2026',             'NAME',  s['name']),
+                ('FACILITATOR', facilitator,  'GENDER', s['gender']),
+            ]
+        else:
+            info_rows = [
+                ('NAME',   s['name'],         'GRADE',  grade_num),
+                ('STREAM', stream_display, 'YEAR',   '2026'),
+                ('TERM',   f'{term} / {exam_type}', 'GENDER', s['gender']),
+            ]
         info_f = tk.Frame(parent, bg='white')
         info_f.pack(fill='x', pady=(0, 14))
         info_f.columnconfigure(0, weight=1)
@@ -9223,91 +11802,149 @@ class SchoolReportApp:
                         c.create_oval(x, 0, x + 2, 2, fill='#bbb', outline='')
                 dot_sep.bind('<Configure>', _draw_dots)
 
+        if is_pp:
+            legend_f = tk.Frame(parent, bg='white')
+            legend_f.pack(fill='x', pady=(0, 10))
+            for i, (code, full) in enumerate([
+                ('EE(4)', 'Exceed Expectation'), ('ME(3)', 'Meet Expectation'),
+                ('AE(2)', 'Approach Expectation'), ('BE(1)', 'Below Expectation')
+            ]):
+                tk.Label(legend_f, text=f"{code} {full}", bg='white', fg=PERF_CLR.get(code[:2], '#222'),
+                         font=(FF, 8, 'bold'), padx=10).pack(side='left', expand=True)
+
         # Marks Table
         tbl = tk.Frame(parent, bg='#cccccc')
         tbl.pack(fill='x', pady=(0, 12))
-        for col_i, weight in enumerate([3, 1, 1, 4]):
-            tbl.columnconfigure(col_i, weight=weight)
-        for text, col, anchor in [
-            ('LEARNING AREA', 0, 'w'), ('MARKS', 1, 'center'),
-            ('AVG', 2, 'center'), ('PERFORMANCE LEVEL', 3, 'w')
-        ]:
-            tk.Label(tbl, text=text, bg=HDR_BG, fg=SCH_BLUE,
-                     font=(FF, 10, 'bold'), padx=10, pady=8, anchor=anchor
-                     ).grid(row=0, column=col, sticky='nsew', padx=1, pady=1)
-        for i, subj in enumerate(subjects):
-            mk    = marks.get(subj, 0)
-            grade = get_grade(mk)
-            subject_style = self._get_subject_colors(subj, s.get('class', ''))
-            row_bg = subject_style['soft'] if i % 2 == 0 else subject_style['mid']
-            subj_label = self._get_subject_label(subj, s.get('class', ''))
-            tk.Label(tbl, text=subj_label, bg=row_bg, fg=subject_style['dark_text'], font=(FF, 10, 'bold'),
-                     padx=10, pady=6, anchor='w'
-                     ).grid(row=i + 1, column=0, sticky='nsew', padx=1, pady=1)
-            for col in (1, 2):
-                tk.Label(tbl, text=str(mk), bg=row_bg, fg='#333', font=(FF, 10),
-                         padx=10, pady=6
-                         ).grid(row=i + 1, column=col, sticky='nsew', padx=1, pady=1)
-            tk.Label(tbl, text=self._get_grade_name_for_class(grade, s.get('class', '')), bg=row_bg,
-                     fg=PERF_CLR.get(grade_base_code(grade), PERF_CLR['IE']), font=(FF, 10, 'italic'),
-                     padx=10, pady=6, anchor='w'
-                     ).grid(row=i + 1, column=3, sticky='nsew', padx=1, pady=1)
 
-        total_marks = result['total']
-        avg_score   = result['average']
-        grade_ov    = result['grade']
-        pos         = result['position']
-        possible    = result.get('possible_total', len(subjects) * 100)
-        base        = len(subjects) + 1
-        for j, (lab, c1, c2, c3) in enumerate([
-            ('Total Scores',   f'{total_marks}/{possible}', f'{avg_score}/100',
-             f'Termly Performance Level: {grade_ov}'),
-            ('Average Scores', f'{avg_score}/100', '',
-             f'Position: {pos} of {total_students}'),
-        ]):
-            tk.Label(tbl, text=lab, bg=MINT_BG, fg='#222',
-                     font=(FF, 10, 'bold'), padx=10, pady=7, anchor='w'
-                     ).grid(row=base + j, column=0, sticky='nsew', padx=1, pady=1)
-            tk.Label(tbl, text=c1, bg=MINT_BG, fg='#222',
-                     font=(FF, 10, 'bold'), padx=10, pady=7
-                     ).grid(row=base + j, column=1, sticky='nsew', padx=1, pady=1)
-            tk.Label(tbl, text=c2, bg=MINT_BG, fg='#222',
-                     font=(FF, 10, 'bold'), padx=10, pady=7
-                     ).grid(row=base + j, column=2, sticky='nsew', padx=1, pady=1)
-            tk.Label(tbl, text=c3, bg=MINT_BG, fg='#1b5e20',
-                     font=(FF, 10, 'bold'), padx=10, pady=7, anchor='w'
-                     ).grid(row=base + j, column=3, sticky='nsew', padx=1, pady=1)
+        if is_pp:
+            term_marks = self._get_student_term_marks(s['id'], term)
+            assess_types = ['Opener', 'Mid-Term', 'End-Term']
+            
+            # Header Row 1
+            tk.Label(tbl, text='LEARNING AREAS', bg=HDR_BG, fg=SCH_BLUE,
+                     font=(FF, 8, 'bold'), padx=5, pady=5, anchor='w'
+                     ).grid(row=0, column=0, rowspan=2, sticky='nsew', padx=1, pady=1)
+            
+            for i, at in enumerate(assess_types):
+                tk.Label(tbl, text=f'{i+1}st ASSESSMENT' if i==0 else (f'{i+1}nd ASSESSMENT' if i==1 else f'{i+1}rd ASSESSMENT'), 
+                         bg=HDR_BG, fg=SCH_BLUE, font=(FF, 8, 'bold'), padx=2, pady=2
+                         ).grid(row=0, column=1 + i*4, columnspan=4, sticky='nsew', padx=1, pady=1)
+                
+                for j, subcol in enumerate(['EE(4)', 'ME(3)', 'AE(2)', 'BE(1)']):
+                    tk.Label(tbl, text=subcol, bg=HDR_BG, fg=SCH_BLUE, font=(FF, 7, 'bold'), padx=1, pady=1
+                             ).grid(row=1, column=1 + i*4 + j, sticky='nsew', padx=1, pady=1)
+
+            # Data Rows
+            for i, subj in enumerate(subjects):
+                subject_style = self._get_subject_colors(subj, s.get('class', ''))
+                row_bg = subject_style['soft'] if i % 2 == 0 else subject_style['mid']
+                subj_label = self._get_subject_label(subj, s.get('class', ''))
+                
+                tk.Label(tbl, text=subj_label, bg=row_bg, fg=subject_style['dark_text'], font=(FF, 8, 'bold'),
+                         padx=5, pady=4, anchor='w'
+                         ).grid(row=i + 2, column=0, sticky='nsew', padx=1, pady=1)
+                
+                for k, et in enumerate(assess_types):
+                    m_dict = term_marks.get(et, {})
+                    mk = m_dict.get(subj, 0)
+                    grade = get_grade(mk) if mk else ''
+                    
+                    for j, subcol in enumerate(['EE', 'ME', 'AE', 'BE']):
+                        val = str(mk) if grade == subcol else ''
+                        tk.Label(tbl, text=val, bg=row_bg, fg='#333', font=(FF, 8), padx=1, pady=4
+                                 ).grid(row=i + 2, column=1 + k*4 + j, sticky='nsew', padx=1, pady=1)
+            
+            # Summary - Pre-Primary usually doesn't show total points like high school, 
+            # but let's show General Comments instead or keep it simple.
+            base_row = len(subjects) + 2
+        else:
+            for col_i, weight in enumerate([3, 1, 1, 4]):
+                tbl.columnconfigure(col_i, weight=weight)
+            for text, col, anchor in [
+                ('LEARNING AREA', 0, 'w'), ('MARKS', 1, 'center'),
+                ('AVG', 2, 'center'), ('PERFORMANCE LEVEL', 3, 'w')
+            ]:
+                tk.Label(tbl, text=text, bg=HDR_BG, fg=SCH_BLUE,
+                         font=(FF, 10, 'bold'), padx=10, pady=8, anchor=anchor
+                         ).grid(row=0, column=col, sticky='nsew', padx=1, pady=1)
+            for i, subj in enumerate(subjects):
+                mk    = marks.get(subj, 0)
+                grade = get_grade(mk)
+                subject_style = self._get_subject_colors(subj, s.get('class', ''))
+                row_bg = subject_style['soft'] if i % 2 == 0 else subject_style['mid']
+                subj_label = self._get_subject_label(subj, s.get('class', ''))
+                tk.Label(tbl, text=subj_label, bg=row_bg, fg=subject_style['dark_text'], font=(FF, 10, 'bold'),
+                         padx=10, pady=6, anchor='w'
+                         ).grid(row=i + 1, column=0, sticky='nsew', padx=1, pady=1)
+                for col in (1, 2):
+                    tk.Label(tbl, text=str(mk), bg=row_bg, fg='#333', font=(FF, 10),
+                             padx=10, pady=6
+                             ).grid(row=i + 1, column=col, sticky='nsew', padx=1, pady=1)
+                tk.Label(tbl, text=self._get_grade_name_for_class(grade, s.get('class', '')), bg=row_bg,
+                         fg=PERF_CLR.get(grade_base_code(grade), PERF_CLR['IE']), font=(FF, 10, 'italic'),
+                         padx=10, pady=6, anchor='w'
+                         ).grid(row=i + 1, column=3, sticky='nsew', padx=1, pady=1)
+
+            total_marks = result['total']
+            avg_score   = result['average']
+            grade_ov    = result['grade']
+            pos         = result['position']
+            possible    = result.get('possible_total', len(subjects) * 100)
+            base        = len(subjects) + 1
+            for j, (lab, c1, c2, c3) in enumerate([
+                ('Total Scores',   f'{total_marks}/{possible}', f'{avg_score}/100',
+                 f'Termly Performance Level: {grade_ov}'),
+                ('Average Scores', f'{avg_score}/100', '',
+                 f'Position: {pos} of {total_students}'),
+            ]):
+                tk.Label(tbl, text=lab, bg=MINT_BG, fg='#222',
+                         font=(FF, 10, 'bold'), padx=10, pady=7, anchor='w'
+                         ).grid(row=base + j, column=0, sticky='nsew', padx=1, pady=1)
+                tk.Label(tbl, text=c1, bg=MINT_BG, fg='#222',
+                         font=(FF, 10, 'bold'), padx=10, pady=7
+                         ).grid(row=base + j, column=1, sticky='nsew', padx=1, pady=1)
+                tk.Label(tbl, text=c2, bg=MINT_BG, fg='#222',
+                         font=(FF, 10, 'bold'), padx=10, pady=7
+                         ).grid(row=base + j, column=2, sticky='nsew', padx=1, pady=1)
+                tk.Label(tbl, text=c3, bg=MINT_BG, fg='#1b5e20',
+                         font=(FF, 10, 'bold'), padx=10, pady=7, anchor='w'
+                         ).grid(row=base + j, column=3, sticky='nsew', padx=1, pady=1)
+            base_row = base + 2
 
         # Performance Trend chart
-        tk.Label(parent, text='Performance Trend', bg='white', fg=SCH_BLUE,
-                 font=(FF, 12, 'bold', 'underline')).pack(pady=(10, 4))
-        fig, ax = plt.subplots(figsize=(6.2, 2.8))
-        fig.patch.set_facecolor('white')
-        ax.set_facecolor('#fafafa')
-        chart_subject_labels = [self._get_subject_label(sub, s.get('class', '')) for sub in subjects]
-        mark_vals  = [marks.get(sub, 0) for sub in subjects]
-        bar_colors = [self._get_subject_color(sub, s.get('class', '')) for sub in subjects]
-        ax.bar(chart_subject_labels, mark_vals, color=bar_colors, edgecolor='none', width=0.55)
-        ax.set_ylim(0, 105)
-        ax.set_yticks([0, 25, 50, 75, 100])
-        ax.tick_params(axis='x', rotation=45, labelsize=8, labelcolor='#444')
-        ax.tick_params(axis='y', labelsize=8, labelcolor='#444')
-        ax.spines['top'].set_visible(False)
-        ax.spines['right'].set_visible(False)
-        ax.spines['left'].set_color('#ddd')
-        ax.spines['bottom'].set_color('#ddd')
-        ax.grid(axis='y', color='#eeeeee', linewidth=0.7, zorder=0)
-        fig.tight_layout(pad=1.0)
-        chart_widget = FigureCanvasTkAgg(fig, master=parent)
-        chart_widget.draw()
-        chart_widget.get_tk_widget().pack(fill='x', pady=(0, 12))
-        plt.close(fig)
+        if not is_pp:
+            tk.Label(parent, text='Performance Trend', bg='white', fg=SCH_BLUE,
+                     font=(FF, 12, 'bold', 'underline')).pack(pady=(10, 4))
+            fig, ax = plt.subplots(figsize=(6.2, 2.8))
+            fig.patch.set_facecolor('white')
+            ax.set_facecolor('#fafafa')
+            chart_subject_labels = [self._get_subject_label(sub, s.get('class', '')) for sub in subjects]
+            mark_vals  = [marks.get(sub, 0) for sub in subjects]
+            bar_colors = [self._get_subject_color(sub, s.get('class', '')) for sub in subjects]
+            ax.bar(chart_subject_labels, mark_vals, color=bar_colors, edgecolor='none', width=0.55)
+            ax.set_ylim(0, 105)
+            ax.set_yticks([0, 25, 50, 75, 100])
+            ax.tick_params(axis='x', rotation=45, labelsize=8, labelcolor='#444')
+            ax.tick_params(axis='y', labelsize=8, labelcolor='#444')
+            ax.spines['top'].set_visible(False)
+            ax.spines['right'].set_visible(False)
+            ax.spines['left'].set_color('#ddd')
+            ax.spines['bottom'].set_color('#ddd')
+            ax.grid(axis='y', color='#eeeeee', linewidth=0.7, zorder=0)
+            fig.tight_layout(pad=1.0)
+            chart_widget = FigureCanvasTkAgg(fig, master=parent)
+            chart_widget.draw()
+            chart_widget.get_tk_widget().pack(fill='x', pady=(0, 12))
+            plt.close(fig)
 
         # Comments
-        for clabel, bg_c, brd_c in [
+        report_comment = context.get('comment_text') or ''
+        comment_labels = [("General Comments", '#fffff0', '#d4b800')] if is_pp else [
             ("Class Teacher's Comment", '#f0f8ff', '#90caf9'),
             ("Head Teacher's Comment",  '#fffff0', '#d4b800'),
-        ]:
+        ]
+        
+        for clabel, bg_c, brd_c in comment_labels:
             outer = tk.Frame(parent, bg=brd_c)
             outer.pack(fill='x', pady=4)
             inner = tk.Frame(outer, bg=bg_c, padx=14, pady=10)
@@ -9316,20 +11953,32 @@ class SchoolReportApp:
             row_f.pack(fill='x')
             tk.Label(row_f, text=f'{clabel}:', bg=bg_c, fg='#222',
                      font=(FF, 10, 'bold')).pack(side='left')
-            cmnt = ('  Fair performance. Keep working harder.'
-                    if 'Class' in clabel else '  Encourage the learner to improve.')
+            cmnt = report_comment if ('Class' in clabel or is_pp) else ''
             tk.Label(row_f, text=cmnt, bg=bg_c, fg='#555', font=(FF, 10)).pack(side='left')
 
+        if is_pp:
+            # Signatures and Dates
+            sig_f = tk.Frame(parent, bg='white')
+            sig_f.pack(fill='x', pady=10)
+            tk.Label(sig_f, text="Class Teacher Signature: ...................................", bg='white', font=(FF, 9)).pack(side='left')
+            tk.Label(sig_f, text="Head Teacher Signature: ...................................", bg='white', font=(FF, 9)).pack(side='right')
+            
+            date_f = tk.Frame(parent, bg='white')
+            date_f.pack(fill='x', pady=5)
+            tk.Label(date_f, text="Opening Date: 28/04/2026", bg='white', font=(FF, 9)).pack(side='left')
+            tk.Label(date_f, text="Closing Date: 31/03/2026", bg='white', font=(FF, 9)).pack(side='right')
+
         tk.Frame(parent, bg='white', height=8).pack()
-        today = datetime.now().strftime('%m/%d/%Y')
-        tk.Label(parent,
-                 text=f'This term closed on: {today}    |    Next term opens on: ___________',
-                 bg='white', fg='#666', font=(FF, 9)).pack()
-        tk.Label(parent,
-                 text=('This Exam Report Card has been Issued Without Any Alterations '
-                       'Whatsoever. Any Alterations Will Invalidate Its Authenticity.'),
-                 bg='white', fg='red', font=(FF, 8, 'italic'),
-                 wraplength=480, justify='center').pack(pady=(4, 0))
+        if not is_pp:
+            today = datetime.now().strftime('%m/%d/%Y')
+            tk.Label(parent,
+                     text=f'This term closed on: {today}    |    Next term opens on: ___________',
+                     bg='white', fg='#666', font=(FF, 9)).pack()
+            tk.Label(parent,
+                     text=('This Exam Report Card has been Issued Without Any Alterations '
+                           'Whatsoever. Any Alterations Will Invalidate Its Authenticity.'),
+                     bg='white', fg='red', font=(FF, 8, 'italic'),
+                     wraplength=480, justify='center').pack(pady=(4, 0))
 
         # Footer contacts should sit at the very bottom and span wider.
         footer_path = letterhead_assets.get('footer_path')
@@ -9348,30 +11997,62 @@ class SchoolReportApp:
     def _gen_rc_text(self, result, total, term, exam_type=DEFAULT_EXAM_TYPE):
         """Plain-text fallback used for printing."""
         s, m = result['student'], result['marks']
-        subjects = result.get('subjects', self._get_subjects_for_class(s.get('class', ''), term, exam_type))
+        context = self._get_report_card_context(result, term, exam_type)
+        is_pp = context['is_pp']
+        subjects = context['subjects']
+        comment_text = context.get('comment_text') or ''
+            
         possible = result.get('possible_total', len(subjects) * 100)
+        title = 'ASSESSMENT SUMMARY REPORT PRE-PRIMARY' if is_pp else 'LEARNER ASSESSMENT REPORT CARD'
         lines = [
             '=' * 62,
-            '      MT OLIVES ADVENTIST SCHOOL',
-            '          LEARNER ASSESSMENT REPORT CARD',
+            f'      MT OLIVES ADVENTIST SCHOOL',
+            f'          {title}',
             '=' * 62,
             f"  Name    : {s['name']:<20}  Grade  : {s.get('class','').replace('Grade ','')}",
-            f"  Stream  : {s['admission_no']:<20}  Year   : 2026",
-            f"  Term    : {f'{term} / {exam_type}':<20}  Gender : {s['gender']}",
-            '-' * 62,
-            f"  {'Subject':<16} {'Marks':>6}  {'Avg':>6}  Performance Level",
-            '-' * 62,
         ]
-        for sub in subjects:
-            mk = m.get(sub, 0)
-            g  = self._get_grade_code_for_class(mk, s.get('class', ''))
-            lines.append(f"  {sub:<16} {mk:>6}  {mk:>6}  {self._get_grade_name_for_class(g, s.get('class', ''))}")
-        lines += [
-            '-' * 62,
-            f"  Total   : {result['total']}/{possible}   Average: {result['average']}/100",
-            f"  Grade   : {result['grade']}   Position: {result['position']} of {total}",
-            '=' * 62,
-        ]
+        if is_pp:
+            lines += [
+                f"  Year    : 2026                Term   : {term.upper()}",
+                f"  Gender  : {s['gender']:<20}",
+            ]
+        else:
+            lines += [
+                f"  Stream  : {s['admission_no']:<20}  Year   : 2026",
+                f"  Term    : {f'{term} / {exam_type}':<20}  Gender : {s['gender']}",
+            ]
+        
+        lines.append('-' * 62)
+        if is_pp:
+            lines.append(f"  {'Learning Area':<30} {'1st':<4} {'2nd':<4} {'3rd':<4}")
+        else:
+            lines.append(f"  {'Subject':<16} {'Marks':>6}  {'Avg':>6}  Performance Level")
+        lines.append('-' * 62)
+
+        if is_pp:
+            term_marks = self._get_student_term_marks(s['id'], term)
+            for sub in subjects:
+                row = f"  {sub[:30]:<30} "
+                for et in ['Opener', 'Mid-Term', 'End-Term']:
+                    mk = term_marks.get(et, {}).get(sub, '')
+                    g = self._get_grade_code_for_class(mk, s.get('class', '')) if mk else ''
+                    row += f"{g:<4} "
+                lines.append(row)
+        else:
+            for sub in subjects:
+                mk = m.get(sub, 0)
+                g  = self._get_grade_code_for_class(mk, s.get('class', ''))
+                lines.append(f"  {sub:<16} {mk:>6}  {mk:>6}  {self._get_grade_name_for_class(g, s.get('class', ''))}")
+        
+        lines += ['-' * 62]
+        if not is_pp:
+            lines += [
+                f"  Total   : {result['total']}/{possible}   Average: {result['average']}/100",
+                f"  Grade   : {result['grade']}   Position: {result['position']} of {total}",
+            ]
+        else:
+            lines += [f"  Comments: {comment_text}"]
+        lines += ['=' * 62]
         return '\n'.join(lines)
 
     def _print_rc(self):
@@ -9458,7 +12139,3 @@ def main():
 
 if __name__ == '__main__':
     main()
-
-
-
-
