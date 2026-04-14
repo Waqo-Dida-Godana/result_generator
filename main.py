@@ -14186,10 +14186,11 @@ class SchoolReportApp:
                         ),
                         {},
                     )
-                    base_order.append(
-                        (base, base_info.get("value", base_info.get("points", 0)))
-                    )
-                base_order.sort(key=lambda x: x[1], reverse=True)
+                    sort_val = base_info.get("value") or base_info.get("points", 0) or 0
+                    base_order.append((base, sort_val))
+                base_order.sort(
+                    key=lambda x: x[1] if x[1] is not None else 0, reverse=True
+                )
                 sorted_bases = [b[0] for b in base_order]
 
                 # Build 3-row header for prefixed codes
@@ -16463,10 +16464,9 @@ class SchoolReportApp:
                     ),
                     {},
                 )
-                base_order.append(
-                    (base, base_info.get("value", base_info.get("points", 0)))
-                )
-            base_order.sort(key=lambda x: x[1], reverse=True)
+                sort_val = base_info.get("value") or base_info.get("points", 0) or 0
+                base_order.append((base, sort_val))
+            base_order.sort(key=lambda x: x[1] if x[1] is not None else 0, reverse=True)
             sorted_bases = [b[0] for b in base_order]
 
         current_col = 1
