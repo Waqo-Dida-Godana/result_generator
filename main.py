@@ -41,6 +41,7 @@ from reportlab.platypus import (
     Spacer,
     Image as RLImage,
     PageBreak,
+    CondPageBreak,
 )
 from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
 from reportlab.graphics.shapes import Drawing, Rect
@@ -603,10 +604,7 @@ def scrollable_frame(parent, bg=CONTENT_BG):
 
     inner.bind("<Configure>", _on_frame_resize)
 
-    def _on_mousewheel(e):
-        canvas.yview_scroll(int(-1 * (e.delta / 120)), "units")
-
-    canvas.bind_all("<MouseWheel>", _on_mousewheel)
+    _install_canvas_mousewheel(canvas)
 
     return canvas, sb, inner
 
@@ -639,16 +637,58 @@ def scrollable_frame_both(parent, bg=CONTENT_BG):
     canvas.bind("<Configure>", _on_resize)
     inner.bind("<Configure>", _update_scrollregion)
 
-    def _on_mousewheel(e):
-        canvas.yview_scroll(int(-1 * (e.delta / 120)), "units")
-
-    def _on_shift_mousewheel(e):
-        canvas.xview_scroll(int(-1 * (e.delta / 120)), "units")
-
-    canvas.bind_all("<MouseWheel>", _on_mousewheel)
-    canvas.bind_all("<Shift-MouseWheel>", _on_shift_mousewheel)
+    _install_canvas_mousewheel(canvas, horizontal=True)
 
     return canvas, vbar, inner, hbar
+
+
+def _install_canvas_mousewheel(canvas, horizontal=False):
+    """Bind mousewheel only while a canvas is active, and clean up on destroy."""
+
+    def _scroll(units, axis="y"):
+        try:
+            if not canvas.winfo_exists():
+                return "break"
+            if axis == "x":
+                canvas.xview_scroll(units, "units")
+            else:
+                canvas.yview_scroll(units, "units")
+        except tk.TclError:
+            return "break"
+        return "break"
+
+    def _on_mousewheel(event):
+        delta = int(-1 * (getattr(event, "delta", 0) / 120))
+        if delta:
+            return _scroll(delta, "y")
+        return "break"
+
+    def _on_shift_mousewheel(event):
+        delta = int(-1 * (getattr(event, "delta", 0) / 120))
+        if delta:
+            return _scroll(delta, "x")
+        return "break"
+
+    def _bind_global(_event=None):
+        try:
+            if canvas.winfo_exists():
+                canvas.bind_all("<MouseWheel>", _on_mousewheel)
+                if horizontal:
+                    canvas.bind_all("<Shift-MouseWheel>", _on_shift_mousewheel)
+        except tk.TclError:
+            pass
+
+    def _unbind_global(_event=None):
+        try:
+            canvas.unbind_all("<MouseWheel>")
+            if horizontal:
+                canvas.unbind_all("<Shift-MouseWheel>")
+        except tk.TclError:
+            pass
+
+    canvas.bind("<Enter>", _bind_global)
+    canvas.bind("<Leave>", _unbind_global)
+    canvas.bind("<Destroy>", _unbind_global)
 
 
 def short_subject_name(subject):
@@ -1396,6 +1436,110 @@ class SchoolReportApp:
             return self._get_subjects_for_class(class_name, term, exam_type)
         return self.get_current_subjects()
 
+    def _match_subject_from_candidates(self, raw_subject, candidates, class_name=""):
+        """Resolve a subject name against a candidate list using aliases and abbreviations."""
+        raw = str(raw_subject or "").strip()
+        if not raw:
+            return ""
+
+        cleaned_candidates = []
+        for subject in candidates or []:
+            subject_name = str(subject or "").strip()
+            if subject_name and subject_name not in cleaned_candidates:
+                cleaned_candidates.append(subject_name)
+        if not cleaned_candidates:
+            return ""
+
+        lookup = {}
+        for subject in cleaned_candidates:
+            lookup.setdefault(self._normalize_text(subject), subject)
+            lookup.setdefault(self._normalize_key(subject), subject)
+
+            meta = self._get_subject_meta(subject, class_name)
+            abbreviation = str(meta.get("abbreviation", "") or "").strip()
+            if abbreviation:
+                lookup.setdefault(self._normalize_text(abbreviation), subject)
+                lookup.setdefault(self._normalize_key(abbreviation), subject)
+
+            label = self._get_subject_label(subject, class_name)
+            if label:
+                lookup.setdefault(self._normalize_text(label), subject)
+                lookup.setdefault(self._normalize_key(label), subject)
+
+        raw_norm = self._normalize_text(raw)
+        raw_key = self._normalize_key(raw)
+        if raw_norm in lookup:
+            return lookup[raw_norm]
+        if raw_key in lookup:
+            return lookup[raw_key]
+
+        alias_map = {
+            "eng": ["English", "English Activities", "English Language Activities"],
+            "english": ["English", "English Activities", "English Language Activities"],
+            "math": ["Mathematics", "Mathematical Activities"],
+            "maths": ["Mathematics", "Mathematical Activities"],
+            "mat": ["Mathematics", "Mathematical Activities"],
+            "kis": [
+                "Kiswahili / KSL",
+                "Kiswahili / Kenyan Sign Language",
+                "Kiswahili Activities",
+                "Kiswahili Language Activities",
+            ],
+            "kiswahili": [
+                "Kiswahili / KSL",
+                "Kiswahili / Kenyan Sign Language",
+                "Kiswahili Activities",
+                "Kiswahili Language Activities",
+            ],
+            "intsci": ["Integrated Science"],
+            "integratedscience": ["Integrated Science"],
+            "sci": ["Science & Technology", "Integrated Science"],
+            "science": ["Science & Technology", "Integrated Science"],
+            "agri": ["Agriculture"],
+            "sst": ["Social Studies"],
+            "socialstudies": ["Social Studies"],
+            "cre": [
+                "Christian Religious Education (CRE)",
+                "Christian Religious Education",
+                "Religious Education (CRE/IRE/HRE)",
+            ],
+            "christianreligiouseducation": [
+                "Christian Religious Education (CRE)",
+                "Christian Religious Education",
+                "Religious Education (CRE/IRE/HRE)",
+            ],
+            "christianreligiouseducationcre": [
+                "Christian Religious Education (CRE)",
+                "Christian Religious Education",
+            ],
+            "pretech": ["Pre-Technical Studies"],
+            "pts": ["Pre-Technical Studies"],
+            "french": ["French", "Foreign Languages (French, German, Arabic)"],
+            "foreignlanguages": [
+                "Foreign Languages (French, German, Arabic)",
+                "French",
+                "German",
+                "Arabic",
+            ],
+            "via": ["Visual Arts"],
+            "visualarts": ["Visual Arts"],
+        }
+
+        for alias in alias_map.get(raw_key, []):
+            alias_norm = self._normalize_text(alias)
+            alias_key = self._normalize_key(alias)
+            if alias_norm in lookup:
+                return lookup[alias_norm]
+            if alias_key in lookup:
+                return lookup[alias_key]
+
+        for subject in cleaned_candidates:
+            subject_key = self._normalize_key(subject)
+            if raw_key and (raw_key in subject_key or subject_key in raw_key):
+                return subject
+
+        return ""
+
     def _get_level_for_class(self, class_name):
         """Resolve the CBC level for a class name."""
         class_name = self._match_known_class_name(class_name) or class_name
@@ -1419,11 +1563,32 @@ class SchoolReportApp:
         mapping = self._get_class_subjects_done_map()
         configured = mapping.get(class_name, [])
         if configured:
-            subject_set = set(subjects)
-            ordered = [subject for subject in configured if subject in subject_set]
+            ordered = []
             for subject in configured:
-                if subject not in ordered:
-                    ordered.append(subject)
+                matched = self._match_subject_from_candidates(
+                    subject, subjects, class_name
+                )
+                chosen = matched or str(subject or "").strip()
+                if chosen and chosen not in ordered:
+                    ordered.append(chosen)
+
+            if for_reporting:
+                done_subjects = self._get_done_subjects_from_marks(
+                    class_name, term, exam_type
+                )
+                if done_subjects:
+                    filtered = []
+                    for subject in ordered:
+                        matched = self._match_subject_from_candidates(
+                            subject, done_subjects, class_name
+                        )
+                        if matched and matched not in filtered:
+                            filtered.append(matched)
+                    for subject in done_subjects:
+                        if subject not in filtered:
+                            filtered.append(subject)
+                    return filtered
+
             return ordered
 
         if for_reporting:
@@ -3714,7 +3879,14 @@ class SchoolReportApp:
 
         # Create dialog for selecting exam
         dialog = tk.Toplevel(self.root)
-        dialog.title(f"Exam Results - {class_name}")
+        initial_exam = exams[0] if exams else {}
+        initial_heading = self._format_results_heading(
+            class_name,
+            initial_exam.get("term", "One"),
+            initial_exam.get("exam_type", DEFAULT_EXAM_TYPE),
+            stream_name=stream_filter,
+        )
+        dialog.title(initial_heading)
         dialog.geometry("1200x700")
         dialog.transient(self.root)
         dialog.grab_set()
@@ -3722,13 +3894,14 @@ class SchoolReportApp:
         # Header
         header = tk.Frame(dialog, bg=OLIVE_PRIMARY, padx=20, pady=15)
         header.pack(fill="x")
-        tk.Label(
+        title_label = tk.Label(
             header,
-            text=f"Exam Results: {class_name}",
+            text=initial_heading,
             bg=OLIVE_PRIMARY,
             fg="white",
             font=(FF, 14, "bold"),
-        ).pack(side="left")
+        )
+        title_label.pack(side="left")
         if stream_filter:
             tk.Label(
                 header,
@@ -3834,6 +4007,11 @@ class SchoolReportApp:
             exam = exams[selected_idx]
             term = exam.get("term", "One")
             exam_type = exam.get("exam_type", "End-Term")
+            heading_text = self._format_results_heading(
+                class_name, term, exam_type, stream_name=stream_filter
+            )
+            dialog.title(heading_text)
+            title_label.config(text=heading_text)
 
             # Get results
             results = db.get_class_exam_details(class_name, term, exam_type)
@@ -5180,10 +5358,12 @@ class SchoolReportApp:
             return []
 
         ordered = []
+        remaining = sorted(present)
         for subject in self._get_subject_pool_for_class(class_name):
-            if subject in present:
-                ordered.append(subject)
-        for subject in sorted(present):
+            matched = self._match_subject_from_candidates(subject, remaining, class_name)
+            if matched and matched not in ordered:
+                ordered.append(matched)
+        for subject in remaining:
             if subject not in ordered:
                 ordered.append(subject)
         return ordered
@@ -9694,10 +9874,6 @@ class SchoolReportApp:
         def _sync_analytics_width(event):
             canvas.itemconfigure(analytics_window, width=event.width)
 
-        # Enable mousewheel scrolling
-        def _on_mousewheel(event):
-            canvas.yview_scroll(int(-1 * (event.delta / 120)), "units")
-
         def _scroll_widget(widget, event, horizontal=False):
             delta = int(-1 * (event.delta / 120))
             if horizontal:
@@ -9706,7 +9882,7 @@ class SchoolReportApp:
                 widget.yview_scroll(delta, "units")
             return "break"
 
-        canvas.bind_all("<MouseWheel>", _on_mousewheel)
+        _install_canvas_mousewheel(canvas)
         canvas.bind("<Configure>", _sync_analytics_width)
 
         canvas.pack(side="left", fill="both", expand=True)
@@ -11337,11 +11513,7 @@ class SchoolReportApp:
         scrollbar.pack(side="right", fill="y")
         canvas.pack(side="left", fill="both", expand=True)
 
-        # Mouse wheel scrolling
-        def _on_mousewheel(event):
-            canvas.yview_scroll(int(-1 * (event.delta / 120)), "units")
-
-        canvas.bind_all("<MouseWheel>", _on_mousewheel)
+        _install_canvas_mousewheel(canvas)
 
         # Keep scrollable content width synced with canvas so responsive grids can use full page width
         def _sync_canvas_width(event):
@@ -13010,6 +13182,12 @@ class SchoolReportApp:
         ctrl = tk.Frame(self.content_frame, bg=CONTENT_BG)
         ctrl.pack(fill="x", pady=(0, 12))
 
+        report_classes = list(self.get_current_classes())
+        default_class = "PP1" if "PP1" in report_classes else (report_classes[0] if report_classes else "All")
+        class_options = list(report_classes)
+        if "All" not in class_options:
+            class_options.append("All")
+
         def lbl(t):
             tk.Label(
                 ctrl, text=t, bg=CONTENT_BG, fg=TEXT_SECONDARY, font=(FF, 10)
@@ -13018,12 +13196,12 @@ class SchoolReportApp:
         lbl("Class:")
         self.rep_cls_cb = ttk.Combobox(
             ctrl,
-            values=["All"] + self.get_current_classes(),
+            values=class_options,
             state="readonly",
             style="App.TCombobox",
             width=12,
         )
-        self.rep_cls_cb.set("All")
+        self.rep_cls_cb.set(default_class)
         self.rep_cls_cb.pack(side="left", ipady=4)
 
         lbl("Term:")
@@ -13047,6 +13225,9 @@ class SchoolReportApp:
         self._toolbar_btn(
             ctrl, "\u2193  Export CSV", self.export_csv, bg="#475569"
         ).pack(side="left", padx=16)
+        self._toolbar_btn(
+            ctrl, "\U0001f5a8  Print PDF", self.print_results_pdf, bg="#7c3aed"
+        ).pack(side="left", padx=4)
         self._toolbar_btn(
             ctrl,
             "\U0001f4ca  Spotlight Excel",
@@ -13106,9 +13287,11 @@ class SchoolReportApp:
             self.rep_mode_badge.config(text=badge_text, bg=badge_bg, fg=badge_fg)
         results = self._get_ranked_results(cls, term, exam_type)
         subjects = self._get_subjects_for_scope(cls, term, exam_type, results)
+        show_class_column = cls == "All"
 
-        if self.report_subject_columns != subjects:
-            self.report_subject_columns = list(subjects)
+        table_signature = (show_class_column, tuple(subjects))
+        if self.report_subject_columns != table_signature:
+            self.report_subject_columns = table_signature
             for widget in self.report_table_card.winfo_children():
                 widget.destroy()
 
@@ -13116,14 +13299,11 @@ class SchoolReportApp:
                 {"key": "pos", "title": "Pos", "width": 60, "anchor": "center"},
                 {"key": "adm", "title": "Adm No", "width": 105, "anchor": "center"},
                 {"key": "name", "title": "Student Name", "width": 220, "anchor": "w"},
-                {"key": "class", "title": "Grade", "width": 95, "anchor": "center"},
-                {
-                    "key": "class_level",
-                    "title": "CBC Level",
-                    "width": 160,
-                    "anchor": "center",
-                },
             ]
+            if show_class_column:
+                columns.append(
+                    {"key": "class", "title": "Class", "width": 95, "anchor": "center"}
+                )
             for s in subjects:
                 columns.append(
                     {
@@ -13138,7 +13318,6 @@ class SchoolReportApp:
                     {"key": "total", "title": "Total", "width": 80, "anchor": "center"},
                     {"key": "avg", "title": "Average", "width": 85, "anchor": "center"},
                     {"key": "grade", "title": "Grade", "width": 70, "anchor": "center"},
-                    {"key": "level", "title": "Level", "width": 180, "anchor": "w"},
                 ]
             )
 
@@ -13192,27 +13371,25 @@ class SchoolReportApp:
                 r["position"],
                 r["student"]["admission_no"],
                 r["student"]["name"],
-                self._get_class_label(r["student"]["class"]),
-                r["class_level"],
             ]
             value_map = {
                 "pos": r["position"],
                 "adm": r["student"]["admission_no"],
                 "name": r["student"]["name"],
-                "class": self._get_class_label(r["student"]["class"]),
-                "class_level": r["class_level"],
             }
+            if show_class_column:
+                vals.append(self._get_class_label(r["student"]["class"]))
+                value_map["class"] = self._get_class_label(r["student"]["class"])
             for s in subjects:
                 mark_val = r["marks"].get(s, "-")
                 vals.append(mark_val)
                 value_map[s] = mark_val
-            vals += [r["total"], r["average"], r["grade"], r["level"]]
+            vals += [r["total"], r["average"], r["grade"]]
             value_map.update(
                 {
                     "total": r["total"],
                     "avg": r["average"],
                     "grade": r["grade"],
-                    "level": r["level"],
                 }
             )
             rows.append(
@@ -13247,24 +13424,503 @@ class SchoolReportApp:
         fn = f"report_{cls.replace(' ', '_')}_term_{term}_{exam_type.replace('-', '_')}.csv"
         with open(fn, "w", newline="") as f:
             w = csv.writer(f)
-            w.writerow(
-                ["Position", "Adm No", "Name", "Class", "CBC Level"]
-                + subject_headers
-                + ["Total", "Average", "Grade", "Level"]
-            )
+            header = ["Position", "Adm No", "Name"]
+            if cls == "All":
+                header.append("Class")
+            header += subject_headers + ["Total", "Average", "Grade"]
+            w.writerow(header)
             for r in results:
-                row = [
-                    r["position"],
-                    r["student"]["admission_no"],
-                    r["student"]["name"],
-                    r["student"]["class"],
-                    r["class_level"],
-                ]
+                row = [r["position"], r["student"]["admission_no"], r["student"]["name"]]
+                if cls == "All":
+                    row.append(r["student"]["class"])
                 row += [r["marks"].get(s, "") for s in subjects]
-                row += [r["total"], r["average"], r["grade"], r["level"]]
+                row += [r["total"], r["average"], r["grade"]]
                 w.writerow(row)
         messagebox.showinfo("Exported", f"Report saved to {fn}")
         return
+
+    def print_results_pdf(self):
+        cls = self.rep_cls_cb.get()
+        term = self.rep_term_cb.get()
+        exam_type = self.rep_exam_cb.get() or DEFAULT_EXAM_TYPE
+
+        results = self._get_ranked_results(cls, term, exam_type)
+        if not results:
+            messagebox.showwarning(
+                "No Data",
+                f"No results found for {cls}, Term {term}, {exam_type}.",
+            )
+            return
+
+        year_text = str(datetime.now().year)
+        base_name = (
+            f"results_{self._slugify_report_part(cls)}_"
+            f"{self._slugify_report_part(self._format_report_card_term(term))}_"
+            f"{self._slugify_report_part(exam_type)}_{year_text}"
+        )
+        file_path = filedialog.asksaveasfilename(
+            title="Save Results PDF",
+            defaultextension=".pdf",
+            filetypes=[("PDF files", "*.pdf")],
+            initialfile=f"{base_name}.pdf",
+        )
+        if not file_path:
+            return
+
+        if self._build_results_pdf(cls, term, exam_type, file_path, results=results):
+            messagebox.showinfo("Done", f"Results PDF saved to {file_path}")
+
+    def _build_results_pdf(
+        self, cls, term, exam_type, file_path, results=None, include_averages=True
+    ):
+        """Generate a printable class/all-results PDF with report-style letterhead."""
+        try:
+            rows = list(results or self._get_ranked_results(cls, term, exam_type))
+            if not rows:
+                return False
+
+            subjects = self._get_subjects_for_scope(cls, term, exam_type, rows)
+            show_class_column = cls == "All"
+            class_level = (
+                self._get_level_for_class(cls)
+                if cls not in ("All", ALL_SCHOOL_LEVEL)
+                else ALL_SCHOOL_LEVEL
+            )
+            theme = self._get_level_theme(class_level)
+            context = {
+                "subjects": subjects,
+                "is_pp": self._is_pre_primary_level(class_level),
+            }
+            layout = self._get_report_layout_profile(context)
+
+            letterhead_assets = get_letterhead_assets()
+            header_path = letterhead_assets.get("header_path")
+            footer_path = letterhead_assets.get("footer_path")
+            footer_lines = letterhead_assets.get("footer_lines", [])
+            meta_label_color = OLIVE_DARK
+            meta_value_color = theme["title"]
+
+            def _image_height(image_path, width, min_height, max_height):
+                if not image_path or not os.path.exists(image_path):
+                    return min_height
+                try:
+                    image_obj = get_processed_letterhead_image(
+                        image_path, "header" if image_path == header_path else "footer"
+                    )
+                    if image_obj is None:
+                        return min_height
+                    scaled = width * image_obj.height / float(image_obj.width)
+                    return max(min_height, min(max_height, scaled))
+                except Exception:
+                    return min_height
+
+            pagesize = landscape(A4)
+            border_inset = 10
+            content_inset = 18
+            page_inner_width = pagesize[0] - (content_inset * 2)
+            header_height = _image_height(
+                header_path,
+                page_inner_width,
+                layout["pdf_header_min"],
+                layout["pdf_header_max"],
+            )
+            footer_height = _image_height(
+                footer_path,
+                page_inner_width,
+                layout["pdf_footer_min"],
+                layout["pdf_footer_max"],
+            )
+
+            doc = SimpleDocTemplate(
+                file_path,
+                pagesize=pagesize,
+                rightMargin=content_inset,
+                leftMargin=content_inset,
+                topMargin=content_inset,
+                bottomMargin=content_inset,
+            )
+
+            styles = getSampleStyleSheet()
+            styles.add(
+                ParagraphStyle(
+                    name="ResultsTitle",
+                    parent=styles["Heading1"],
+                    fontName="Helvetica-Bold",
+                    fontSize=max(11, layout["pdf_title_font"] - 1),
+                    leading=layout["pdf_title_font"] + 1,
+                    alignment=1,
+                    textColor=colors.HexColor(theme["title"]),
+                    spaceAfter=4,
+                )
+            )
+            styles.add(
+                ParagraphStyle(
+                    name="ResultsMeta",
+                    parent=styles["BodyText"],
+                    fontName="Helvetica",
+                    fontSize=max(6, layout["pdf_normal_font"] - 1),
+                    leading=layout["pdf_normal_font"] + 1,
+                    textColor=colors.HexColor(theme["muted"]),
+                )
+            )
+            styles.add(
+                ParagraphStyle(
+                    name="ResultsMetaValue",
+                    parent=styles["BodyText"],
+                    fontName="Helvetica-Bold",
+                    fontSize=max(7, layout["pdf_normal_font"]),
+                    leading=layout["pdf_normal_font"] + 2,
+                    textColor=colors.HexColor(theme["title"]),
+                )
+            )
+            styles.add(
+                ParagraphStyle(
+                    name="ResultsCell",
+                    parent=styles["BodyText"],
+                    fontName="Helvetica",
+                    fontSize=max(5, layout["pdf_normal_font"] - 2),
+                    leading=max(6, layout["pdf_normal_font"]),
+                    alignment=1,
+                )
+            )
+            styles.add(
+                ParagraphStyle(
+                    name="ResultsCellLeft",
+                    parent=styles["ResultsCell"],
+                    alignment=0,
+                )
+            )
+
+            col_widths = [26, 44, 124]
+            if show_class_column:
+                col_widths.append(42)
+            summary_widths = [44, 48, 36]
+            remaining_for_subjects = doc.width - sum(col_widths) - sum(summary_widths)
+            subject_col_width = max(
+                28,
+                min(46, remaining_for_subjects / max(1, len(subjects))),
+            )
+            col_widths.extend([subject_col_width] * len(subjects))
+            col_widths.extend(summary_widths)
+            results_table_width = sum(col_widths)
+
+            elements = []
+            if header_path:
+                elements.append(Spacer(1, header_height + 6))
+            if not header_path:
+                elements.append(Paragraph("MT OLIVES ADVENTIST SCHOOL", styles["ResultsTitle"]))
+            elements.append(
+                Table([[""]], colWidths=[doc.width], rowHeights=[2], style=TableStyle([
+                    ("BACKGROUND", (0, 0), (-1, -1), colors.HexColor(theme["title"])),
+                    ("LEFTPADDING", (0, 0), (-1, -1), 0),
+                    ("RIGHTPADDING", (0, 0), (-1, -1), 0),
+                    ("TOPPADDING", (0, 0), (-1, -1), 0),
+                    ("BOTTOMPADDING", (0, 0), (-1, -1), 0),
+                ]))
+            )
+            elements.append(Spacer(1, 4))
+
+            title_text = self._format_results_heading(cls, term, exam_type)
+            elements.append(Paragraph(title_text, styles["ResultsTitle"]))
+
+            info_label = "Class" if show_class_column else "Grade"
+            info_rows = [[
+                Paragraph(
+                    f"<font color='{meta_label_color}'><b>{info_label}</b></font><br/>"
+                    f"<font color='{meta_value_color}'>{cls}</font>",
+                    styles["ResultsMetaValue"],
+                ),
+                Paragraph(
+                    f"<font color='{meta_label_color}'><b>Term</b></font><br/>"
+                    f"<font color='{meta_value_color}'>{self._format_report_card_term_display(term)}</font>",
+                    styles["ResultsMetaValue"],
+                ),
+                Paragraph(
+                    f"<font color='{meta_label_color}'><b>Exam</b></font><br/>"
+                    f"<font color='{meta_value_color}'>{exam_type}</font>",
+                    styles["ResultsMetaValue"],
+                ),
+                Paragraph(
+                    f"<font color='{meta_label_color}'><b>Year</b></font><br/>"
+                    f"<font color='{meta_value_color}'>{datetime.now().year}</font>",
+                    styles["ResultsMetaValue"],
+                ),
+            ]]
+            card_width = results_table_width / 4.0
+            info_table = Table(
+                info_rows,
+                colWidths=[card_width] * 4,
+                hAlign="LEFT",
+            )
+            info_table.setStyle(
+                TableStyle(
+                    [
+                        ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+                        ("LEFTPADDING", (0, 0), (-1, -1), 8),
+                        ("RIGHTPADDING", (0, 0), (-1, -1), 8),
+                        ("TOPPADDING", (0, 0), (-1, -1), 5),
+                        ("BOTTOMPADDING", (0, 0), (-1, -1), 5),
+                        ("BACKGROUND", (0, 0), (-1, -1), colors.HexColor(theme["header_bg"])),
+                        ("BOX", (0, 0), (0, 0), 0.8, colors.HexColor(theme["line"])),
+                        ("BOX", (1, 0), (1, 0), 0.8, colors.HexColor(theme["line"])),
+                        ("BOX", (2, 0), (2, 0), 0.8, colors.HexColor(theme["line"])),
+                        ("BOX", (3, 0), (3, 0), 0.8, colors.HexColor(theme["line"])),
+                    ]
+                )
+            )
+            elements.append(info_table)
+            elements.append(Spacer(1, 4))
+
+            table_headers = [
+                Paragraph("<b>Pos</b>", styles["ResultsCell"]),
+                Paragraph("<b>Adm No</b>", styles["ResultsCell"]),
+                Paragraph("<b>Student Name</b>", styles["ResultsCellLeft"]),
+            ]
+            if show_class_column:
+                table_headers.append(Paragraph("<b>Class</b>", styles["ResultsCell"]))
+            for subject in subjects:
+                table_headers.append(
+                    Paragraph(
+                        f"<b>{self._get_subject_label(subject, cls if not show_class_column else '')}</b>",
+                        styles["ResultsCell"],
+                    )
+                )
+            table_headers.extend(
+                [
+                    Paragraph("<b>Total</b>", styles["ResultsCell"]),
+                    Paragraph("<b>Average</b>", styles["ResultsCell"]),
+                    Paragraph("<b>Grade</b>", styles["ResultsCell"]),
+                ]
+            )
+
+            table_data = [table_headers]
+            for result in rows:
+                row = [
+                    Paragraph(str(result.get("position", "")), styles["ResultsCell"]),
+                    Paragraph(str(result.get("student", {}).get("admission_no", "")), styles["ResultsCell"]),
+                    Paragraph(str(result.get("student", {}).get("name", "")), styles["ResultsCellLeft"]),
+                ]
+                if show_class_column:
+                    row.append(
+                        Paragraph(
+                            str(self._get_class_label(result.get("student", {}).get("class", ""))),
+                            styles["ResultsCell"],
+                        )
+                    )
+                for subject in subjects:
+                    mark = result.get("marks", {}).get(subject, "")
+                    row.append(Paragraph("" if mark in (None, "") else str(mark), styles["ResultsCell"]))
+                row.extend(
+                    [
+                        Paragraph(str(result.get("total", "")), styles["ResultsCell"]),
+                        Paragraph(str(result.get("average", "")), styles["ResultsCell"]),
+                        Paragraph(str(result.get("grade", "")), styles["ResultsCell"]),
+                    ]
+                )
+                table_data.append(row)
+
+            results_table = Table(table_data, colWidths=col_widths, repeatRows=1, hAlign="LEFT")
+            table_style = [
+                ("BOX", (0, 0), (-1, -1), 0.8, colors.HexColor(theme["grid"])),
+                ("GRID", (0, 0), (-1, -1), 0.35, colors.HexColor(theme["grid"])),
+                ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor(theme["header_bg"])),
+                ("TEXTCOLOR", (0, 0), (-1, 0), colors.HexColor(theme["muted"])),
+                ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+                ("LEFTPADDING", (0, 0), (-1, -1), 1),
+                ("RIGHTPADDING", (0, 0), (-1, -1), 1),
+                ("TOPPADDING", (0, 0), (-1, -1), 2),
+                ("BOTTOMPADDING", (0, 0), (-1, -1), 2),
+                ("ALIGN", (0, 0), (1, -1), "CENTER"),
+                ("ALIGN", (2, 1), (2, -1), "LEFT"),
+            ]
+            if show_class_column:
+                class_col = 3
+                table_style.append(("ALIGN", (class_col, 1), (class_col, -1), "CENTER"))
+            for row_index in range(1, len(table_data)):
+                row_bg = colors.white if row_index % 2 else colors.HexColor(theme["accent_soft"])
+                table_style.append(("BACKGROUND", (0, row_index), (-1, row_index), row_bg))
+            results_table.setStyle(TableStyle(table_style))
+            elements.append(results_table)
+
+            if include_averages and subjects:
+                elements.append(Spacer(1, 4))
+                analysis_title = Table(
+                    [[Paragraph("<b>SUBJECT ANALYSIS</b>", styles["ResultsCellLeft"])]],
+                    colWidths=[results_table_width],
+                    hAlign="LEFT",
+                )
+                analysis_title.setStyle(
+                    TableStyle(
+                        [
+                            ("BACKGROUND", (0, 0), (-1, -1), colors.HexColor(theme["title"])),
+                            ("TEXTCOLOR", (0, 0), (-1, -1), colors.white),
+                            ("BOX", (0, 0), (-1, -1), 0.8, colors.HexColor(theme["title"])),
+                            ("LEFTPADDING", (0, 0), (-1, -1), 8),
+                            ("RIGHTPADDING", (0, 0), (-1, -1), 8),
+                            ("TOPPADDING", (0, 0), (-1, -1), 5),
+                            ("BOTTOMPADDING", (0, 0), (-1, -1), 5),
+                        ]
+                    )
+                )
+                elements.append(analysis_title)
+
+                avg_headers = [
+                    Paragraph("<b>Subject</b>", styles["ResultsCellLeft"]),
+                    Paragraph("<b>Average</b>", styles["ResultsCell"]),
+                    Paragraph("<b>Grade</b>", styles["ResultsCell"]),
+                ]
+                avg_data = [avg_headers]
+                avg_grades = []
+                for subject in subjects:
+                    vals = [
+                        result.get("marks", {}).get(subject)
+                        for result in rows
+                        if result.get("marks", {}).get(subject) is not None
+                    ]
+                    avg_value = round(sum(vals) / len(vals), 1) if vals else 0
+                    avg_grade = self._get_grade_code_for_class(
+                        avg_value, "" if show_class_column else cls
+                    )
+                    avg_grades.append(avg_grade)
+                    avg_data.append(
+                        [
+                            Paragraph(
+                                self._get_subject_label(subject, cls if not show_class_column else ""),
+                                styles["ResultsCellLeft"],
+                            ),
+                            Paragraph(str(avg_value), styles["ResultsCell"]),
+                            Paragraph(avg_grade, styles["ResultsCell"]),
+                        ]
+                    )
+                avg_col_widths = [
+                    results_table_width * 0.66,
+                    results_table_width * 0.18,
+                    results_table_width * 0.16,
+                ]
+                avg_table = Table(avg_data, colWidths=avg_col_widths, hAlign="LEFT")
+                avg_style = [
+                    ("BOX", (0, 0), (-1, -1), 0.8, colors.HexColor(theme["grid"])),
+                    ("GRID", (0, 0), (-1, -1), 0.35, colors.HexColor(theme["grid"])),
+                    ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor(theme["header_bg"])),
+                    ("TEXTCOLOR", (0, 0), (-1, 0), colors.HexColor(theme["muted"])),
+                    ("LEFTPADDING", (0, 0), (-1, -1), 6),
+                    ("RIGHTPADDING", (0, 0), (-1, -1), 6),
+                    ("TOPPADDING", (0, 0), (-1, -1), 5),
+                    ("BOTTOMPADDING", (0, 0), (-1, -1), 5),
+                    ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+                    ("ALIGN", (1, 1), (-1, -1), "CENTER"),
+                ]
+                for row_index, subject in enumerate(subjects, start=1):
+                    subject_base = self._get_subject_color(
+                        subject, cls if not show_class_column else ""
+                    )
+                    subject_soft = colors.HexColor(_mix_hex(subject_base, "#ffffff", 0.84))
+                    subject_mid = colors.HexColor(_mix_hex(subject_base, "#ffffff", 0.65))
+                    row_bg = subject_soft if row_index % 2 else colors.white
+                    avg_style.append(("BACKGROUND", (0, row_index), (1, row_index), row_bg))
+                    avg_style.append(("BACKGROUND", (0, row_index), (0, row_index), subject_mid))
+                    avg_style.append(("TEXTCOLOR", (0, row_index), (0, row_index), colors.HexColor("#1f2937")))
+                    grade_fill = colors.HexColor(
+                        _mix_hex(self._get_grade_color(avg_grades[row_index - 1]), "#ffffff", 0.72)
+                    )
+                    avg_style.append(("BACKGROUND", (2, row_index), (2, row_index), grade_fill))
+                    avg_style.append(("TEXTCOLOR", (2, row_index), (2, row_index), colors.HexColor("#1f2937")))
+                avg_table.setStyle(TableStyle(avg_style))
+                elements.append(avg_table)
+
+            footer_text = " | ".join(footer_lines) if footer_lines else "In God We Excel"
+
+            if footer_path or footer_text:
+                footer_reserve = max(16, footer_height + 2)
+                elements.append(CondPageBreak(footer_reserve))
+                elements.append(Spacer(1, footer_reserve))
+
+            def _draw_results_page(canvas_obj, pdf_doc, page_num, total_pages):
+                canvas_obj.saveState()
+                canvas_obj.setStrokeColor(colors.HexColor("#1b5e20"))
+                canvas_obj.setLineWidth(1.6)
+                canvas_obj.rect(
+                    border_inset,
+                    border_inset,
+                    pdf_doc.pagesize[0] - (border_inset * 2),
+                    pdf_doc.pagesize[1] - (border_inset * 2),
+                )
+
+                inner_x = pdf_doc.leftMargin
+                inner_width = pdf_doc.width
+                page_height = pdf_doc.pagesize[1]
+
+                if page_num == 1 and header_path and os.path.exists(header_path):
+                    header_img = get_processed_letterhead_image(header_path, "header")
+                    if header_img is not None:
+                        canvas_obj.drawImage(
+                            ImageReader(header_img),
+                            inner_x,
+                            page_height - content_inset - header_height,
+                            width=inner_width,
+                            height=header_height,
+                            preserveAspectRatio=False,
+                            mask="auto",
+                        )
+
+                page_number_y = 16
+                if page_num == total_pages:
+                    page_number_y = max(page_number_y, 18 + footer_height + 2)
+
+                canvas_obj.setFont("Helvetica", 8)
+                canvas_obj.setFillColor(colors.HexColor("#666666"))
+                canvas_obj.drawRightString(
+                    pdf_doc.pagesize[0] - content_inset,
+                    page_number_y,
+                    f"Page {page_num} of {total_pages}",
+                )
+
+                if page_num == total_pages:
+                    if footer_path and os.path.exists(footer_path):
+                        footer_img = get_processed_letterhead_image(footer_path, "footer")
+                        if footer_img is not None:
+                            canvas_obj.drawImage(
+                                ImageReader(footer_img),
+                                inner_x,
+                                content_inset,
+                                width=inner_width,
+                                height=footer_height,
+                                preserveAspectRatio=False,
+                                mask="auto",
+                            )
+                        else:
+                            canvas_obj.drawCentredString(
+                                pdf_doc.pagesize[0] / 2, 24, footer_text
+                            )
+                    else:
+                        canvas_obj.drawCentredString(
+                            pdf_doc.pagesize[0] / 2, 24, footer_text
+                        )
+
+                canvas_obj.restoreState()
+
+            class ResultsPageCanvas(canvas.Canvas):
+                def __init__(self, *args, **kwargs):
+                    super().__init__(*args, **kwargs)
+                    self._saved_page_states = []
+
+                def showPage(self):
+                    self._saved_page_states.append(dict(self.__dict__))
+                    self._startPage()
+
+                def save(self):
+                    total_pages = len(self._saved_page_states)
+                    for state in self._saved_page_states:
+                        self.__dict__.update(state)
+                        _draw_results_page(self, doc, self._pageNumber, total_pages)
+                        super().showPage()
+                    super().save()
+
+            doc.build(elements, canvasmaker=ResultsPageCanvas)
+            return True
+        except Exception as exc:
+            messagebox.showerror("Error", f"Failed to generate results PDF:\n{exc}")
+            return False
 
     # ==================== WESTERN SPOTLIGHT EXPORT ====================
     def export_spotlight_excel(self):
@@ -15741,6 +16397,61 @@ class SchoolReportApp:
         }
         normalized = str(term or "").strip()
         return display_map.get(normalized, normalized)
+
+    def _format_term_number(self, term):
+        term_map = {
+            "One": "1",
+            "Two": "2",
+            "Three": "3",
+            "1": "1",
+            "2": "2",
+            "3": "3",
+            "TermOne": "1",
+            "TermTwo": "2",
+            "TermThree": "3",
+        }
+        normalized = str(term or "").strip()
+        return term_map.get(normalized, normalized)
+
+    def _format_results_heading(self, class_name, term, exam_type, year=None, stream_name=""):
+        """Build a report-style heading for results preview and PDF output."""
+        year_text = str(year or datetime.now().year)
+        matched_class = self._match_known_class_name(class_name) or str(class_name or "").strip()
+        stream_text = str(stream_name or "").strip().upper()
+
+        grade_words = {
+            "1": "ONE",
+            "2": "TWO",
+            "3": "THREE",
+            "4": "FOUR",
+            "5": "FIVE",
+            "6": "SIX",
+            "7": "SEVEN",
+            "8": "EIGHT",
+            "9": "NINE",
+        }
+
+        if matched_class == "All":
+            class_text = "ALL CLASSES"
+        else:
+            grade_match = re.fullmatch(r"Grade\s+(\d+)", matched_class, flags=re.IGNORECASE)
+            if grade_match:
+                grade_num = grade_match.group(1)
+                class_text = f"GRADE {grade_words.get(grade_num, grade_num)} ({grade_num})"
+            else:
+                class_text = str(matched_class).upper()
+
+        parts = [class_text]
+        if stream_text:
+            parts.append(stream_text)
+        parts.extend(
+            [
+                f"TERM {self._format_term_number(term)}",
+                f"{str(exam_type or '').strip().upper()} ASSESSMENT REPORT",
+                year_text,
+            ]
+        )
+        return " ".join(part for part in parts if part).strip()
 
     def _get_report_card_file_basename(self, student, term, year=None):
         student_name = self._slugify_report_part(student.get("name", "student"))
