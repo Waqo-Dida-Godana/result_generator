@@ -1739,6 +1739,82 @@ class SchoolReportApp:
         stream = (self.rc_stream_cb.get() or "").strip()
         return "" if stream == "All Streams" else stream
 
+    def _rerank_results(self, results):
+        rows = list(results or [])
+        rows.sort(
+            key=lambda row: (
+                -row.get("total", 0),
+                -row.get("average", 0),
+                str(row.get("student", {}).get("name", "")).lower(),
+            )
+        )
+
+        last_key = None
+        current_position = 0
+        for index, row in enumerate(rows, start=1):
+            rank_key = (row.get("total", 0), row.get("average", 0))
+            if rank_key != last_key:
+                current_position = index
+                last_key = rank_key
+            row["position"] = current_position
+        return rows
+
+    def _get_selected_results_stream(self):
+        if not hasattr(self, "rep_stream_cb"):
+            return ""
+        stream = (self.rep_stream_cb.get() or "").strip()
+        return "" if stream == "All Streams" else stream
+
+    def _refresh_results_streams(self, reload_results=True):
+        if not hasattr(self, "rep_stream_cb"):
+            return
+        current = (self.rep_stream_cb.get() or "").strip()
+        selected_class = self.rep_cls_cb.get() if hasattr(self, "rep_cls_cb") else ""
+        if selected_class in ("All", ALL_SCHOOL_LEVEL, ""):
+            values = ["All Streams"]
+        else:
+            values = ["All Streams"] + self._get_stream_names_for_class(selected_class)
+        self.rep_stream_cb["values"] = values
+        if current and current in values:
+            self.rep_stream_cb.set(current)
+        else:
+            self.rep_stream_cb.set(values[0] if values else "All Streams")
+        self._update_results_page_header()
+        if reload_results:
+            self.load_reports()
+
+    def _get_results_page_results(self, class_name, term, exam_type):
+        results = self._get_ranked_results(class_name, term, exam_type)
+        selected_stream = self._get_selected_results_stream()
+        if selected_stream and class_name not in ("All", ALL_SCHOOL_LEVEL):
+            results = [
+                result
+                for result in results
+                if result.get("student", {}).get("stream", "").strip() == selected_stream
+            ]
+            results = self._rerank_results(results)
+        return results
+
+    def _update_results_page_header(self):
+        if not hasattr(self, "page_title_lbl") or not hasattr(self, "page_sub_lbl"):
+            return
+        cls = self.rep_cls_cb.get() if hasattr(self, "rep_cls_cb") else ""
+        stream = self._get_selected_results_stream()
+        class_text = "All Classes" if cls == "All" else cls
+        title = f"Results - {class_text}"
+        if stream:
+            title = f"{title} - {stream}"
+        self.page_title_lbl.config(text=title)
+        if stream:
+            subtitle = (
+                f"View student performance and rankings for {class_text} stream {stream}"
+            )
+        elif cls == "All":
+            subtitle = "View student performance and rankings across all classes"
+        else:
+            subtitle = f"View student performance and rankings for {class_text}"
+        self.page_sub_lbl.config(text=subtitle)
+
     def _get_report_card_results(self):
         results = self._get_ranked_results(
             self.rc_cls_cb.get(),
@@ -1962,6 +2038,129 @@ class SchoolReportApp:
             self._match_known_class_name(class_name) or str(class_name or "").strip()
         )
         return db.get_next_class_admission_no(resolved_class)
+
+    def _ensure_import_class_setup(self, class_name, stream_name=""):
+        resolved_class = (
+            self._match_known_class_name(class_name) or str(class_name or "").strip()
+        )
+        resolved_stream = (
+            self._match_known_stream_name(stream_name, resolved_class)
+            or str(stream_name or "").strip()
+        )
+        if not resolved_class:
+            return "", resolved_stream
+
+        class_row = db.get_class_by_name(resolved_class)
+        level = self._get_level_for_class(resolved_class) or self.current_level
+        abbreviation = self._generate_short_label(resolved_class, "class")
+
+        if not class_row:
+            db.add_class(
+                resolved_class,
+                level,
+                resolved_stream or None,
+                abbreviation,
+            )
+            class_row = db.get_class_by_name(resolved_class)
+        elif not str(class_row.get("abbreviation", "") or "").strip():
+            db.update_class(
+                class_row["id"],
+                resolved_class,
+                class_row.get("level", "") or level,
+                class_row.get("stream"),
+                abbreviation,
+            )
+            class_row = db.get_class_by_name(resolved_class) or class_row
+
+        if class_row and resolved_stream:
+            existing_streams = db.get_streams_for_class(class_row["id"])
+            stream_keys = {
+                self._normalize_key(stream.get("name", ""))
+                for stream in existing_streams
+                if stream.get("name")
+            }
+            if self._normalize_key(resolved_stream) not in stream_keys:
+                db.add_stream(resolved_stream, class_row["id"])
+
+        return resolved_class, resolved_stream
+
+    def _ensure_import_subject_record(self, raw_subject, class_name=""):
+        raw = str(raw_subject or "").strip()
+        if not raw:
+            return ""
+
+        level = self._get_level_for_class(class_name)
+        candidates = []
+        for subject in self._get_subject_pool_for_class(class_name):
+            if subject and subject not in candidates:
+                candidates.append(subject)
+        for subject in self._get_catalog_subject_names_for_level(level):
+            if subject and subject not in candidates:
+                candidates.append(subject)
+        for row in db.get_subjects_by_level():
+            subject = str(row.get("name", "") or "").strip()
+            if subject and subject not in candidates:
+                candidates.append(subject)
+
+        subject_name = self._match_subject_from_candidates(raw, candidates, class_name)
+
+        if not subject_name:
+            raw_key = self._normalize_key(raw)
+            for row in db.get_subjects_by_level():
+                for alias in (
+                    row.get("name", ""),
+                    row.get("abbreviation", ""),
+                    row.get("code", ""),
+                ):
+                    if alias and self._normalize_key(alias) == raw_key:
+                        subject_name = str(row.get("name", "") or "").strip()
+                        break
+                if subject_name:
+                    break
+
+        subject_name = subject_name or raw
+        existing_meta = self._get_subject_meta(subject_name, class_name)
+        if existing_meta and existing_meta.get("name"):
+            return str(existing_meta.get("name") or "").strip()
+
+        subject_code = re.sub(
+            r"[^A-Z0-9]+",
+            "",
+            self._generate_short_label(subject_name, "subject").upper(),
+        )[:12]
+        target_level = level or ALL_SUBJECT_LEVEL
+        db.add_subject(
+            subject_name,
+            target_level,
+            "Core",
+            False,
+            subject_code,
+            subject_code,
+        )
+        created_meta = self._get_subject_meta(subject_name, class_name)
+        if created_meta and created_meta.get("name"):
+            return str(created_meta.get("name") or "").strip()
+        return subject_name
+
+    def _merge_import_subjects_into_class_map(self, class_name, subjects):
+        cls = str(class_name or "").strip()
+        cleaned_subjects = [str(subject or "").strip() for subject in subjects if str(subject or "").strip()]
+        if not cls or not cleaned_subjects:
+            return
+
+        mapping = self._get_class_subjects_done_map()
+        current = list(mapping.get(cls, []))
+        changed = False
+        for subject in cleaned_subjects:
+            matched = self._match_subject_from_candidates(subject, current, cls)
+            subject_name = matched or subject
+            if subject_name not in current:
+                current.append(subject_name)
+                changed = True
+
+        if changed:
+            mapping[cls] = current
+            self._save_class_subjects_done_map(mapping)
 
     def _map_sheet_subject(self, raw_subject, class_name=""):
         raw = str(raw_subject or "").strip()
@@ -2308,9 +2507,10 @@ class SchoolReportApp:
         hdr.pack(fill="x", pady=(0, 22))
         top = tk.Frame(hdr, bg=CONTENT_BG)
         top.pack(fill="x")
-        tk.Label(
+        self.page_title_lbl = tk.Label(
             top, text=title, bg=CONTENT_BG, fg=TEXT_PRIMARY, font=(FF, 26, "bold")
-        ).pack(side="left", anchor="w")
+        )
+        self.page_title_lbl.pack(side="left", anchor="w")
         tk.Label(
             top,
             text=self._get_active_db_display(),
@@ -2318,9 +2518,10 @@ class SchoolReportApp:
             fg=TEXT_SECONDARY,
             font=(FF, 9, "bold"),
         ).pack(side="right", anchor="e")
-        tk.Label(
+        self.page_sub_lbl = tk.Label(
             hdr, text=subtitle, bg=CONTENT_BG, fg=TEXT_SECONDARY, font=(FF, 11)
-        ).pack(anchor="w")
+        )
+        self.page_sub_lbl.pack(anchor="w")
 
     def _toolbar_btn(self, parent, text, command, bg=BLUE, fg="white"):
         b = tk.Label(
@@ -13204,6 +13405,12 @@ class SchoolReportApp:
         self.rep_cls_cb.set(default_class)
         self.rep_cls_cb.pack(side="left", ipady=4)
 
+        lbl("Stream:")
+        self.rep_stream_cb = ttk.Combobox(
+            ctrl, state="readonly", style="App.TCombobox", width=14
+        )
+        self.rep_stream_cb.pack(side="left", ipady=4)
+
         lbl("Term:")
         self.rep_term_cb = ttk.Combobox(
             ctrl, values=TERMS, state="readonly", style="App.TCombobox", width=10
@@ -13218,7 +13425,10 @@ class SchoolReportApp:
         self.rep_exam_cb.set(DEFAULT_EXAM_TYPE)
         self.rep_exam_cb.pack(side="left", ipady=4)
 
-        self.rep_cls_cb.bind("<<ComboboxSelected>>", lambda e: self.load_reports())
+        self.rep_cls_cb.bind(
+            "<<ComboboxSelected>>", lambda e: self._refresh_results_streams()
+        )
+        self.rep_stream_cb.bind("<<ComboboxSelected>>", lambda e: self.load_reports())
         self.rep_term_cb.bind("<<ComboboxSelected>>", lambda e: self.load_reports())
         self.rep_exam_cb.bind("<<ComboboxSelected>>", lambda e: self.load_reports())
 
@@ -13271,6 +13481,8 @@ class SchoolReportApp:
         self.report_table = None
         self.report_subject_columns = None
 
+        self._refresh_results_streams(reload_results=False)
+        self._update_results_page_header()
         self.load_reports()
 
     def load_reports(self):
@@ -13278,14 +13490,16 @@ class SchoolReportApp:
             w.destroy()
 
         cls = self.rep_cls_cb.get()
+        selected_stream = self._get_selected_results_stream()
         term = self.rep_term_cb.get()
         exam_type = self.rep_exam_cb.get() or DEFAULT_EXAM_TYPE
+        self._update_results_page_header()
         if hasattr(self, "rep_mode_badge"):
             badge_text, badge_bg, badge_fg = self._get_subject_mode_badge(
                 cls, term, exam_type
             )
             self.rep_mode_badge.config(text=badge_text, bg=badge_bg, fg=badge_fg)
-        results = self._get_ranked_results(cls, term, exam_type)
+        results = self._get_results_page_results(cls, term, exam_type)
         subjects = self._get_subjects_for_scope(cls, term, exam_type, results)
         show_class_column = cls == "All"
 
@@ -13414,15 +13628,33 @@ class SchoolReportApp:
 
     def export_csv(self):
         cls = self.rep_cls_cb.get()
+        selected_stream = self._get_selected_results_stream()
         term = self.rep_term_cb.get()
         exam_type = self.rep_exam_cb.get() or DEFAULT_EXAM_TYPE
-        results = self._get_ranked_results(cls, term, exam_type)
+        results = self._get_results_page_results(cls, term, exam_type)
         subjects = self._get_subjects_for_scope(cls, term, exam_type, results)
         subject_headers = [
             self._get_subject_label(s, cls if cls != "All" else "") for s in subjects
         ]
-        fn = f"report_{cls.replace(' ', '_')}_term_{term}_{exam_type.replace('-', '_')}.csv"
-        with open(fn, "w", newline="") as f:
+        stream_part = (
+            f"_{self._slugify_report_part(selected_stream)}"
+            if selected_stream
+            else "_all_streams"
+        )
+        fn = (
+            f"report_{cls.replace(' ', '_')}{stream_part}_term_{term}_"
+            f"{exam_type.replace('-', '_')}.csv"
+        )
+        file_path = filedialog.asksaveasfilename(
+            title="Save Results CSV",
+            defaultextension=".csv",
+            filetypes=[("CSV files", "*.csv"), ("All files", "*.*")],
+            initialfile=fn,
+        )
+        if not file_path:
+            return
+
+        with open(file_path, "w", newline="") as f:
             w = csv.writer(f)
             header = ["Position", "Adm No", "Name"]
             if cls == "All":
@@ -13436,15 +13668,16 @@ class SchoolReportApp:
                 row += [r["marks"].get(s, "") for s in subjects]
                 row += [r["total"], r["average"], r["grade"]]
                 w.writerow(row)
-        messagebox.showinfo("Exported", f"Report saved to {fn}")
+        messagebox.showinfo("Exported", f"Report saved to {file_path}")
         return
 
     def print_results_pdf(self):
         cls = self.rep_cls_cb.get()
+        selected_stream = self._get_selected_results_stream()
         term = self.rep_term_cb.get()
         exam_type = self.rep_exam_cb.get() or DEFAULT_EXAM_TYPE
 
-        results = self._get_ranked_results(cls, term, exam_type)
+        results = self._get_results_page_results(cls, term, exam_type)
         if not results:
             messagebox.showwarning(
                 "No Data",
@@ -13455,6 +13688,7 @@ class SchoolReportApp:
         year_text = str(datetime.now().year)
         base_name = (
             f"results_{self._slugify_report_part(cls)}_"
+            f"{self._slugify_report_part(selected_stream or 'all_streams')}_"
             f"{self._slugify_report_part(self._format_report_card_term(term))}_"
             f"{self._slugify_report_part(exam_type)}_{year_text}"
         )
@@ -13467,11 +13701,25 @@ class SchoolReportApp:
         if not file_path:
             return
 
-        if self._build_results_pdf(cls, term, exam_type, file_path, results=results):
+        if self._build_results_pdf(
+            cls,
+            term,
+            exam_type,
+            file_path,
+            results=results,
+            stream_name=selected_stream,
+        ):
             messagebox.showinfo("Done", f"Results PDF saved to {file_path}")
 
     def _build_results_pdf(
-        self, cls, term, exam_type, file_path, results=None, include_averages=True
+        self,
+        cls,
+        term,
+        exam_type,
+        file_path,
+        results=None,
+        include_averages=True,
+        stream_name="",
     ):
         """Generate a printable class/all-results PDF with report-style letterhead."""
         try:
@@ -13516,8 +13764,47 @@ class SchoolReportApp:
 
             pagesize = landscape(A4)
             border_inset = 10
-            content_inset = 18
-            page_inner_width = pagesize[0] - (content_inset * 2)
+            content_inset = 24
+            max_content_width = pagesize[0] - (content_inset * 2)
+
+            base_col_widths = [26, 44, 124]
+            if show_class_column:
+                base_col_widths.append(42)
+            base_subject_widths = [36] * len(subjects)
+            summary_widths = [44, 48, 36]
+            base_all_widths = base_col_widths + base_subject_widths + summary_widths
+            base_total = sum(base_all_widths)
+
+            if base_total <= max_content_width:
+                width_weights = [0.5, 0.7, 2.4]
+                if show_class_column:
+                    width_weights.append(0.9)
+                width_weights.extend([1.0] * len(subjects))
+                width_weights.extend([0.9, 0.9, 0.7])
+                extra_space = max_content_width - base_total
+                total_weight = sum(width_weights) or 1
+                col_widths = [
+                    width + (extra_space * weight / total_weight)
+                    for width, weight in zip(base_all_widths, width_weights)
+                ]
+            else:
+                col_widths = [24, 40, 110]
+                if show_class_column:
+                    col_widths.append(38)
+                compact_summary_widths = [42, 46, 34]
+                remaining_for_subjects = (
+                    max_content_width - sum(col_widths) - sum(compact_summary_widths)
+                )
+                subject_col_width = max(
+                    24,
+                    remaining_for_subjects / max(1, len(subjects)),
+                )
+                col_widths.extend([subject_col_width] * len(subjects))
+                col_widths.extend(compact_summary_widths)
+
+            results_table_width = sum(col_widths)
+            content_block_x = max(content_inset, (pagesize[0] - results_table_width) / 2.0)
+            page_inner_width = results_table_width
             header_height = _image_height(
                 header_path,
                 page_inner_width,
@@ -13534,8 +13821,8 @@ class SchoolReportApp:
             doc = SimpleDocTemplate(
                 file_path,
                 pagesize=pagesize,
-                rightMargin=content_inset,
-                leftMargin=content_inset,
+                rightMargin=content_block_x,
+                leftMargin=content_block_x,
                 topMargin=content_inset,
                 bottomMargin=content_inset,
             )
@@ -13591,19 +13878,6 @@ class SchoolReportApp:
                 )
             )
 
-            col_widths = [26, 44, 124]
-            if show_class_column:
-                col_widths.append(42)
-            summary_widths = [44, 48, 36]
-            remaining_for_subjects = doc.width - sum(col_widths) - sum(summary_widths)
-            subject_col_width = max(
-                28,
-                min(46, remaining_for_subjects / max(1, len(subjects))),
-            )
-            col_widths.extend([subject_col_width] * len(subjects))
-            col_widths.extend(summary_widths)
-            results_table_width = sum(col_widths)
-
             elements = []
             if header_path:
                 elements.append(Spacer(1, header_height + 6))
@@ -13620,36 +13894,36 @@ class SchoolReportApp:
             )
             elements.append(Spacer(1, 4))
 
-            title_text = self._format_results_heading(cls, term, exam_type)
+            title_text = self._format_results_heading(
+                cls, term, exam_type, stream_name=stream_name
+            )
             elements.append(Paragraph(title_text, styles["ResultsTitle"]))
 
             info_label = "Class" if show_class_column else "Grade"
+            info_items = [
+                (
+                    info_label,
+                    cls if show_class_column else self._get_class_label(cls) or cls,
+                ),
+                ("Term", self._format_report_card_term_display(term)),
+                ("Exam", exam_type),
+            ]
+            if stream_name:
+                info_items.append(("Stream", stream_name))
+            info_items.append(("Year", str(datetime.now().year)))
+
             info_rows = [[
                 Paragraph(
-                    f"<font color='{meta_label_color}'><b>{info_label}</b></font><br/>"
-                    f"<font color='{meta_value_color}'>{cls}</font>",
+                    f"<font color='{meta_label_color}'><b>{label}</b></font><br/>"
+                    f"<font color='{meta_value_color}'>{value}</font>",
                     styles["ResultsMetaValue"],
-                ),
-                Paragraph(
-                    f"<font color='{meta_label_color}'><b>Term</b></font><br/>"
-                    f"<font color='{meta_value_color}'>{self._format_report_card_term_display(term)}</font>",
-                    styles["ResultsMetaValue"],
-                ),
-                Paragraph(
-                    f"<font color='{meta_label_color}'><b>Exam</b></font><br/>"
-                    f"<font color='{meta_value_color}'>{exam_type}</font>",
-                    styles["ResultsMetaValue"],
-                ),
-                Paragraph(
-                    f"<font color='{meta_label_color}'><b>Year</b></font><br/>"
-                    f"<font color='{meta_value_color}'>{datetime.now().year}</font>",
-                    styles["ResultsMetaValue"],
-                ),
+                )
+                for label, value in info_items
             ]]
-            card_width = results_table_width / 4.0
+            card_width = results_table_width / max(1, len(info_items))
             info_table = Table(
                 info_rows,
-                colWidths=[card_width] * 4,
+                colWidths=[card_width] * len(info_items),
                 hAlign="LEFT",
             )
             info_table.setStyle(
@@ -13661,10 +13935,10 @@ class SchoolReportApp:
                         ("TOPPADDING", (0, 0), (-1, -1), 5),
                         ("BOTTOMPADDING", (0, 0), (-1, -1), 5),
                         ("BACKGROUND", (0, 0), (-1, -1), colors.HexColor(theme["header_bg"])),
-                        ("BOX", (0, 0), (0, 0), 0.8, colors.HexColor(theme["line"])),
-                        ("BOX", (1, 0), (1, 0), 0.8, colors.HexColor(theme["line"])),
-                        ("BOX", (2, 0), (2, 0), 0.8, colors.HexColor(theme["line"])),
-                        ("BOX", (3, 0), (3, 0), 0.8, colors.HexColor(theme["line"])),
+                    ]
+                    + [
+                        ("BOX", (idx, 0), (idx, 0), 0.8, colors.HexColor(theme["line"]))
+                        for idx in range(len(info_items))
                     ]
                 )
             )
@@ -13743,26 +14017,10 @@ class SchoolReportApp:
             elements.append(results_table)
 
             if include_averages and subjects:
-                elements.append(Spacer(1, 4))
-                analysis_title = Table(
-                    [[Paragraph("<b>SUBJECT ANALYSIS</b>", styles["ResultsCellLeft"])]],
-                    colWidths=[results_table_width],
-                    hAlign="LEFT",
-                )
-                analysis_title.setStyle(
-                    TableStyle(
-                        [
-                            ("BACKGROUND", (0, 0), (-1, -1), colors.HexColor(theme["title"])),
-                            ("TEXTCOLOR", (0, 0), (-1, -1), colors.white),
-                            ("BOX", (0, 0), (-1, -1), 0.8, colors.HexColor(theme["title"])),
-                            ("LEFTPADDING", (0, 0), (-1, -1), 8),
-                            ("RIGHTPADDING", (0, 0), (-1, -1), 8),
-                            ("TOPPADDING", (0, 0), (-1, -1), 5),
-                            ("BOTTOMPADDING", (0, 0), (-1, -1), 5),
-                        ]
-                    )
-                )
-                elements.append(analysis_title)
+                elements.append(Spacer(1, 10))
+                section_gap = 14
+                analysis_width = (results_table_width - section_gap) * 0.6
+                chart_width = results_table_width - analysis_width - section_gap
 
                 avg_headers = [
                     Paragraph("<b>Subject</b>", styles["ResultsCellLeft"]),
@@ -13793,9 +14051,9 @@ class SchoolReportApp:
                         ]
                     )
                 avg_col_widths = [
-                    results_table_width * 0.66,
-                    results_table_width * 0.18,
-                    results_table_width * 0.16,
+                    analysis_width * 0.64,
+                    analysis_width * 0.20,
+                    analysis_width * 0.16,
                 ]
                 avg_table = Table(avg_data, colWidths=avg_col_widths, hAlign="LEFT")
                 avg_style = [
@@ -13826,7 +14084,170 @@ class SchoolReportApp:
                     avg_style.append(("BACKGROUND", (2, row_index), (2, row_index), grade_fill))
                     avg_style.append(("TEXTCOLOR", (2, row_index), (2, row_index), colors.HexColor("#1f2937")))
                 avg_table.setStyle(TableStyle(avg_style))
-                elements.append(avg_table)
+
+                analysis_title = Table(
+                    [[Paragraph("<b>SUBJECT ANALYSIS</b>", styles["ResultsCellLeft"])]],
+                    colWidths=[analysis_width],
+                    hAlign="LEFT",
+                )
+                analysis_title.setStyle(
+                    TableStyle(
+                        [
+                            ("BACKGROUND", (0, 0), (-1, -1), colors.HexColor(theme["title"])),
+                            ("TEXTCOLOR", (0, 0), (-1, -1), colors.white),
+                            ("BOX", (0, 0), (-1, -1), 0.8, colors.HexColor(theme["title"])),
+                            ("LEFTPADDING", (0, 0), (-1, -1), 8),
+                            ("RIGHTPADDING", (0, 0), (-1, -1), 8),
+                            ("TOPPADDING", (0, 0), (-1, -1), 5),
+                            ("BOTTOMPADDING", (0, 0), (-1, -1), 5),
+                        ]
+                    )
+                )
+
+                grade_order = {}
+                if not show_class_column:
+                    for idx, scale in enumerate(self._get_class_grading_scale(cls)):
+                        code = str(scale.get("grade_code", "") or "").strip()
+                        if code:
+                            grade_order[code] = idx
+
+                distribution = {}
+                for result in rows:
+                    raw_grade = str(result.get("grade", "") or "").strip()
+                    if not raw_grade:
+                        continue
+                    grade_key = grade_base_code(raw_grade) if show_class_column else raw_grade
+                    distribution[grade_key] = distribution.get(grade_key, 0) + 1
+
+                if show_class_column:
+                    ordered_grades = sorted(
+                        distribution.keys(),
+                        key=lambda code: ["EE", "ME", "AE", "BE", "IE"].index(grade_base_code(code))
+                        if grade_base_code(code) in ["EE", "ME", "AE", "BE", "IE"]
+                        else 99,
+                    )
+                else:
+                    ordered_grades = sorted(
+                        distribution.keys(),
+                        key=lambda code: grade_order.get(code, 999),
+                    )
+
+                performance_title = Table(
+                    [[Paragraph("<b>STUDENT PERFORMANCE CHART</b>", styles["ResultsCellLeft"])]],
+                    colWidths=[chart_width],
+                    hAlign="LEFT",
+                )
+                performance_title.setStyle(
+                    TableStyle(
+                        [
+                            ("BACKGROUND", (0, 0), (-1, -1), colors.HexColor(OLIVE_DARK)),
+                            ("TEXTCOLOR", (0, 0), (-1, -1), colors.white),
+                            ("BOX", (0, 0), (-1, -1), 0.8, colors.HexColor(OLIVE_DARK)),
+                            ("LEFTPADDING", (0, 0), (-1, -1), 8),
+                            ("RIGHTPADDING", (0, 0), (-1, -1), 8),
+                            ("TOPPADDING", (0, 0), (-1, -1), 5),
+                            ("BOTTOMPADDING", (0, 0), (-1, -1), 5),
+                        ]
+                    )
+                )
+
+                perf_headers = [
+                    Paragraph("<b>Grade</b>", styles["ResultsCell"]),
+                    Paragraph("<b>Students</b>", styles["ResultsCell"]),
+                    Paragraph("<b>%</b>", styles["ResultsCell"]),
+                    Paragraph("<b>Share</b>", styles["ResultsCellLeft"]),
+                ]
+                perf_data = [perf_headers]
+                total_students = max(1, len(rows))
+                for grade_code in ordered_grades:
+                    count = distribution.get(grade_code, 0)
+                    percent = (count / total_students) * 100 if total_students else 0
+                    bar_max_width = max(30, chart_width * 0.36)
+                    fill_width = max(8, bar_max_width * (percent / 100.0)) if count else 0
+                    grade_color = self._get_grade_color(grade_code)
+                    bar = Drawing(bar_max_width, 12)
+                    bar.add(
+                        Rect(
+                            0,
+                            2,
+                            bar_max_width,
+                            8,
+                            fillColor=colors.HexColor(_mix_hex(grade_color, "#ffffff", 0.88)),
+                            strokeColor=colors.HexColor(_mix_hex(grade_color, "#223022", 0.5)),
+                            strokeWidth=0.4,
+                        )
+                    )
+                    if fill_width:
+                        bar.add(
+                            Rect(
+                                0,
+                                2,
+                                fill_width,
+                                8,
+                                fillColor=colors.HexColor(grade_color),
+                                strokeColor=colors.HexColor(grade_color),
+                                strokeWidth=0.4,
+                            )
+                        )
+                    perf_data.append(
+                        [
+                            Paragraph(str(grade_code), styles["ResultsCell"]),
+                            Paragraph(str(count), styles["ResultsCell"]),
+                            Paragraph(f"{percent:.1f}%", styles["ResultsCell"]),
+                            bar,
+                        ]
+                    )
+
+                perf_col_widths = [
+                    chart_width * 0.18,
+                    chart_width * 0.16,
+                    chart_width * 0.16,
+                    chart_width * 0.50,
+                ]
+                performance_table = Table(perf_data, colWidths=perf_col_widths, hAlign="LEFT")
+                perf_style = [
+                    ("BOX", (0, 0), (-1, -1), 0.8, colors.HexColor(theme["grid"])),
+                    ("GRID", (0, 0), (-1, -1), 0.35, colors.HexColor(theme["grid"])),
+                    ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor(theme["header_bg"])),
+                    ("TEXTCOLOR", (0, 0), (-1, 0), colors.HexColor(theme["muted"])),
+                    ("LEFTPADDING", (0, 0), (-1, -1), 5),
+                    ("RIGHTPADDING", (0, 0), (-1, -1), 5),
+                    ("TOPPADDING", (0, 0), (-1, -1), 5),
+                    ("BOTTOMPADDING", (0, 0), (-1, -1), 5),
+                    ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+                    ("ALIGN", (0, 0), (2, -1), "CENTER"),
+                    ("ALIGN", (3, 1), (3, -1), "LEFT"),
+                ]
+                for row_index, grade_code in enumerate(ordered_grades, start=1):
+                    grade_color = self._get_grade_color(grade_code)
+                    soft_grade = colors.HexColor(_mix_hex(grade_color, "#ffffff", 0.84))
+                    perf_style.append(("BACKGROUND", (0, row_index), (2, row_index), soft_grade))
+                    perf_style.append(("BACKGROUND", (0, row_index), (0, row_index), colors.HexColor(_mix_hex(grade_color, "#ffffff", 0.68))))
+                    perf_style.append(("TEXTCOLOR", (0, row_index), (0, row_index), colors.HexColor("#1f2937")))
+                performance_table.setStyle(TableStyle(perf_style))
+
+                summary_row = Table(
+                    [[
+                        [analysis_title, Spacer(1, 4), avg_table],
+                        "",
+                        [performance_title, Spacer(1, 4), performance_table],
+                    ]],
+                    colWidths=[analysis_width, section_gap, chart_width],
+                    hAlign="LEFT",
+                )
+                summary_row.setStyle(
+                    TableStyle(
+                        [
+                            ("VALIGN", (0, 0), (-1, -1), "TOP"),
+                            ("BACKGROUND", (1, 0), (1, 0), colors.white),
+                            ("LEFTPADDING", (0, 0), (-1, -1), 0),
+                            ("RIGHTPADDING", (0, 0), (-1, -1), 0),
+                            ("TOPPADDING", (0, 0), (-1, -1), 0),
+                            ("BOTTOMPADDING", (0, 0), (-1, -1), 0),
+                        ]
+                    )
+                )
+                elements.append(summary_row)
 
             footer_text = " | ".join(footer_lines) if footer_lines else "In God We Excel"
 
@@ -13932,24 +14353,29 @@ class SchoolReportApp:
                 initial_cls = CLASSES[0]
             initial_term = self.rep_term_cb.get()
             initial_exam = self.rep_exam_cb.get()
+            initial_stream = self._get_selected_results_stream() or "GREEN"
         except AttributeError:
             initial_cls = CLASSES[0]
             initial_term = TERMS[0]
             initial_exam = DEFAULT_EXAM_TYPE
+            initial_stream = "GREEN"
 
         dlg = tk.Toplevel(self.root)
         dlg.title("Export – Western Spotlight")
-        dlg.geometry("400x340")
         dlg.configure(bg=CONTENT_BG)
         dlg.transient(self.root)
         dlg.grab_set()
         dlg.resizable(False, False)
+        dlg.minsize(440, 380)
+
+        shell = tk.Frame(dlg, bg=CONTENT_BG)
+        shell.pack(fill="both", expand=True, padx=18, pady=18)
 
         ws_bo, ws_bi = _card_colors("sand")
-        outer = tk.Frame(dlg, bg=ws_bo)
-        outer.place(relx=0.5, rely=0.5, anchor="center")
+        outer = tk.Frame(shell, bg=ws_bo)
+        outer.pack(fill="both", expand=True)
         card = tk.Frame(outer, bg=ws_bi, padx=30, pady=24)
-        card.pack(padx=1, pady=1)
+        card.pack(fill="both", expand=True, padx=1, pady=1)
         card.columnconfigure(1, weight=1)
 
         tk.Label(
@@ -13993,7 +14419,7 @@ class SchoolReportApp:
         exam_cb.set(initial_exam)
         row_field(3, "Exam Type:", exam_cb)
 
-        stream_var = tk.StringVar(value="GREEN")
+        stream_var = tk.StringVar(value=initial_stream)
         stream_e = ttk.Entry(
             card, textvariable=stream_var, style="App.TEntry", width=20
         )
@@ -14014,7 +14440,7 @@ class SchoolReportApp:
         row_field(6, "Year:", year_e)
 
         btn_row = tk.Frame(card, bg=ws_bi)
-        btn_row.grid(row=7, column=0, columnspan=2, pady=(20, 0))
+        btn_row.grid(row=7, column=0, columnspan=2, sticky="e", pady=(20, 0))
 
         cancel = tk.Label(
             btn_row,
@@ -14058,6 +14484,21 @@ class SchoolReportApp:
         )
         export_btn.pack(side="left")
         export_btn.bind("<Button-1>", lambda e: do_export())
+
+        dlg.update_idletasks()
+        req_w = max(440, outer.winfo_reqwidth() + 36)
+        req_h = max(380, outer.winfo_reqheight() + 36)
+        screen_w = dlg.winfo_screenwidth()
+        screen_h = dlg.winfo_screenheight()
+        win_w = min(req_w, screen_w - 120)
+        win_h = min(req_h, screen_h - 120)
+        parent_x = self.root.winfo_rootx()
+        parent_y = self.root.winfo_rooty()
+        parent_w = self.root.winfo_width() or self.root.winfo_reqwidth()
+        parent_h = self.root.winfo_height() or self.root.winfo_reqheight()
+        pos_x = parent_x + max(0, (parent_w - win_w) // 2)
+        pos_y = parent_y + max(0, (parent_h - win_h) // 2)
+        dlg.geometry(f"{win_w}x{win_h}+{pos_x}+{pos_y}")
 
     def _do_spotlight_export(self, cls, term, exam_type, stream, assess, year):
         """Generate the Western Spotlight Excel workbook and save it."""
