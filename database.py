@@ -31,6 +31,7 @@ class Database:
     def get_connection(self) -> sqlite3.Connection:
         conn = sqlite3.connect(self.db_name)
         conn.row_factory = sqlite3.Row
+        conn.execute('PRAGMA foreign_keys = ON')  # Enable foreign key constraints for cascade deletes
         return conn
     
     def init_database(self):
@@ -526,13 +527,30 @@ class Database:
             return False, str(e)
 
     def delete_user(self, user_id: str) -> bool:
+        """Delete a user (teacher) and all their assignments. Prevents deleting admin users."""
         conn = self.get_connection()
         cursor = conn.cursor()
-        cursor.execute("DELETE FROM users WHERE id = ? AND role != 'admin'", (user_id,))
-        success = cursor.rowcount > 0
-        conn.commit()
-        conn.close()
-        return success
+        try:
+            # Prevent deletion of admin users
+            cursor.execute("SELECT role FROM users WHERE id = ?", (user_id,))
+            row = cursor.fetchone()
+            if not row or row['role'] == 'admin':
+                conn.close()
+                return False
+            
+            # Delete all teacher assignments for this teacher
+            cursor.execute('DELETE FROM teacher_assignments WHERE teacher_id = ?', (user_id,))
+            
+            # Delete the user
+            cursor.execute('DELETE FROM users WHERE id = ? AND role != ?', (user_id, 'admin'))
+            
+            success = cursor.rowcount > 0
+            conn.commit()
+            conn.close()
+            return success
+        except Exception as e:
+            conn.close()
+            return False
 
     # ── Assignment management ────────────────────────────────────────────────
     def assign_subject_teacher(self, teacher_id: str, class_name: str, subject: str, stream_name: str = '') -> bool:
@@ -716,14 +734,46 @@ class Database:
         return dict(row) if row else None
     
     def delete_class(self, class_id: str) -> bool:
-        """Delete a class"""
+        """Delete a class and all associated data:
+        - Streams for this class (cascades)
+        - Teacher assignments for this class
+        - Students in this class and their marks
+        """
         conn = self.get_connection()
         cursor = conn.cursor()
-        cursor.execute('DELETE FROM school_classes WHERE id = ?', (class_id,))
-        success = cursor.rowcount > 0
-        conn.commit()
-        conn.close()
-        return success
+        try:
+            # Get class name for cleanup of students
+            cursor.execute('SELECT name FROM school_classes WHERE id = ?', (class_id,))
+            row = cursor.fetchone()
+            if not row:
+                conn.close()
+                return False
+            
+            class_name = row['name']
+            
+            # Delete students in this class (which cascades to delete their marks)
+            cursor.execute('SELECT id FROM students WHERE class = ?', (class_name,))
+            student_ids = [r['id'] for r in cursor.fetchall()]
+            for sid in student_ids:
+                cursor.execute('DELETE FROM marks WHERE student_id = ?', (sid,))
+            cursor.execute('DELETE FROM students WHERE class = ?', (class_name,))
+            
+            # Delete teacher assignments for this class
+            cursor.execute('DELETE FROM teacher_assignments WHERE class_name = ?', (class_name,))
+            
+            # Delete streams for this class (cascades via FK)
+            cursor.execute('DELETE FROM streams WHERE class_id = ?', (class_id,))
+            
+            # Delete the class itself
+            cursor.execute('DELETE FROM school_classes WHERE id = ?', (class_id,))
+            
+            success = cursor.rowcount > 0
+            conn.commit()
+            conn.close()
+            return success
+        except Exception as e:
+            conn.close()
+            return False
     
     # ── Stream Management ────────────────────────────────────────────────
     def add_stream(self, name: str, class_id: str) -> Tuple[bool, str]:
@@ -848,14 +898,42 @@ class Database:
         return dict(row) if row else None
     
     def delete_subject(self, subject_id: str) -> bool:
-        """Delete a subject"""
+        """Delete a subject and all associated marks and assignments for that subject."""
         conn = self.get_connection()
         cursor = conn.cursor()
-        cursor.execute('DELETE FROM custom_subjects WHERE id = ?', (subject_id,))
-        success = cursor.rowcount > 0
-        conn.commit()
-        conn.close()
-        return success
+        try:
+            # Get subject name for cleanup
+            cursor.execute('SELECT name FROM custom_subjects WHERE id = ?', (subject_id,))
+            row = cursor.fetchone()
+            if not row:
+                conn.close()
+                return False
+            
+            subject_name = row['name']
+            
+            # Delete all marks for this subject
+            cursor.execute('DELETE FROM marks WHERE subject = ?', (subject_name,))
+            
+            # Delete all teacher assignments for this subject
+            cursor.execute('DELETE FROM teacher_assignments WHERE subject = ?', (subject_name,))
+            
+            # Delete the subject itself
+            cursor.execute('DELETE FROM custom_subjects WHERE id = ?', (subject_id,))
+            
+            success = cursor.rowcount > 0
+            cursor.execute('SELECT COUNT(*) AS total FROM custom_subjects')
+            remaining = cursor.fetchone()['total']
+            if remaining == 0:
+                cursor.execute(
+                    "INSERT OR REPLACE INTO app_settings (key, value) VALUES (?, ?)",
+                    ('default_subject_catalog_initialized', '1')
+                )
+            conn.commit()
+            conn.close()
+            return success
+        except Exception as e:
+            conn.close()
+            return False
 
     def replace_subject_catalog(self, subjects: List[Dict]) -> bool:
         conn = self.get_connection()
@@ -879,6 +957,10 @@ class Database:
                     now
                 )
             )
+        cursor.execute(
+            "INSERT OR REPLACE INTO app_settings (key, value) VALUES (?, ?)",
+            ('default_subject_catalog_initialized', '1')
+        )
         conn.commit()
         conn.close()
         return True
@@ -1132,13 +1214,238 @@ class Database:
         return str(next_number)
     
     def delete_student(self, student_id: str) -> bool:
+        """Delete a student and all associated marks and assignments."""
         conn = self.get_connection()
         cursor = conn.cursor()
-        cursor.execute('DELETE FROM students WHERE id = ?', (student_id,))
-        success = cursor.rowcount > 0
-        conn.commit()
-        conn.close()
-        return success
+        try:
+            # Delete marks for this student (cascades automatically via FK)
+            cursor.execute('DELETE FROM marks WHERE student_id = ?', (student_id,))
+            # Delete the student record
+            cursor.execute('DELETE FROM students WHERE id = ?', (student_id,))
+            success = cursor.rowcount > 0
+            conn.commit()
+            conn.close()
+            return success
+        except Exception as e:
+            conn.close()
+            return False
+    
+    def delete_student_marks(self, student_id: str, term: str = None, exam_type: str = None) -> bool:
+        """Delete marks for a student. If term/exam_type not specified, delete all marks for that student."""
+        conn = self.get_connection()
+        cursor = conn.cursor()
+        try:
+            if term and exam_type:
+                cursor.execute(
+                    'DELETE FROM marks WHERE student_id = ? AND term = ? AND exam_type = ?',
+                    (student_id, term, exam_type)
+                )
+            else:
+                cursor.execute('DELETE FROM marks WHERE student_id = ?', (student_id,))
+            success = cursor.rowcount > 0
+            conn.commit()
+            conn.close()
+            return success
+        except Exception as e:
+            conn.close()
+            return False
+    
+    def clear_all_marks(self, term: str = 'One', exam_type: str = DEFAULT_EXAM_TYPE) -> bool:
+        """Clear ALL marks for a specific term and exam type (use with caution!)."""
+        conn = self.get_connection()
+        cursor = conn.cursor()
+        try:
+            cursor.execute(
+                'DELETE FROM marks WHERE term = ? AND exam_type = ?',
+                (term, exam_type)
+            )
+            affected = cursor.rowcount
+            conn.commit()
+            conn.close()
+            return affected > 0
+        except Exception as e:
+            conn.close()
+            return False
+    
+    # ── Comprehensive Deletion & Cleanup ──────────────────────────────────
+    
+    def delete_class_by_name(self, class_name: str) -> Tuple[bool, str]:
+        """Delete a class by name and all associated data."""
+        conn = self.get_connection()
+        cursor = conn.cursor()
+        try:
+            # Get class ID first
+            cursor.execute('SELECT id FROM school_classes WHERE name = ?', (class_name,))
+            row = cursor.fetchone()
+            if not row:
+                conn.close()
+                return False, "Class not found"
+            
+            class_id = row['id']
+            
+            # Delete students in this class (which cascades to delete their marks)
+            cursor.execute('SELECT id FROM students WHERE class = ?', (class_name,))
+            student_ids = [r['id'] for r in cursor.fetchall()]
+            for sid in student_ids:
+                cursor.execute('DELETE FROM marks WHERE student_id = ?', (sid,))
+            cursor.execute('DELETE FROM students WHERE class = ?', (class_name,))
+            
+            # Delete teacher assignments for this class
+            cursor.execute('DELETE FROM teacher_assignments WHERE class_name = ?', (class_name,))
+            
+            # Delete streams for this class (cascades via FK)
+            cursor.execute('DELETE FROM streams WHERE class_id = ?', (class_id,))
+            
+            # Delete the class itself
+            cursor.execute('DELETE FROM school_classes WHERE id = ?', (class_id,))
+            
+            affected = cursor.rowcount
+            conn.commit()
+            conn.close()
+            return affected > 0, f"Deleted class and {len(student_ids)} students with their marks"
+        except Exception as e:
+            conn.close()
+            return False, str(e)
+    
+    def delete_all_students_in_class(self, class_name: str) -> Tuple[bool, str]:
+        """Delete ALL students in a class and their marks, keeping the class definition."""
+        conn = self.get_connection()
+        cursor = conn.cursor()
+        try:
+            # Delete marks for all students in this class
+            cursor.execute('SELECT id FROM students WHERE class = ?', (class_name,))
+            student_ids = [r['id'] for r in cursor.fetchall()]
+            
+            for sid in student_ids:
+                cursor.execute('DELETE FROM marks WHERE student_id = ?', (sid,))
+            
+            # Delete the students
+            cursor.execute('DELETE FROM students WHERE class = ?', (class_name,))
+            
+            affected = cursor.rowcount
+            conn.commit()
+            conn.close()
+            return affected > 0, f"Deleted {affected} students and their marks from {class_name}"
+        except Exception as e:
+            conn.close()
+            return False, str(e)
+
+    def delete_all_students(self) -> Tuple[bool, str]:
+        """Delete all students and their marks from the database."""
+        conn = self.get_connection()
+        cursor = conn.cursor()
+        try:
+            cursor.execute('DELETE FROM marks')
+            marks_deleted = cursor.rowcount
+
+            cursor.execute('DELETE FROM students')
+            students_deleted = cursor.rowcount
+
+            conn.commit()
+            conn.close()
+            return True, f"Deleted {students_deleted} students and {marks_deleted} marks."
+        except Exception as e:
+            conn.close()
+            return False, str(e)
+
+    def delete_all_teachers(self) -> Tuple[bool, str]:
+        """Delete all teachers (non-admin users) and their assignments."""
+        conn = self.get_connection()
+        cursor = conn.cursor()
+        try:
+            # Delete all teacher assignments
+            cursor.execute('DELETE FROM teacher_assignments')
+            
+            # Delete all non-admin users
+            cursor.execute('DELETE FROM users WHERE role != ?', ('admin',))
+            
+            affected = cursor.rowcount
+            conn.commit()
+            conn.close()
+            return affected > 0, f"Deleted all teachers and their assignments"
+        except Exception as e:
+            conn.close()
+            return False, str(e)
+    
+    def delete_all_subjects(self) -> Tuple[bool, str]:
+        """Delete all subjects and their associated marks and assignments."""
+        conn = self.get_connection()
+        cursor = conn.cursor()
+        try:
+            # Delete all marks
+            cursor.execute('DELETE FROM marks')
+            marks_deleted = cursor.rowcount
+            
+            # Delete all teacher assignments with subjects
+            cursor.execute('DELETE FROM teacher_assignments WHERE subject IS NOT NULL')
+            
+            # Delete all subjects
+            cursor.execute('DELETE FROM custom_subjects')
+            subjects_deleted = cursor.rowcount
+
+            cursor.execute(
+                "INSERT OR REPLACE INTO app_settings (key, value) VALUES (?, ?)",
+                ('default_subject_catalog_initialized', '1')
+            )
+            
+            conn.commit()
+            conn.close()
+            return True, f"Deleted {subjects_deleted} subjects, {marks_deleted} marks, and related assignments"
+        except Exception as e:
+            conn.close()
+            return False, str(e)
+    
+    def delete_all_classes(self) -> Tuple[bool, str]:
+        """Delete all classes and all related data (students, marks, streams, assignments)."""
+        conn = self.get_connection()
+        cursor = conn.cursor()
+        try:
+            # Delete all marks (since students will be deleted)
+            cursor.execute('DELETE FROM marks')
+            marks_deleted = cursor.rowcount
+            
+            # Delete all students
+            cursor.execute('DELETE FROM students')
+            students_deleted = cursor.rowcount
+            
+            # Delete all teacher assignments for classes
+            cursor.execute('DELETE FROM teacher_assignments WHERE class_name IS NOT NULL')
+            
+            # Delete all streams
+            cursor.execute('DELETE FROM streams')
+            
+            # Delete all classes
+            cursor.execute('DELETE FROM school_classes')
+            classes_deleted = cursor.rowcount
+            
+            conn.commit()
+            conn.close()
+            return True, f"Deleted {classes_deleted} classes, {students_deleted} students, {marks_deleted} marks, and related assignments"
+        except Exception as e:
+            conn.close()
+            return False, str(e)
+    
+    def reset_all_data(self) -> Tuple[bool, str]:
+        """COMPLETE RESET: Delete ALL data except admin user. Use with extreme caution!"""
+        conn = self.get_connection()
+        cursor = conn.cursor()
+        try:
+            # Delete in order of dependencies
+            cursor.execute('DELETE FROM marks')
+            cursor.execute('DELETE FROM teacher_assignments')
+            cursor.execute('DELETE FROM students')
+            cursor.execute('DELETE FROM streams')
+            cursor.execute('DELETE FROM school_classes')
+            cursor.execute('DELETE FROM custom_subjects')
+            cursor.execute('DELETE FROM users WHERE role != ?', ('admin',))
+            cursor.execute('DELETE FROM email_log')
+            
+            conn.commit()
+            conn.close()
+            return True, "All data has been reset except admin user"
+        except Exception as e:
+            conn.close()
+            return False, str(e)
     
     def search_students(self, query: str) -> List[Dict]:
         conn = self.get_connection()
@@ -2014,6 +2321,7 @@ class Database:
         conn.close()
         return [dict(r) for r in rows]
 
+
     def get_promotion_statistics(self, academic_year: str = None) -> Dict:
         """Get promotion statistics for an academic year."""
         conn = self.get_connection()
@@ -2048,5 +2356,71 @@ class Database:
         }
 
 
+    def get_class_student_summary(self, class_name: str, stream_name: str = '', recent_term: str = None) -> List[Dict]:
+        """Get detailed student summary for class/stream with optional recent averages."""
+        conn = self.get_connection()
+        cursor = conn.cursor()
+        
+        where_clause = 'WHERE s.class = ?'
+        params = [class_name]
+        
+        if stream_name.strip():
+            where_clause += ' AND s.stream = ?'
+            params.append(stream_name.strip())
+        
+        base_query = f'''
+            SELECT 
+                s.id, s.name, s.admission_no, s.gender, s.guardian_name, 
+                s.parent_email, s.stream, s.photo_path,
+                AVG(m.marks) as avg_marks,
+                COUNT(m.id) as subject_count
+            FROM students s
+            LEFT JOIN marks m ON s.id = m.student_id
+        '''
+        
+        if recent_term:
+            base_query += f' AND m.term = ? AND m.exam_type = "{DEFAULT_EXAM_TYPE}"'
+            params.append(recent_term)
+        
+        base_query += f'''
+            {where_clause}
+            GROUP BY s.id, s.name, s.admission_no, s.gender, s.guardian_name, 
+                     s.parent_email, s.stream, s.photo_path
+            ORDER BY s.name
+        '''
+        
+        cursor.execute(base_query, params)
+        rows = cursor.fetchall()
+        students = [dict(row) for row in rows]
+        conn.close()
+        return students
+
+
+    def get_recent_student_averages(self, class_name: str) -> Dict[str, float]:
+        """Get {student_id: average_marks} from latest exam session for class."""
+        latest_exam = self.get_latest_exam_session_for_class(class_name)
+        if not latest_exam:
+            return {}
+        
+        conn = self.get_connection()
+        cursor = conn.cursor()
+        cursor.execute(
+            '''
+            SELECT s.id, AVG(m.marks) as avg_marks
+            FROM students s
+            LEFT JOIN marks m ON s.id = m.student_id 
+                             AND m.term = ? AND m.exam_type = ?
+            WHERE s.class = ?
+            GROUP BY s.id
+            ''',
+            (latest_exam['term'], latest_exam['exam_type'], class_name)
+        )
+        rows = cursor.fetchall()
+        averages = {row['id']: float(row['avg_marks'] or 0) for row in rows}
+        conn.close()
+        return averages
+
+
 # Global database instance
 db = Database()
+

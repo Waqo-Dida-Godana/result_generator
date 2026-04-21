@@ -105,8 +105,9 @@ class ExamAnalytics:
     # ── Data Retrieval Methods ──────────────────────────────────────────────
     
     def get_exam_sessions(self, class_name: str = None, term: str = None,
-                         exam_type: str = None, subject: str = None,
-                         start_date: datetime = None, end_date: datetime = None) -> List[ExamSession]:
+                         exam_type: str = None, stream: str = None,
+                         subject: str = None, start_date: datetime = None,
+                         end_date: datetime = None) -> List[ExamSession]:
         """
         Retrieve exam sessions from the database with optional filters.
         
@@ -146,6 +147,9 @@ class ExamAnalytics:
         if exam_type:
             query += ' AND m.exam_type = ?'
             params.append(exam_type)
+        if stream:
+            query += ' AND s.stream = ?'
+            params.append(stream)
         if subject:
             query += ' AND m.subject = ?'
             params.append(subject)

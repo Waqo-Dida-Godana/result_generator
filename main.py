@@ -50,6 +50,8 @@ from reportlab.lib.units import inch
 from reportlab.lib.utils import ImageReader
 from fpdf import FPDF
 
+from students_tab import StudentsTab
+
 # ====================== DESIGN TOKENS ======================
 # Lemon green + olive theme
 LEMON_ACCENT = "#D7F171"
@@ -155,6 +157,10 @@ def _mix_hex(color1, color2, ratio):
     rgb1 = _hex_to_rgb(color1)
     rgb2 = _hex_to_rgb(color2)
     return _rgb_to_hex(tuple(rgb1[i] * (1 - ratio) + rgb2[i] * ratio for i in range(3)))
+
+
+class ImportCancelledError(Exception):
+    """Raised when a long-running import is cancelled by the user."""
 
 
 FF = "Segoe UI"  # font family
@@ -278,6 +284,57 @@ ALL_CLASSES = [
     for level_classes in CLASSES_BY_LEVEL.values()
     for class_name in level_classes
 ]
+
+# ====================== LEVEL DISPLAY CONFIG =======================
+LEVEL_ORDER = [
+    "Pre-Primary (PP1-PP2)",
+    "Lower Primary (Grade 1-3)",
+    "Upper Primary (Grade 4-6)",
+    "Junior School (Grade 7-9)",
+]
+
+LEVEL_DISPLAY = {
+    "Pre-Primary (PP1-PP2)": {
+        "short": "Pre-Primary",
+        "icon": "🌱",
+        "hdr_bg": "#9d174d",
+        "hdr_fg": "#ffffff",
+        "row_bg": "#fce7f3",
+        "btn_active_bg": "#be185d",
+        "tag": "lv_pp",
+        "hdr_tag": "lv_pp_hdr",
+    },
+    "Lower Primary (Grade 1-3)": {
+        "short": "Lower",
+        "icon": "📚",
+        "hdr_bg": "#1e40af",
+        "hdr_fg": "#ffffff",
+        "row_bg": "#dbeafe",
+        "btn_active_bg": "#2563eb",
+        "tag": "lv_lower",
+        "hdr_tag": "lv_lower_hdr",
+    },
+    "Upper Primary (Grade 4-6)": {
+        "short": "Upper",
+        "icon": "🎓",
+        "hdr_bg": "#166534",
+        "hdr_fg": "#ffffff",
+        "row_bg": "#dcfce7",
+        "btn_active_bg": "#16a34a",
+        "tag": "lv_upper",
+        "hdr_tag": "lv_upper_hdr",
+    },
+    "Junior School (Grade 7-9)": {
+        "short": "Junior",
+        "icon": "🏛",
+        "hdr_bg": "#5b21b6",
+        "hdr_fg": "#ffffff",
+        "row_bg": "#ede9fe",
+        "btn_active_bg": "#7c3aed",
+        "tag": "lv_junior",
+        "hdr_tag": "lv_junior_hdr",
+    },
+}
 
 # Grading System by Level (CBC Competency Levels)
 GRADING_BY_LEVEL = {
@@ -963,6 +1020,10 @@ class AdvancedDataTable:
         selected = self.tree.selection()
         if not selected:
             return None
+        # Skip group header rows whose iid starts with "grp_"
+        selected = [s for s in selected if not str(s).startswith("grp_")]
+        if not selected:
+            return None
         row = self.row_index.get(selected[0])
         if row:
             return row
@@ -970,8 +1031,28 @@ class AdvancedDataTable:
 
     def get_selected_iids(self):
         if self.enable_select_all and self.select_all_var.get():
-            return [row.get("iid") for row in self.filtered_rows if row.get("iid")]
-        return list(self.tree.selection())
+            return [
+                row.get("iid") for row in self.filtered_rows
+                if row.get("iid") and not str(row.get("iid", "")).startswith("grp_")
+            ]
+        return [iid for iid in self.tree.selection() if not str(iid).startswith("grp_")]
+
+    def select_all_filtered(self):
+        if not self.enable_select_all:
+            visible_iids = [
+                row.get("iid") for row in self.visible_rows
+                if row.get("iid") and not str(row.get("iid", "")).startswith("grp_")
+            ]
+            if visible_iids:
+                self.tree.selection_set(visible_iids)
+            return
+        self.select_all_var.set(True)
+        self._on_select_all_toggle()
+
+    def clear_selection(self):
+        if self.enable_select_all:
+            self.select_all_var.set(False)
+        self.tree.selection_remove(self.tree.selection())
 
     def toggle_sort(self, key):
         if self.sort_column == key:
@@ -1028,7 +1109,8 @@ class AdvancedDataTable:
     def _on_select_all_toggle(self):
         if self.select_all_var.get():
             visible_iids = [
-                row.get("iid") for row in self.visible_rows if row.get("iid")
+                row.get("iid") for row in self.visible_rows
+                if row.get("iid") and not str(row.get("iid", "")).startswith("grp_")
             ]
             if visible_iids:
                 self.tree.selection_set(visible_iids)
@@ -1102,6 +1184,16 @@ class SchoolReportApp:
         self.root.configure(bg=CONTENT_BG)
         self.root.minsize(960, 620)
 
+        # UI constants for child pages
+        self.CONTENT_BG = CONTENT_BG
+        self.CARD_BG = CARD_BG
+        self.TEXT_SECONDARY = TEXT_SECONDARY
+        self.FF = FF
+        self.BLUE = BLUE
+        self.GREEN = GREEN
+        self.ORANGE = ORANGE
+        self.PURPLE = PURPLE
+
         # CBC Level - Default to all-school view
         self.current_level = ALL_SCHOOL_LEVEL
 
@@ -1116,6 +1208,13 @@ class SchoolReportApp:
         self._topbar_bar = None
         self._topbar_clock_visible = True
         self._topbar_clock_generation = 0
+        self._login_in_progress = False
+        self._login_loader = None
+        self._login_loader_after = None
+        self._pending_login_notice = None
+        self._pending_login_notice_after = None
+        self._active_notice = None
+        self._active_notice_after = None
         self.logo_img = self.load_logo()
 
         # Load logo image for use in dashboard
@@ -1148,7 +1247,8 @@ class SchoolReportApp:
         except Exception as e:
             print(f"Could not set window icon: {e}")
 
-        self._ensure_default_catalog_records()
+        self._ensure_default_class_catalog()
+        self._ensure_default_subject_catalog()
         self._ensure_default_grading_scales()
         self.set_level(self.current_level)
         setup_treeview_style()
@@ -1180,7 +1280,15 @@ class SchoolReportApp:
             return "".join(word[0].upper() for word in words[:4])
         return text[:16]
 
-    def _ensure_default_catalog_records(self):
+    def _ensure_default_class_catalog(self):
+        seed_key = "default_class_catalog_initialized"
+        if db.get_setting(seed_key, "").strip():
+            return
+
+        if db.get_all_classes():
+            db.set_setting(seed_key, "1")
+            return
+
         for level, classes in CLASSES_BY_LEVEL.items():
             for class_name in classes:
                 if not db.get_class_by_name(class_name):
@@ -1189,6 +1297,17 @@ class SchoolReportApp:
                         level,
                         abbreviation=self._generate_short_label(class_name, "class"),
                     )
+
+        db.set_setting(seed_key, "1")
+
+    def _ensure_default_subject_catalog(self):
+        seed_key = "default_subject_catalog_initialized"
+        if db.get_setting(seed_key, "").strip():
+            return
+
+        if db.get_subjects_by_level():
+            db.set_setting(seed_key, "1")
+            return
 
         for level in LEVELS:
             level_subjects = SUBJECT_CATALOG.get(level, [])
@@ -1209,6 +1328,8 @@ class SchoolReportApp:
                         abbreviation=code,
                         code=code,
                     )
+
+        db.set_setting(seed_key, "1")
 
     def _replace_subject_catalog_with_defaults(self):
         subject_rows = []
@@ -1391,18 +1512,25 @@ class SchoolReportApp:
             elif role == "class_teacher" and teacher_id:
                 return db.get_teacher_classes(teacher_id)
 
-        return CLASSES_BY_LEVEL.get(self.current_level, CLASSES)
+        return self.get_current_classes()
 
     def get_current_classes(self):
         """Get classes for the current CBC level"""
+        db_classes = [row.get("name", "") for row in db.get_all_classes() if row.get("name")]
         if self.current_level == ALL_SCHOOL_LEVEL:
-            classes = []
-            for level_classes in CLASSES_BY_LEVEL.values():
-                for class_name in level_classes:
-                    if class_name not in classes:
-                        classes.append(class_name)
-            return classes
-        return CLASSES_BY_LEVEL.get(self.current_level, CLASSES)
+            return db_classes
+
+        level_classes = [
+            row.get("name", "")
+            for row in db.get_all_classes()
+            if row.get("name") and row.get("level") == self.current_level
+        ]
+        if level_classes:
+            return level_classes
+
+        if self.current_level == ALL_SCHOOL_LEVEL:
+            return []
+        return []
 
     def get_current_grading(self):
         """Get grading system for the current CBC level"""
@@ -1414,15 +1542,52 @@ class SchoolReportApp:
 
     def _get_subjects_for_level(self, level):
         """Flatten level subject config into a clean ordered list."""
+        if level in LEVELS:
+            level_rows = db.get_subjects_by_level(level)
+            global_rows = db.get_subjects_by_level(ALL_SUBJECT_LEVEL)
+            if level_rows or global_rows:
+                ordered_names = []
+                seen = set()
+
+                catalog_subjects = SUBJECT_CATALOG.get(level, [])
+                if isinstance(catalog_subjects, dict):
+                    catalog_subjects = list(catalog_subjects.get("core", [])) + list(
+                        catalog_subjects.get("optional", [])
+                    )
+
+                for _code, name, _category, _is_optional in catalog_subjects:
+                    if name not in seen and (
+                        any(row.get("name") == name for row in level_rows)
+                        or any(row.get("name") == name for row in global_rows)
+                    ):
+                        ordered_names.append(name)
+                        seen.add(name)
+
+                for row in list(level_rows) + list(global_rows):
+                    name = row.get("name", "")
+                    if name and name not in seen:
+                        ordered_names.append(name)
+                        seen.add(name)
+
+                return ordered_names
+
         if level == ALL_SCHOOL_LEVEL:
-            subjects = []
-            seen = set()
-            for level_name in LEVELS:
-                for subject in self._get_subjects_for_level(level_name):
-                    if subject not in seen:
-                        subjects.append(subject)
-                        seen.add(subject)
-            return subjects
+            all_rows = db.get_subjects_by_level()
+            if all_rows:
+                subjects = []
+                seen = set()
+                for level_name in LEVELS:
+                    for subject in self._get_subjects_for_level(level_name):
+                        if subject not in seen:
+                            subjects.append(subject)
+                            seen.add(subject)
+                for row in all_rows:
+                    name = row.get("name", "")
+                    if name and name not in seen:
+                        subjects.append(name)
+                        seen.add(name)
+                return subjects
+            return []
         level_subjects = SUBJECTS_BY_LEVEL.get(level, SUBJECTS)
         if isinstance(level_subjects, dict):
             return list(level_subjects.get("core", []))
@@ -1540,19 +1705,55 @@ class SchoolReportApp:
 
         return ""
 
-    def _get_level_for_class(self, class_name):
-        """Resolve the CBC level for a class name."""
-        class_name = self._match_known_class_name(class_name) or class_name
-
+    def _determine_class_level(self, class_name):
+        """Determine the appropriate level for a class name during import."""
+        class_name_lower = class_name.lower()
+        
+        # Check against known level mappings
         for level, classes in CLASSES_BY_LEVEL.items():
-            if class_name in classes:
-                return level
+            for known_class in classes:
+                if known_class.lower() in class_name_lower or class_name_lower in known_class.lower():
+                    return level
+        
+        # Try to infer from class name patterns
+        if any(word in class_name_lower for word in ['pp1', 'pp2', 'baby', 'nursery', 'pre']):
+            return "Pre-Primary"
+        elif any(word in class_name_lower for word in ['grade', 'class', 'std']):
+            # Extract grade number
+            import re
+            match = re.search(r'(\d+)', class_name)
+            if match:
+                grade_num = int(match.group(1))
+                if grade_num <= 3:
+                    return "Lower Primary"
+                elif grade_num <= 6:
+                    return "Upper Primary"
+                else:
+                    return "Junior Secondary"
+        
+        # Default to Primary
+        return "Primary"
 
-        for row in db.get_all_classes():
-            if row.get("name") == class_name:
-                return row.get("level")
+    def _get_level_for_class(self, class_name):
+        """Get the school level for the given class name."""
+        if not class_name:
+            return self.current_level
+        if class_name in ("All", ALL_SCHOOL_LEVEL):
+            return ALL_SCHOOL_LEVEL
 
-        return self.current_level
+        class_name = str(class_name).strip()
+        class_info = db.get_class_by_name(class_name)
+        if class_info and class_info.get("level"):
+            return class_info.get("level")
+
+        # Support stream-qualified class names, e.g. Class A :: Stream
+        if "::" in class_name:
+            base_class = class_name.split("::", 1)[0].strip()
+            class_info = db.get_class_by_name(base_class)
+            if class_info and class_info.get("level"):
+                return class_info.get("level")
+
+        return self._determine_class_level(class_name)
 
     def _get_subjects_for_class(
         self, class_name, term="One", exam_type=DEFAULT_EXAM_TYPE, for_reporting=False
@@ -1783,6 +1984,79 @@ class SchoolReportApp:
         if reload_results:
             self.load_reports()
 
+    def _get_selected_marks_stream(self):
+        if hasattr(self, "marks_stream_cb"):
+            stream = (self.marks_stream_cb.get() or "").strip()
+            return "" if stream == "All Streams" else stream
+        return getattr(self, "_selected_marks_stream", "")
+
+    def _refresh_marks_streams(self, reload_results=True):
+        if not hasattr(self, "marks_stream_cb"):
+            return
+        current = (self.marks_stream_cb.get() or "").strip()
+        if not current:
+            current = getattr(self, "_selected_marks_stream", "")
+
+        selected_class = self.marks_class_cb.get() if hasattr(self, "marks_class_cb") else ""
+        values = ["All Streams"] + self._get_stream_names_for_class(selected_class)
+        self.marks_stream_cb["values"] = values
+        if current and current in values:
+            self.marks_stream_cb.set(current)
+        else:
+            self.marks_stream_cb.set(values[0] if values else "All Streams")
+
+        self._selected_marks_stream = self._get_selected_marks_stream()
+        if reload_results:
+            self._load_marks_table()
+
+    def _get_selected_chart_stream(self):
+        if not hasattr(self, "ch_stream_cb"):
+            return ""
+        stream = (self.ch_stream_cb.get() or "").strip()
+        return "" if stream == "All Streams" else stream
+
+    def _refresh_chart_streams(self, reload_results=True):
+        if not hasattr(self, "ch_stream_cb"):
+            return
+        current = (self.ch_stream_cb.get() or "").strip()
+        selected_class = self.ch_cls_cb.get() if hasattr(self, "ch_cls_cb") else ""
+        if selected_class in ("All", ""):
+            values = ["All Streams"]
+        else:
+            values = ["All Streams"] + self._get_stream_names_for_class(selected_class)
+        self.ch_stream_cb["values"] = values
+        if current and current in values:
+            self.ch_stream_cb.set(current)
+        else:
+            self.ch_stream_cb.set(values[0] if values else "All Streams")
+        if reload_results:
+            self.load_charts()
+
+    def _refresh_exam_analytics_streams(self):
+        if not hasattr(self, "analytics_stream_cb"):
+            return
+        current = (self.analytics_stream_var.get() or "").strip()
+        selected_class = self.analytics_class_var.get() if hasattr(self, "analytics_class_var") else ""
+        if selected_class in ("All Classes", ""):
+            values = ["All Streams"]
+        else:
+            values = ["All Streams"] + self._get_stream_names_for_class(selected_class)
+        self.analytics_stream_cb["values"] = values
+        if current and current in values:
+            self.analytics_stream_cb.set(current)
+        else:
+            self.analytics_stream_cb.set(values[0] if values else "All Streams")
+
+    def _update_marks_page_header(self):
+        if not hasattr(self, "page_sub_lbl") or not hasattr(self, "marks_class_cb"):
+            return
+        cls = self.marks_class_cb.get()
+        stream = self._get_selected_marks_stream()
+        subtitle = f"Enter Marks - {cls}" if cls else "Enter Marks"
+        if stream:
+            subtitle += f" (Stream {stream})"
+        self.page_sub_lbl.config(text=subtitle)
+
     def _get_results_page_results(self, class_name, term, exam_type):
         results = self._get_ranked_results(class_name, term, exam_type)
         selected_stream = self._get_selected_results_stream()
@@ -1911,13 +2185,20 @@ class SchoolReportApp:
 
     def _get_known_stream_names(self, class_name=""):
         class_row = db.get_class_by_name(class_name or "")
-        if not class_row:
-            return []
-        return [
-            str(stream.get("name", "") or "").strip()
-            for stream in db.get_streams_for_class(class_row["id"])
-            if str(stream.get("name", "") or "").strip()
-        ]
+        stream_names = []
+
+        if class_row:
+            for stream in db.get_streams_for_class(class_row["id"]):
+                stream_name = str(stream.get("name", "") or "").strip()
+                if stream_name and stream_name not in stream_names:
+                    stream_names.append(stream_name)
+
+        for student in db.get_students_by_class(class_name or ""):
+            stream_name = str(student.get("stream", "") or "").strip()
+            if stream_name and stream_name not in stream_names:
+                stream_names.append(stream_name)
+
+        return stream_names
 
     def _match_known_stream_name(self, value, class_name=""):
         raw = str(value or "").strip()
@@ -1985,14 +2266,34 @@ class SchoolReportApp:
         if not text_norm:
             return ""
 
+        ignored_tokens = {"overall", "summary", "report", "analysis"}
+
+        if class_name:
+            class_norm = self._normalize_text(class_name)
+            if class_norm and text_norm.startswith(class_norm):
+                remainder = re.sub(
+                    r"^[\s\-_/:\[\]\(\)]+",
+                    "",
+                    text_norm[len(class_norm) :],
+                ).strip()
+                if remainder:
+                    token_match = re.match(r"([a-z0-9]+)", remainder)
+                    if token_match:
+                        raw_stream = token_match.group(1)
+                        if raw_stream not in ignored_tokens:
+                            return (
+                                self._match_known_stream_name(raw_stream, class_name)
+                                or raw_stream.title()
+                            )
+
         match = re.search(
-            r"(?:grade\s*\d+|grade\s+[a-z]+\s*\(\d+\)|g\s*\d+)\s*[-_/ ]*([a-z]+)\b",
+            r"(?:grade\s*\d+|grade\s+[a-z]+\s*\(\d+\)|g\s*\d+|pp\s*[12]|p\s*[12]|preprimary\s*[12])\s*[-_/ ]*([a-z0-9]+)\b",
             text_norm,
         )
         if match:
             raw_stream = match.group(1)
-            if raw_stream not in {"overall", "summary", "report"}:
-                return self._match_known_stream_name(raw_stream, class_name)
+            if raw_stream not in ignored_tokens:
+                return self._match_known_stream_name(raw_stream, class_name) or raw_stream.title()
         return ""
 
     def _get_sheet_context(self, sheet_name, worksheet=None):
@@ -2176,49 +2477,105 @@ class SchoolReportApp:
             return class_lookup[raw_key]
 
         alias_map = {
-            "eng": "English",
-            "english": "English",
-            "lang": "English Language Activities",
-            "math": "Mathematics",
-            "maths": "Mathematics",
-            "mat": "Mathematics",
-            "mathematicalactivities": "Mathematical Activities",
-            "kis": "Kiswahili / Kenyan Sign Language",
-            "kiswahili": "Kiswahili / Kenyan Sign Language",
-            "englishlanguageactivities": "English Language Activities",
-            "kiswahililanguageactivities": "Kiswahili Language Activities",
-            "intsci": "Integrated Science",
-            "integratedscience": "Integrated Science",
-            "sci": "Science & Technology",
-            "science": "Science & Technology",
-            "scitech": "Science & Technology",
-            "scienceandtechnology": "Science & Technology",
-            "environ": "Environmental Activities",
-            "env": "Environmental Activities",
-            "creative": "Creative Arts",
-            "carts": "Creative Arts",
-            "ca": "Creative Arts",
-            "casports": "Sports & Physical Education",
-            "agri": "Agriculture",
-            "agrinut": "Agriculture",
-            "sst": "Social Studies",
-            "socialstudies": "Social Studies",
-            "cre": "Christian Religious Education (CRE)",
-            "pretech": "Pre-Technical Studies",
-            "french": "Foreign Languages (French, German, Arabic)",
+            "eng": ["English", "English Activities", "English Language Activities"],
+            "english": ["English", "English Activities", "English Language Activities"],
+            "lang": [
+                "Language Activities",
+                "Literacy Activities",
+                "English Language Activities",
+                "English Activities",
+                "English",
+            ],
+            "math": ["Mathematical Activities", "Mathematics"],
+            "maths": ["Mathematical Activities", "Mathematics"],
+            "mat": ["Mathematical Activities", "Mathematics"],
+            "mathematicalactivities": ["Mathematical Activities", "Mathematics"],
+            "kis": [
+                "Kiswahili Activities",
+                "Kiswahili / KSL",
+                "Kiswahili / Kenyan Sign Language",
+                "Kiswahili Language Activities",
+                "Kenyan Sign Language",
+            ],
+            "kiswahili": [
+                "Kiswahili Activities",
+                "Kiswahili / KSL",
+                "Kiswahili / Kenyan Sign Language",
+                "Kiswahili Language Activities",
+                "Kenyan Sign Language",
+            ],
+            "englishlanguageactivities": [
+                "English Language Activities",
+                "English Activities",
+                "English",
+            ],
+            "kiswahililanguageactivities": [
+                "Kiswahili Language Activities",
+                "Kiswahili Activities",
+                "Kiswahili / KSL",
+            ],
+            "intsci": ["Integrated Science"],
+            "integratedscience": ["Integrated Science"],
+            "sci": ["Science & Technology", "Integrated Science"],
+            "science": ["Science & Technology", "Integrated Science"],
+            "scitech": ["Science & Technology"],
+            "scienceandtechnology": ["Science & Technology"],
+            "environ": ["Environmental Activities"],
+            "env": ["Environmental Activities"],
+            "envi": ["Environmental Activities"],
+            "creative": [
+                "Creative Activities",
+                "Movement & Creative Activities",
+                "Creative Arts",
+                "Visual Arts",
+                "Performing Arts",
+            ],
+            "creativearts": [
+                "Creative Arts",
+                "Creative Activities",
+                "Movement & Creative Activities",
+            ],
+            "carts": ["Creative Arts", "Creative Activities"],
+            "ca": ["Creative Arts", "Visual Arts", "Performing Arts"],
+            "casports": ["Sports & Physical Education"],
+            "agri": ["Agriculture"],
+            "agrinut": ["Agriculture"],
+            "sst": ["Social Studies"],
+            "socialstudies": ["Social Studies"],
+            "cre": [
+                "Religious Activities",
+                "Religious Education Activities",
+                "Christian Religious Education",
+                "Christian Religious Education (CRE)",
+            ],
+            "pretech": ["Pre-Technical Studies"],
+            "pretechnicalstudies": ["Pre-Technical Studies"],
+            "french": ["French", "Foreign Languages (French, German, Arabic)"],
         }
 
-        mapped = alias_map.get(raw_key, raw)
-        mapped_key = self._normalize_key(mapped)
-        if mapped_key in class_lookup:
-            return class_lookup[mapped_key]
+        mapped_candidates = alias_map.get(raw_key, [raw])
+        for mapped in mapped_candidates:
+            mapped_key = self._normalize_key(mapped)
+            if mapped_key in class_lookup:
+                return class_lookup[mapped_key]
+
+        for mapped in mapped_candidates:
+            mapped_key = self._normalize_key(mapped)
+            for subject in classes:
+                subject_key = self._normalize_key(subject)
+                if mapped_key and (
+                    mapped_key == subject_key
+                    or mapped_key in subject_key
+                    or subject_key in mapped_key
+                ):
+                    return subject
 
         for subject in classes:
             subject_key = self._normalize_key(subject)
             if raw_key and (raw_key in subject_key or subject_key in raw_key):
                 return subject
 
-        return mapped
+        return mapped_candidates[0]
 
     def _find_assessment_header_row(self, worksheet, class_name=""):
         name_aliases = {
@@ -2409,58 +2766,567 @@ class SchoolReportApp:
             "students": students,
         }
 
-    def _open_progress_dialog(self, title, message):
+    def _open_progress_dialog(self, title, message, details="", allow_cancel=False):
         dialog = tk.Toplevel(self.root)
         dialog.title(title)
-        dialog.geometry("420x150")
+        width, height = 720, 340
         dialog.configure(bg=CONTENT_BG)
         dialog.transient(self.root)
         dialog.grab_set()
         dialog.resizable(False, False)
-        dialog.protocol("WM_DELETE_WINDOW", lambda: None)
+        dialog._cancel_requested = False
+
+        self.root.update_idletasks()
+        x = self.root.winfo_rootx() + max(0, (self.root.winfo_width() - width) // 2)
+        y = self.root.winfo_rooty() + max(0, (self.root.winfo_height() - height) // 2)
+        dialog.geometry(f"{width}x{height}+{x}+{y}")
+        dialog.minsize(width, height)
 
         pr_bo, pr_bi = _card_colors("azure")
         outer = tk.Frame(dialog, bg=pr_bo)
-        outer.place(relx=0.5, rely=0.5, anchor="center")
-        card = tk.Frame(outer, bg=pr_bi, padx=22, pady=20)
-        card.pack(padx=1, pady=1)
+        outer.pack(fill="both", expand=True, padx=18, pady=18)
+        card = tk.Frame(outer, bg=pr_bi, padx=28, pady=26)
+        card.pack(fill="both", expand=True, padx=1, pady=1)
 
         tk.Label(
-            card, text=title, bg=pr_bi, fg=TEXT_PRIMARY, font=(FF, 13, "bold")
+            card, text=title, bg=pr_bi, fg=TEXT_PRIMARY, font=(FF, 16, "bold")
         ).pack(anchor="w")
         status_label = tk.Label(
             card,
             text=message,
             bg=pr_bi,
             fg=TEXT_SECONDARY,
-            font=(FF, 10),
-            wraplength=360,
+            font=(FF, 12),
+            wraplength=620,
             justify="left",
         )
-        status_label.pack(anchor="w", pady=(8, 10))
+        status_label.pack(anchor="w", fill="x", pady=(10, 12))
 
-        percent_label = tk.Label(
-            card, text="0%", bg=pr_bi, fg=GREEN, font=(FF, 11, "bold")
+        detail_panel = tk.Frame(card, bg="#F5F8FD", padx=16, pady=14)
+        detail_panel.pack(fill="x", pady=(0, 12))
+        tk.Label(
+            detail_panel,
+            text="Live import details",
+            bg="#F5F8FD",
+            fg=TEXT_PRIMARY,
+            font=(FF, 10, "bold"),
+        ).pack(anchor="w", pady=(0, 4))
+
+        detail_label = tk.Label(
+            detail_panel,
+            text=details,
+            bg="#F5F8FD",
+            fg=TEXT_SECONDARY,
+            font=(FF, 10),
+            wraplength=588,
+            justify="left",
         )
-        percent_label.pack(anchor="e")
+        detail_label.pack(anchor="w", fill="x")
 
-        progress = ttk.Progressbar(
-            card, orient="horizontal", length=360, mode="determinate", maximum=100
+        progress_header = tk.Frame(card, bg=pr_bi)
+        progress_header.pack(fill="x", pady=(12, 6))
+        tk.Label(
+            progress_header,
+            text="Progress",
+            bg=pr_bi,
+            fg=TEXT_SECONDARY,
+            font=(FF, 10, "bold"),
+        ).pack(side="left")
+        percent_label = tk.Label(
+            progress_header, text="0%", bg=pr_bi, fg=GREEN, font=(FF, 13, "bold")
+        )
+        percent_label.pack(side="right")
+
+        progress_shell = tk.Frame(card, bg="#D6E3C0", padx=1, pady=1)
+        progress_shell.pack(fill="x", pady=(0, 4))
+
+        progress = tk.Canvas(
+            progress_shell,
+            height=28,
+            bg="#F4F7EC",
+            highlightthickness=0,
+            bd=0,
         )
         progress.pack(fill="x")
+        progress.update_idletasks()
+        fill_id = progress.create_rectangle(
+            0, 0, 0, 28, fill=ORANGE, outline=""
+        )
+        progress._fill_id = fill_id
+        dialog._progress_detail_label = detail_label
+        dialog._progress_status_label = status_label
+
+        if allow_cancel:
+            action_row = tk.Frame(card, bg=pr_bi)
+            action_row.pack(fill="x", pady=(12, 0))
+            tk.Label(
+                action_row,
+                text="You can cancel this import at any time.",
+                bg=pr_bi,
+                fg=TEXT_SECONDARY,
+                font=(FF, 9),
+            ).pack(side="left")
+            cancel_button = tk.Button(
+                action_row,
+                text="Cancel Import",
+                bg="#E85D5D",
+                fg="white",
+                font=(FF, 10, "bold"),
+                relief="flat",
+                padx=14,
+                pady=6,
+                command=lambda: self._request_progress_cancel(dialog),
+            )
+            cancel_button.pack(side="right")
+            dialog._progress_cancel_button = cancel_button
+            dialog.protocol(
+                "WM_DELETE_WINDOW", lambda: self._request_progress_cancel(dialog)
+            )
+        else:
+            dialog.protocol("WM_DELETE_WINDOW", lambda: None)
+
         dialog.update_idletasks()
         return dialog, status_label, percent_label, progress
 
     def _update_progress_dialog(
-        self, dialog, status_label, percent_label, progress, current, total, message
+        self,
+        dialog,
+        status_label,
+        percent_label,
+        progress,
+        current,
+        total,
+        message,
+        details=None,
     ):
         total = max(1, int(total or 1))
         current = min(total, max(0, int(current)))
         percent = int((current / total) * 100)
         status_label.config(text=message)
+        detail_label = getattr(dialog, "_progress_detail_label", None)
+        if detail_label is not None and details is not None:
+            detail_label.config(text=details)
         percent_label.config(text=f"{percent}%")
-        progress["value"] = percent
+        if isinstance(progress, tk.Canvas):
+            progress.update_idletasks()
+            width = max(1, progress.winfo_width())
+            height = max(1, progress.winfo_height())
+            fill_width = int(width * (percent / 100))
+            if percent < 35:
+                fill_color = ORANGE
+            elif percent < 70:
+                fill_color = "#6D97C9"
+            else:
+                fill_color = GREEN
+            progress.coords(
+                getattr(progress, "_fill_id", None), 0, 0, fill_width, height
+            )
+            progress.itemconfig(getattr(progress, "_fill_id", None), fill=fill_color)
+        else:
+            progress["value"] = percent
+        try:
+            dialog.update()
+        except tk.TclError:
+            pass
+
+    def _request_progress_cancel(self, dialog):
+        if dialog is None or not dialog.winfo_exists():
+            return
+        if getattr(dialog, "_cancel_requested", False):
+            return
+        if not messagebox.askyesno(
+            "Cancel Import",
+            "Stop this import now?\n\nAny rows already imported before cancellation will remain saved.",
+            parent=dialog,
+        ):
+            return
+        dialog._cancel_requested = True
+        cancel_button = getattr(dialog, "_progress_cancel_button", None)
+        if cancel_button is not None and cancel_button.winfo_exists():
+            cancel_button.config(state="disabled", text="Cancelling...")
+        status_label = getattr(dialog, "_progress_status_label", None)
+        if status_label is not None and status_label.winfo_exists():
+            status_label.config(text="Cancelling import. Please wait...")
+        try:
+            dialog.update()
+        except tk.TclError:
+            pass
+
+    def _progress_cancel_requested(self, dialog):
+        return bool(dialog and getattr(dialog, "_cancel_requested", False))
+
+    def _cancel_login_loader_timer(self):
+        if self._login_loader_after is None:
+            return
+        try:
+            self.root.after_cancel(self._login_loader_after)
+        except Exception:
+            pass
+        self._login_loader_after = None
+
+    def _schedule_login_loader(self):
+        self._cancel_login_loader_timer()
+        self._login_loader_after = self.root.after(350, self._show_login_loader)
+
+    def _show_login_loader(self):
+        self._login_loader_after = None
+        if not self._login_in_progress or self._login_loader is not None:
+            return
+
+        dialog = tk.Toplevel(self.root)
+        dialog.title("Signing In")
+        dialog.configure(bg=CONTENT_BG)
+        dialog.transient(self.root)
+        dialog.grab_set()
+        dialog.resizable(False, False)
+        dialog.protocol("WM_DELETE_WINDOW", lambda: None)
+
+        width, height = 380, 170
+        self.root.update_idletasks()
+        x = self.root.winfo_rootx() + max(0, (self.root.winfo_width() - width) // 2)
+        y = self.root.winfo_rooty() + max(0, (self.root.winfo_height() - height) // 2)
+        dialog.geometry(f"{width}x{height}+{x}+{y}")
+
+        outer_bg, inner_bg = _card_colors("mint")
+        outer = tk.Frame(dialog, bg=outer_bg)
+        outer.place(relx=0.5, rely=0.5, anchor="center")
+        card = tk.Frame(outer, bg=inner_bg, padx=22, pady=20)
+        card.pack(padx=1, pady=1)
+
+        tk.Label(
+            card,
+            text="Signing you in...",
+            bg=inner_bg,
+            fg=TEXT_PRIMARY,
+            font=(FF, 13, "bold"),
+        ).pack(anchor="w")
+        tk.Label(
+            card,
+            text="Please wait while we verify your account details.",
+            bg=inner_bg,
+            fg=TEXT_SECONDARY,
+            font=(FF, 10),
+            wraplength=320,
+            justify="left",
+        ).pack(anchor="w", pady=(8, 14))
+
+        progress = ttk.Progressbar(
+            card, orient="horizontal", length=320, mode="indeterminate"
+        )
+        progress.pack(fill="x")
+        progress.start(12)
+
         dialog.update_idletasks()
+        self._login_loader = (dialog, progress)
+
+    def _close_login_loader(self):
+        self._cancel_login_loader_timer()
+        if self._login_loader is None:
+            return
+
+        dialog, progress = self._login_loader
+        self._login_loader = None
+        try:
+            progress.stop()
+        except Exception:
+            pass
+        try:
+            dialog.grab_release()
+        except Exception:
+            pass
+        try:
+            dialog.destroy()
+        except Exception:
+            pass
+
+    def _format_user_display_name(self, user):
+        raw_name = ""
+        for key in ("name", "full_name", "username", "email"):
+            value = str(user.get(key, "") or "").strip()
+            if value:
+                raw_name = value
+                break
+
+        if "@" in raw_name:
+            raw_name = raw_name.split("@", 1)[0]
+
+        cleaned = raw_name.replace(".", " ").replace("_", " ").strip()
+        return cleaned.title() if cleaned else "User"
+
+    def _cancel_pending_login_notice_timer(self):
+        if self._pending_login_notice_after is None:
+            return
+        try:
+            self.root.after_cancel(self._pending_login_notice_after)
+        except Exception:
+            pass
+        self._pending_login_notice_after = None
+
+    def _cancel_active_notice_timer(self):
+        if self._active_notice_after is None:
+            return
+        try:
+            self.root.after_cancel(self._active_notice_after)
+        except Exception:
+            pass
+        self._active_notice_after = None
+
+    def _show_pending_login_notice(self):
+        self._pending_login_notice_after = None
+        if not self._pending_login_notice:
+            return
+        title, message = self._pending_login_notice
+        self._pending_login_notice = None
+        self._show_notice(title, message, kind="success")
+
+    def _dismiss_active_notice(self):
+        if self._active_notice is None:
+            self._cancel_active_notice_timer()
+            return
+        self._dismiss_notice(self._active_notice)
+
+    def _dismiss_notice(self, notice):
+        if self._active_notice is notice:
+            self._cancel_active_notice_timer()
+            self._active_notice = None
+        try:
+            notice.destroy()
+        except Exception:
+            pass
+
+    def _show_delete_result_notice(
+        self, item_label, deleted_count, failed_count=0, duration_ms=3600
+    ):
+        label = str(item_label or "item").strip()
+        if failed_count and deleted_count:
+            self._show_notice(
+                f"{label.title()} Deletion Completed",
+                f"Deleted {deleted_count} {label}(s), but {failed_count} could not be removed.",
+                kind="info",
+                duration_ms=duration_ms,
+            )
+            return
+        if failed_count:
+            self._show_notice(
+                f"{label.title()} Delete Failed",
+                f"We could not delete {failed_count} {label}(s). Please try again.",
+                kind="error",
+                duration_ms=duration_ms,
+            )
+            return
+        self._show_notice(
+            f"{label.title()} Deleted",
+            f"Deleted {deleted_count} {label}(s) successfully.",
+            kind="success",
+            duration_ms=duration_ms,
+        )
+
+    def _confirm_delete_action(
+        self, item_label, count=1, scope="selected", details=None, parent=None
+    ):
+        label = str(item_label or "item").strip()
+        count = max(1, int(count or 1))
+        scope_key = str(scope or "selected").strip().lower()
+
+        if scope_key == "all":
+            prompt = f"Delete ALL {count} {label}(s)?"
+        elif count == 1:
+            prompt = f"Delete this {label}?"
+        else:
+            prompt = f"Delete {count} selected {label}(s)?"
+
+        lines = [prompt]
+        extra = str(details or "").strip()
+        if extra:
+            lines.extend(["", extra])
+        lines.extend(["", "This action cannot be undone."])
+        return messagebox.askyesno(
+            "Confirm Delete",
+            "\n".join(lines),
+            parent=parent or self.root,
+        )
+
+    def _show_notice(self, title, message, kind="success", duration_ms=3200):
+        if self._active_notice is not None:
+            self._dismiss_notice(self._active_notice)
+
+        # ── Kind config ─────────────────────────────────────────────
+        KIND_CFG = {
+            "success": {
+                "strip":    "#22c55e",
+                "icon":     "✓",
+                "title_fg": "#15803d",
+                "theme":    "mint",
+            },
+            "error": {
+                "strip":    "#ef4444",
+                "icon":     "✕",
+                "title_fg": "#b91c1c",
+                "theme":    "blossom",
+            },
+            "info": {
+                "strip":    "#3b82f6",
+                "icon":     "ℹ",
+                "title_fg": "#1d4ed8",
+                "theme":    "azure",
+            },
+            "warning": {
+                "strip":    "#f59e0b",
+                "icon":     "⚠",
+                "title_fg": "#b45309",
+                "theme":    "sand",
+            },
+        }
+        cfg = KIND_CFG.get(kind, KIND_CFG["info"])
+        border_bg, card_bg = _card_colors(cfg["theme"])
+
+        # ── Window ───────────────────────────────────────────────────
+        notice = tk.Toplevel(self.root)
+        notice.overrideredirect(True)
+        notice.configure(bg=border_bg)
+        try:
+            notice.attributes("-topmost", True)
+        except Exception:
+            pass
+
+        outer = tk.Frame(notice, bg=border_bg)
+        outer.pack()
+        card = tk.Frame(outer, bg=card_bg)
+        card.pack(padx=1, pady=1)
+
+        # Coloured left accent strip
+        tk.Frame(card, bg=cfg["strip"], width=5).pack(side="left", fill="y")
+
+        body = tk.Frame(card, bg=card_bg, padx=14, pady=11)
+        body.pack(side="left", fill="both", expand=True)
+
+        # Title row: icon • title text • × close
+        title_row = tk.Frame(body, bg=card_bg)
+        title_row.pack(fill="x")
+
+        tk.Label(
+            title_row,
+            text=cfg["icon"],
+            bg=card_bg,
+            fg=cfg["strip"],
+            font=(FF, 12, "bold"),
+        ).pack(side="left", padx=(0, 6))
+
+        tk.Label(
+            title_row,
+            text=title,
+            bg=card_bg,
+            fg=cfg["title_fg"],
+            font=(FF, 11, "bold"),
+            anchor="w",
+        ).pack(side="left", fill="x", expand=True)
+
+        close_lbl = tk.Label(
+            title_row,
+            text="×",
+            bg=card_bg,
+            fg=TEXT_SECONDARY,
+            font=(FF, 14, "bold"),
+            cursor="hand2",
+            padx=4,
+        )
+        close_lbl.pack(side="right")
+        close_lbl.bind("<Button-1>", lambda _e: self._dismiss_notice(notice))
+
+        # Optional message
+        msg_text = str(message or "").strip()
+        if msg_text:
+            tk.Label(
+                body,
+                text=msg_text,
+                bg=card_bg,
+                fg=TEXT_SECONDARY,
+                font=(FF, 9),
+                justify="left",
+                wraplength=250,
+                anchor="w",
+            ).pack(fill="x", pady=(4, 6))
+
+        # Shrinking progress bar
+        prog_bg = tk.Frame(body, bg="#dde1e7", height=3)
+        prog_bg.pack(fill="x", pady=(6, 0))
+        prog_bg.pack_propagate(False)
+        prog_bar = tk.Frame(prog_bg, bg=cfg["strip"])
+        prog_bar.place(relx=0, rely=0, relwidth=1.0, relheight=1.0)
+
+        # ── Position: bottom-right of main window ───────────────────
+        self.root.update_idletasks()
+        notice.update_idletasks()
+        nw = max(300, notice.winfo_reqwidth())
+        nh = notice.winfo_reqheight()
+        rx = self.root.winfo_rootx()
+        ry = self.root.winfo_rooty()
+        rw = self.root.winfo_width()
+        rh = self.root.winfo_height()
+        x = rx + rw - nw - 20
+        y = ry + rh - nh - 20
+        notice.geometry(f"{nw}x{nh}+{max(10, x)}+{max(10, y)}")
+
+        self._active_notice = notice
+        self._cancel_active_notice_timer()
+
+        # ── Animated progress bar ────────────────────────────────────
+        total_ms = max(1200, int(duration_ms or 3200))
+        steps = 60
+        step_ms = max(16, total_ms // steps)
+
+        def _shrink(step=0):
+            try:
+                if notice is not self._active_notice or not notice.winfo_exists():
+                    return
+                frac = 1.0 - step / steps
+                prog_bar.place(relwidth=max(0.0, frac))
+                if step < steps:
+                    self._active_notice_after = self.root.after(
+                        step_ms, lambda: _shrink(step + 1)
+                    )
+                else:
+                    self._dismiss_active_notice()
+            except Exception:
+                pass
+
+        _shrink()
+
+    def _complete_login_attempt(self, user, error=None):
+        self._login_in_progress = False
+        self._close_login_loader()
+
+        if error is not None:
+            messagebox.showerror(
+                "Login Failed",
+                f"Something went wrong while signing you in.\n\n{error}",
+            )
+            return
+
+        if user:
+            self.current_user = user
+            self.user_role = user.get("role", "admin")
+            display_name = self._format_user_display_name(user)
+            self._pending_login_notice = (
+                "Login Successful",
+                f"Welcome back, {display_name}. Your account is ready.",
+            )
+            self.show_main()
+            return
+
+        pwd_entry = self._auth_entries.get("password")
+        if isinstance(pwd_entry, tk.Entry):
+            pwd_entry.focus_set()
+            pwd_entry.selection_range(0, "end")
+
+        self._show_notice(
+            "Login Failed",
+            "We could not sign you in with those details.\n\n"
+            "Please check your email and password, then try again.\n\n"
+            "Default: admin / admin123",
+            kind="error",
+            duration_ms=4200,
+        )
 
     def set_level(self, level):
         """Set the current CBC level and update subjects/classes"""
@@ -2486,6 +3352,12 @@ class SchoolReportApp:
         self._topbar_clock_label = None
         self._topbar_bar = None
         self._topbar_clock_visible = True
+        self._login_in_progress = False
+        self._close_login_loader()
+        self._cancel_pending_login_notice_timer()
+        self._pending_login_notice = None
+        if self._active_notice is not None:
+            self._dismiss_notice(self._active_notice)
         for w in self.root.winfo_children():
             w.destroy()
 
@@ -2748,28 +3620,33 @@ class SchoolReportApp:
             tk.Frame(frame, bg=CARD_BG, height=24).pack()
 
     def _switch_tab(self, tab):
+        if self._login_in_progress:
+            return
         if self._auth_tab != tab:
             self._auth_tab = tab
             self._build_auth_card()
 
     def _do_login(self):
+        if self._login_in_progress:
+            return
+
         email = self._auth_entries.get("email", tk.Entry()).get().strip()
         pwd = self._auth_entries.get("password", tk.Entry()).get().strip()
         if not email or not pwd:
             messagebox.showerror("Error", "Please fill in all fields")
             return
-        user = db.authenticate(email, pwd)
-        if user:
-            self.current_user = user
-            # Get user's role
-            user_role = user.get("role", "admin")
-            self.user_role = user_role
-            self.show_main()
-        else:
-            messagebox.showerror(
-                "Login Failed",
-                "Invalid email or password.\n\nDefault: admin / admin123",
-            )
+
+        self._login_in_progress = True
+        self._schedule_login_loader()
+
+        def worker():
+            try:
+                user = db.authenticate(email, pwd)
+                self.root.after(0, self._complete_login_attempt, user)
+            except Exception as exc:
+                self.root.after(0, self._complete_login_attempt, None, exc)
+
+        threading.Thread(target=worker, daemon=True).start()
 
     def _do_register(self):
         name = self._auth_entries.get("name", tk.Entry()).get().strip()
@@ -2828,6 +3705,11 @@ class SchoolReportApp:
         self.content_frame = self.content
 
         self.show_dashboard()
+        if self._pending_login_notice:
+            self._cancel_pending_login_notice_timer()
+            self._pending_login_notice_after = self.root.after(
+                250, self._show_pending_login_notice
+            )
 
     # ─────────────────────── Top Navbar ────────────────────────────────────
     def _draw_topbar_icon(self, c, icon_type, bg):
@@ -4420,6 +5302,26 @@ class SchoolReportApp:
         ).pack(side="left", padx=5)
         tk.Button(
             toolbar,
+            text="📥 Template",
+            bg=ORANGE,
+            fg="white",
+            font=(FF, 10),
+            padx=12,
+            pady=5,
+            command=self.download_classes_import_template,
+        ).pack(side="left", padx=5)
+        tk.Button(
+            toolbar,
+            text="📥 Import Excel",
+            bg=BLUE,
+            fg="white",
+            font=(FF, 10),
+            padx=12,
+            pady=5,
+            command=lambda: self.import_classes_excel(on_complete=refresh_tree),
+        ).pack(side="left", padx=5)
+        tk.Button(
+            toolbar,
             text="Edit Selected",
             bg=BLUE,
             fg="white",
@@ -4457,6 +5359,16 @@ class SchoolReportApp:
             padx=12,
             pady=5,
             command=lambda: self._export_unified_classes_streams(tree),
+        ).pack(side="left", padx=5)
+        tk.Button(
+            toolbar,
+            text="🗑️ Delete ALL Classes",
+            bg="#c41e3a",
+            fg="white",
+            font=(FF, 10),
+            padx=12,
+            pady=5,
+            command=self._delete_all_classes_batch,
         ).pack(side="left", padx=5)
         tk.Button(
             toolbar,
@@ -4821,8 +5733,11 @@ class SchoolReportApp:
                 return
 
             total = len(class_ids) + len(stream_ids)
-            if not messagebox.askyesno(
-                "Confirm Delete", f"Delete {total} selected item(s)?"
+            if not self._confirm_delete_action(
+                "class/stream",
+                total,
+                scope="selected",
+                details="Selected classes will also remove their streams, students, marks, and assignments.",
             ):
                 return
 
@@ -4835,13 +5750,9 @@ class SchoolReportApp:
                 if not db.delete_stream(stream_id):
                     errors.append(f"Stream {stream_id[:8]}")
 
-            if errors:
-                messagebox.showerror(
-                    "Delete Failed",
-                    "Some items could not be deleted:\n" + "\n".join(errors[:10]),
-                )
-            else:
-                messagebox.showinfo("Deleted", f"Deleted {total} item(s).")
+            self._show_delete_result_notice(
+                "class/stream", total - len(errors), len(errors), duration_ms=4200
+            )
             refresh_tree()
 
         for col, text in [
@@ -4985,19 +5896,25 @@ class SchoolReportApp:
     def _delete_class(self, tree):
         selected = tree.selection()
         if not selected:
-            messagebox.showwarning("Select", "Please select a class to delete")
+            self._show_notice(
+                "Select Class", "Please select a class to delete.", kind="info"
+            )
             return
 
-        if not messagebox.askyesno("Confirm", "Delete this class?"):
+        if not self._confirm_delete_action(
+            "class",
+            1,
+            details="This will also remove the class streams, students, marks, and assignments.",
+        ):
             return
 
         class_id = selected[0]
 
         if db.delete_class(class_id):
-            messagebox.showinfo("Success", "Class deleted")
+            self._show_delete_result_notice("class", 1, 0)
             self._load_classes(tree)
         else:
-            messagebox.showerror("Error", "Failed to delete class")
+            self._show_delete_result_notice("class", 0, 1)
 
     def _build_streams_tab(self, parent):
         """Unified classes + streams view focused on streams."""
@@ -5141,6 +6058,326 @@ class SchoolReportApp:
         except Exception as exc:
             messagebox.showerror("Export Failed", f"Could not export CSV.\n\n{exc}")
 
+    def download_classes_import_template(self):
+        file_path = filedialog.asksaveasfilename(
+            title="Save Classes Template",
+            defaultextension=".xlsx",
+            filetypes=[("Excel files", "*.xlsx")],
+            initialfile="classes_import_template.xlsx",
+        )
+        if not file_path:
+            return
+
+        try:
+            rows = db.get_all_classes()
+            template_rows = []
+            for row in rows:
+                template_rows.append(
+                    {
+                        "class_name": row.get("name", ""),
+                        "level": row.get("level", ""),
+                        "stream": row.get("stream", "") or "",
+                        "abbreviation": row.get("abbreviation", "") or "",
+                    }
+                )
+            if not template_rows:
+                template_rows = [
+                    {
+                        "class_name": "Grade 1",
+                        "level": LEVELS[1] if len(LEVELS) > 1 else LEVELS[0],
+                        "stream": "",
+                        "abbreviation": "G1",
+                    }
+                ]
+
+            with pd.ExcelWriter(file_path, engine="openpyxl") as writer:
+                pd.DataFrame(
+                    {
+                        "Instructions": [
+                            "Use one row per class.",
+                            "stream is optional. If provided, the importer will add it under the class.",
+                            "If a class already exists, its level/abbreviation can be updated.",
+                            "Accepted levels are the same ones used in the app settings.",
+                        ]
+                    }
+                ).to_excel(writer, sheet_name="Instructions", index=False)
+                pd.DataFrame(template_rows).to_excel(
+                    writer, sheet_name="Classes", index=False
+                )
+
+            messagebox.showinfo(
+                "Template Ready", f"Classes template saved to:\n{file_path}"
+            )
+        except Exception as exc:
+            messagebox.showerror(
+                "Template Error", f"Could not create classes template.\n\n{exc}"
+            )
+
+    def import_classes_excel(self, on_complete=None):
+        file_path = filedialog.askopenfilename(
+            title="Import Classes Workbook",
+            filetypes=[("Excel files", "*.xlsx *.xls")],
+        )
+        if not file_path:
+            return
+
+        progress_dialog = None
+        try:
+            workbook = pd.read_excel(file_path, sheet_name=None)
+            if not isinstance(workbook, dict):
+                workbook = {"Classes": workbook}
+
+            aliases = {
+                "class_name": {"class_name", "class", "name", "grade"},
+                "level": {"level", "school_level"},
+                "stream": {"stream", "class_stream"},
+                "abbreviation": {"abbreviation", "abbr", "short_label", "short label"},
+            }
+
+            def clean(value):
+                text = str(value or "").strip()
+                return "" if text.lower() == "nan" else text
+
+            prepared_rows = []
+            for sheet_name, raw_df in workbook.items():
+                if raw_df is None or raw_df.empty:
+                    continue
+                df = raw_df.copy()
+                df.columns = [self._normalize_text(col) for col in df.columns]
+
+                def find_col(alias_key):
+                    return next(
+                        (col for col in df.columns if col in aliases[alias_key]), None
+                    )
+
+                name_col = find_col("class_name")
+                if not name_col:
+                    continue
+                level_col = find_col("level")
+                stream_col = find_col("stream")
+                abbr_col = find_col("abbreviation")
+
+                for idx, (_, row) in enumerate(df.iterrows(), start=2):
+                    class_name = clean(row.get(name_col, ""))
+                    level = clean(row.get(level_col, "")) if level_col else ""
+                    stream_name = clean(row.get(stream_col, "")) if stream_col else ""
+                    abbreviation = clean(row.get(abbr_col, "")) if abbr_col else ""
+                    if not any([class_name, level, stream_name, abbreviation]):
+                        continue
+                    prepared_rows.append(
+                        {
+                            "sheet": str(sheet_name),
+                            "row": idx,
+                            "class_name": class_name,
+                            "level": level,
+                            "stream_name": stream_name,
+                            "abbreviation": abbreviation,
+                        }
+                    )
+
+            if not prepared_rows:
+                messagebox.showwarning(
+                    "No Data",
+                    "No class rows were found in this workbook.\n\nExpected a column like class_name or class.",
+                )
+                return
+
+            progress_dialog, status_label, percent_label, progress = (
+                self._open_progress_dialog(
+                    "Importing Classes",
+                    "Preparing class import...",
+                    allow_cancel=True,
+                )
+            )
+
+            def ensure_not_cancelled():
+                if self._progress_cancel_requested(progress_dialog):
+                    raise ImportCancelledError(
+                        "Class import cancelled.\n\nAny classes or streams imported before cancellation were kept."
+                    )
+
+            def build_class_progress_details(
+                current_sheet="",
+                processed_rows=0,
+                total_rows_count=0,
+                classes_added=0,
+                classes_updated=0,
+                streams_added=0,
+                skipped_rows=0,
+            ):
+                detail_lines = []
+                if current_sheet:
+                    detail_lines.append(f"Sheet: {current_sheet}")
+                detail_lines.append(
+                    f"Rows processed: {processed_rows}/{total_rows_count}"
+                )
+                detail_lines.append(
+                    f"Classes added: {classes_added}   Updated: {classes_updated}"
+                )
+                detail_lines.append(
+                    f"Streams added: {streams_added}   Skipped: {skipped_rows}"
+                )
+                return "\n".join(detail_lines)
+
+            classes_added = 0
+            classes_updated = 0
+            streams_added = 0
+            skipped_rows = 0
+            runtime_skipped = []
+            total_rows = len(prepared_rows)
+
+            for index, item in enumerate(prepared_rows, start=1):
+                self._update_progress_dialog(
+                    progress_dialog,
+                    status_label,
+                    percent_label,
+                    progress,
+                    index - 1,
+                    total_rows,
+                    f"Importing class row {item['row']} from {item['sheet']}...",
+                    build_class_progress_details(
+                        current_sheet=item["sheet"],
+                        processed_rows=index - 1,
+                        total_rows_count=total_rows,
+                        classes_added=classes_added,
+                        classes_updated=classes_updated,
+                        streams_added=streams_added,
+                        skipped_rows=skipped_rows,
+                    ),
+                )
+                ensure_not_cancelled()
+
+                class_name = item["class_name"]
+                if not class_name:
+                    skipped_rows += 1
+                    runtime_skipped.append(
+                        f"{item['sheet']} row {item['row']}: class_name is required"
+                    )
+                    continue
+
+                existing = db.get_class_by_name(class_name)
+                resolved_level = (
+                    item["level"]
+                    or (existing.get("level", "") if existing else "")
+                    or self._determine_class_level(class_name)
+                    or (LEVELS[0] if LEVELS else "")
+                )
+                abbreviation = item["abbreviation"] or (
+                    existing.get("abbreviation", "") if existing else ""
+                )
+                stream_name = item["stream_name"]
+
+                if existing:
+                    needs_update = (
+                        resolved_level != existing.get("level", "")
+                        or (abbreviation or "") != (existing.get("abbreviation", "") or "")
+                    )
+                    if needs_update:
+                        success, msg = db.update_class(
+                            existing["id"],
+                            class_name,
+                            resolved_level,
+                            existing.get("stream", ""),
+                            abbreviation,
+                        )
+                        if success:
+                            classes_updated += 1
+                        else:
+                            skipped_rows += 1
+                            runtime_skipped.append(
+                                f"{item['sheet']} row {item['row']}: {msg}"
+                            )
+                            continue
+                    class_row = existing
+                else:
+                    success, msg = db.add_class(
+                        class_name, resolved_level, None, abbreviation
+                    )
+                    if not success:
+                        skipped_rows += 1
+                        runtime_skipped.append(
+                            f"{item['sheet']} row {item['row']}: {msg}"
+                        )
+                        continue
+                    classes_added += 1
+                    class_row = db.get_class_by_name(class_name)
+
+                if stream_name and class_row:
+                    existing_streams = {
+                        self._normalize_key(stream.get("name", ""))
+                        for stream in db.get_streams_for_class(class_row["id"])
+                    }
+                    if self._normalize_key(stream_name) not in existing_streams:
+                        success, msg = db.add_stream(stream_name, class_row["id"])
+                        if success:
+                            streams_added += 1
+                        else:
+                            skipped_rows += 1
+                            runtime_skipped.append(
+                                f"{item['sheet']} row {item['row']}: {msg}"
+                            )
+
+            self._update_progress_dialog(
+                progress_dialog,
+                status_label,
+                percent_label,
+                progress,
+                total_rows,
+                total_rows,
+                "Refreshing classes view...",
+                build_class_progress_details(
+                    processed_rows=total_rows,
+                    total_rows_count=total_rows,
+                    classes_added=classes_added,
+                    classes_updated=classes_updated,
+                    streams_added=streams_added,
+                    skipped_rows=skipped_rows,
+                ),
+            )
+            ensure_not_cancelled()
+
+            try:
+                progress_dialog.destroy()
+            except Exception:
+                pass
+
+            if callable(on_complete):
+                on_complete()
+            else:
+                self.show_settings_classes()
+
+            msg = (
+                "Classes workbook imported successfully.\n\n"
+                f"Classes added: {classes_added}\n"
+                f"Classes updated: {classes_updated}\n"
+                f"Streams added: {streams_added}"
+            )
+            if runtime_skipped:
+                preview = "\n".join(runtime_skipped[:12])
+                extra = (
+                    ""
+                    if len(runtime_skipped) <= 12
+                    else f"\n...and {len(runtime_skipped) - 12} more"
+                )
+                msg += f"\n\nSkipped rows: {len(runtime_skipped)}\n{preview}{extra}"
+            messagebox.showinfo("Import Complete", msg)
+        except ImportCancelledError as exc:
+            if progress_dialog is not None:
+                try:
+                    progress_dialog.destroy()
+                except Exception:
+                    pass
+            messagebox.showinfo("Import Cancelled", str(exc))
+        except Exception as exc:
+            if progress_dialog is not None:
+                try:
+                    progress_dialog.destroy()
+                except Exception:
+                    pass
+            messagebox.showerror(
+                "Import Error", f"Failed to import classes workbook:\n{exc}"
+            )
+
     def _build_subjects_tab(self, parent):
         toolbar = tk.Frame(parent, bg=CONTENT_BG)
         toolbar.pack(fill="x", pady=10)
@@ -5154,6 +6391,28 @@ class SchoolReportApp:
             padx=12,
             pady=5,
             command=lambda: self._open_subject_dialog(),
+        ).pack(side="left", padx=5)
+        tk.Button(
+            toolbar,
+            text="📥 Template",
+            bg=ORANGE,
+            fg="white",
+            font=(FF, 10),
+            padx=12,
+            pady=5,
+            command=self.download_subjects_import_template,
+        ).pack(side="left", padx=5)
+        tk.Button(
+            toolbar,
+            text="📥 Import Excel",
+            bg=BLUE,
+            fg="white",
+            font=(FF, 10),
+            padx=12,
+            pady=5,
+            command=lambda: self.import_subjects_excel(
+                on_complete=lambda: self._load_subjects(tree, search_var.get())
+            ),
         ).pack(side="left", padx=5)
         tk.Button(
             toolbar,
@@ -5214,6 +6473,16 @@ class SchoolReportApp:
             padx=12,
             pady=5,
             command=lambda: self._print_subjects_table(tree),
+        ).pack(side="left", padx=5)
+        tk.Button(
+            toolbar,
+            text="🗑️ Delete ALL Subjects",
+            bg="#c41e3a",
+            fg="white",
+            font=(FF, 10),
+            padx=12,
+            pady=5,
+            command=self._delete_all_subjects_batch,
         ).pack(side="left", padx=5)
         tk.Button(
             toolbar,
@@ -5451,6 +6720,315 @@ class SchoolReportApp:
         except Exception as exc:
             messagebox.showerror(
                 "Export Failed", f"Could not export subjects.\n\n{exc}"
+            )
+
+    def download_subjects_import_template(self):
+        file_path = filedialog.asksaveasfilename(
+            title="Save Subjects Template",
+            defaultextension=".xlsx",
+            filetypes=[("Excel files", "*.xlsx")],
+            initialfile="subjects_import_template.xlsx",
+        )
+        if not file_path:
+            return
+
+        try:
+            rows = db.get_subjects_by_level()
+            template_rows = []
+            for row in rows:
+                template_rows.append(
+                    {
+                        "code": row.get("code", "") or row.get("abbreviation", "") or "",
+                        "name": row.get("name", ""),
+                        "abbreviation": row.get("abbreviation", "") or "",
+                        "level": row.get("level", ""),
+                        "category": row.get("category", "") or "Core",
+                        "optional": "Yes" if row.get("is_optional") else "No",
+                    }
+                )
+            if not template_rows:
+                template_rows = [
+                    {
+                        "code": "MAT",
+                        "name": "Mathematics",
+                        "abbreviation": "MAT",
+                        "level": LEVELS[1] if len(LEVELS) > 1 else LEVELS[0],
+                        "category": "Core",
+                        "optional": "No",
+                    }
+                ]
+
+            with pd.ExcelWriter(file_path, engine="openpyxl") as writer:
+                pd.DataFrame(
+                    {
+                        "Instructions": [
+                            "Use one row per subject.",
+                            "code and name are recommended. If abbreviation is blank, code will be reused.",
+                            "optional accepts values like Yes, No, True, False, 1, or 0.",
+                            "If a subject with the same name and level already exists, the importer updates it.",
+                        ]
+                    }
+                ).to_excel(writer, sheet_name="Instructions", index=False)
+                pd.DataFrame(template_rows).to_excel(
+                    writer, sheet_name="Subjects", index=False
+                )
+
+            messagebox.showinfo(
+                "Template Ready", f"Subjects template saved to:\n{file_path}"
+            )
+        except Exception as exc:
+            messagebox.showerror(
+                "Template Error", f"Could not create subjects template.\n\n{exc}"
+            )
+
+    def import_subjects_excel(self, on_complete=None):
+        file_path = filedialog.askopenfilename(
+            title="Import Subjects Workbook",
+            filetypes=[("Excel files", "*.xlsx *.xls")],
+        )
+        if not file_path:
+            return
+
+        progress_dialog = None
+        try:
+            workbook = pd.read_excel(file_path, sheet_name=None)
+            if not isinstance(workbook, dict):
+                workbook = {"Subjects": workbook}
+
+            aliases = {
+                "code": {"code", "subject_code", "subject code"},
+                "name": {"name", "subject", "subject_name", "subject name"},
+                "abbreviation": {"abbreviation", "abbr", "short_label", "short label"},
+                "level": {"level", "subject_level"},
+                "category": {"category", "type"},
+                "optional": {"optional", "is_optional", "is optional"},
+            }
+
+            def clean(value):
+                text = str(value or "").strip()
+                return "" if text.lower() == "nan" else text
+
+            def parse_bool(value):
+                normalized = clean(value).lower()
+                return normalized in {"1", "true", "yes", "y", "optional"}
+
+            prepared_rows = []
+            for sheet_name, raw_df in workbook.items():
+                if raw_df is None or raw_df.empty:
+                    continue
+                df = raw_df.copy()
+                df.columns = [self._normalize_text(col) for col in df.columns]
+
+                def find_col(alias_key):
+                    return next(
+                        (col for col in df.columns if col in aliases[alias_key]), None
+                    )
+
+                name_col = find_col("name")
+                if not name_col:
+                    continue
+                code_col = find_col("code")
+                abbr_col = find_col("abbreviation")
+                level_col = find_col("level")
+                category_col = find_col("category")
+                optional_col = find_col("optional")
+
+                for idx, (_, row) in enumerate(df.iterrows(), start=2):
+                    name = clean(row.get(name_col, ""))
+                    code = clean(row.get(code_col, "")) if code_col else ""
+                    abbreviation = clean(row.get(abbr_col, "")) if abbr_col else ""
+                    level = clean(row.get(level_col, "")) if level_col else ""
+                    category = clean(row.get(category_col, "")) if category_col else ""
+                    optional = parse_bool(row.get(optional_col, "")) if optional_col else False
+                    if not any([name, code, abbreviation, level, category]):
+                        continue
+                    prepared_rows.append(
+                        {
+                            "sheet": str(sheet_name),
+                            "row": idx,
+                            "name": name,
+                            "code": code.upper(),
+                            "abbreviation": abbreviation.upper(),
+                            "level": level,
+                            "category": category,
+                            "is_optional": optional,
+                        }
+                    )
+
+            if not prepared_rows:
+                messagebox.showwarning(
+                    "No Data",
+                    "No subject rows were found in this workbook.\n\nExpected a column like name or subject_name.",
+                )
+                return
+
+            progress_dialog, status_label, percent_label, progress = (
+                self._open_progress_dialog(
+                    "Importing Subjects",
+                    "Preparing subject import...",
+                    allow_cancel=True,
+                )
+            )
+
+            def ensure_not_cancelled():
+                if self._progress_cancel_requested(progress_dialog):
+                    raise ImportCancelledError(
+                        "Subject import cancelled.\n\nAny subjects imported before cancellation were kept."
+                    )
+
+            def build_subject_progress_details(
+                current_sheet="",
+                processed_rows=0,
+                total_rows_count=0,
+                added=0,
+                updated=0,
+                skipped=0,
+            ):
+                detail_lines = []
+                if current_sheet:
+                    detail_lines.append(f"Sheet: {current_sheet}")
+                detail_lines.append(
+                    f"Rows processed: {processed_rows}/{total_rows_count}"
+                )
+                detail_lines.append(f"Subjects added: {added}   Updated: {updated}")
+                detail_lines.append(f"Skipped: {skipped}")
+                return "\n".join(detail_lines)
+
+            added = 0
+            updated = 0
+            skipped = 0
+            runtime_skipped = []
+            total_rows = len(prepared_rows)
+
+            for index, item in enumerate(prepared_rows, start=1):
+                self._update_progress_dialog(
+                    progress_dialog,
+                    status_label,
+                    percent_label,
+                    progress,
+                    index - 1,
+                    total_rows,
+                    f"Importing subject row {item['row']} from {item['sheet']}...",
+                    build_subject_progress_details(
+                        current_sheet=item["sheet"],
+                        processed_rows=index - 1,
+                        total_rows_count=total_rows,
+                        added=added,
+                        updated=updated,
+                        skipped=skipped,
+                    ),
+                )
+                ensure_not_cancelled()
+
+                name = item["name"]
+                if not name:
+                    skipped += 1
+                    runtime_skipped.append(
+                        f"{item['sheet']} row {item['row']}: subject name is required"
+                    )
+                    continue
+
+                level = item["level"] or (
+                    self.current_level if self.current_level in LEVELS else LEVELS[0]
+                )
+                category = item["category"] or "Core"
+                code = item["code"] or item["abbreviation"] or self._generate_short_label(
+                    name, "subject"
+                )
+                abbreviation = item["abbreviation"] or code
+                existing = db.get_subject_by_name(name, level)
+
+                if existing:
+                    success, msg = db.update_subject(
+                        existing["id"],
+                        name,
+                        level,
+                        category,
+                        item["is_optional"],
+                        abbreviation,
+                        code,
+                    )
+                    if success:
+                        updated += 1
+                    else:
+                        skipped += 1
+                        runtime_skipped.append(
+                            f"{item['sheet']} row {item['row']}: {msg}"
+                        )
+                else:
+                    success, msg = db.add_subject(
+                        name,
+                        level,
+                        category,
+                        item["is_optional"],
+                        abbreviation,
+                        code,
+                    )
+                    if success:
+                        added += 1
+                    else:
+                        skipped += 1
+                        runtime_skipped.append(
+                            f"{item['sheet']} row {item['row']}: {msg}"
+                        )
+
+            self._update_progress_dialog(
+                progress_dialog,
+                status_label,
+                percent_label,
+                progress,
+                total_rows,
+                total_rows,
+                "Refreshing subjects view...",
+                build_subject_progress_details(
+                    processed_rows=total_rows,
+                    total_rows_count=total_rows,
+                    added=added,
+                    updated=updated,
+                    skipped=skipped,
+                ),
+            )
+            ensure_not_cancelled()
+
+            try:
+                progress_dialog.destroy()
+            except Exception:
+                pass
+
+            if callable(on_complete):
+                on_complete()
+            else:
+                self.show_settings_subjects()
+
+            msg = (
+                "Subjects workbook imported successfully.\n\n"
+                f"Subjects added: {added}\n"
+                f"Subjects updated: {updated}"
+            )
+            if runtime_skipped:
+                preview = "\n".join(runtime_skipped[:12])
+                extra = (
+                    ""
+                    if len(runtime_skipped) <= 12
+                    else f"\n...and {len(runtime_skipped) - 12} more"
+                )
+                msg += f"\n\nSkipped rows: {len(runtime_skipped)}\n{preview}{extra}"
+            messagebox.showinfo("Import Complete", msg)
+        except ImportCancelledError as exc:
+            if progress_dialog is not None:
+                try:
+                    progress_dialog.destroy()
+                except Exception:
+                    pass
+            messagebox.showinfo("Import Cancelled", str(exc))
+        except Exception as exc:
+            if progress_dialog is not None:
+                try:
+                    progress_dialog.destroy()
+                except Exception:
+                    pass
+            messagebox.showerror(
+                "Import Error", f"Failed to import subjects workbook:\n{exc}"
             )
 
     def _print_subjects_table(self, tree):
@@ -6036,12 +7614,17 @@ class SchoolReportApp:
     def _delete_subject(self, tree):
         selected = list(tree.selection())
         if not selected:
-            messagebox.showwarning(
-                "Select", "Please select one or more subjects to delete"
+            self._show_notice(
+                "Select Subjects",
+                "Please select one or more subjects to delete.",
+                kind="info",
             )
             return
-        if not messagebox.askyesno(
-            "Confirm", f"Delete {len(selected)} selected subject(s)?"
+        if not self._confirm_delete_action(
+            "subject",
+            len(selected),
+            scope="selected",
+            details="This will also remove marks and teacher assignments linked to those subjects.",
         ):
             return
         failures = 0
@@ -6049,8 +7632,9 @@ class SchoolReportApp:
             if not db.delete_subject(subject_id):
                 failures += 1
         self._load_subjects(tree)
-        if failures:
-            messagebox.showerror("Error", f"Failed to delete {failures} subject(s).")
+        self._show_delete_result_notice(
+            "subject", len(selected) - failures, failures, duration_ms=4200
+        )
 
     def _reset_subject_catalog(self, tree):
         if not messagebox.askyesno(
@@ -6395,18 +7979,21 @@ class SchoolReportApp:
     def _remove_assignment_from_tree(self, tree, reload_callback=None):
         selected = tree.selection()
         if not selected:
-            messagebox.showwarning(
-                "Select Assignment", "Please select an assignment to remove"
+            self._show_notice(
+                "Select Assignment",
+                "Please select an assignment to remove.",
+                kind="info",
             )
             return
-        if not messagebox.askyesno("Confirm", "Remove selected assignment?"):
+        if not self._confirm_delete_action("assignment"):
             return
         assignment_id = selected[0]
         if db.remove_assignment(assignment_id):
             if callable(reload_callback):
                 reload_callback()
+            self._show_delete_result_notice("assignment", 1, 0)
         else:
-            messagebox.showerror("Error", "Failed to remove assignment")
+            self._show_delete_result_notice("assignment", 0, 1)
 
     def _normalize_teacher_import_role(self, value):
         role_key = self._normalize_key(value)
@@ -6958,6 +8545,7 @@ class SchoolReportApp:
         if not file_path:
             return
 
+        progress_dialog = None
         try:
             workbook = pd.ExcelFile(file_path)
             sheet_lookup = {
@@ -7005,6 +8593,71 @@ class SchoolReportApp:
                 )
                 return
 
+            teachers_df = workbook.parse(teachers_sheet) if teachers_sheet else None
+            subject_df = workbook.parse(subject_sheet) if subject_sheet else None
+            class_df = workbook.parse(class_sheet) if class_sheet else None
+            for df in (teachers_df, subject_df, class_df):
+                if df is not None:
+                    df.columns = [self._normalize_key(col) for col in df.columns]
+
+            total_input_rows = sum(
+                len(df.index)
+                for df in (teachers_df, subject_df, class_df)
+                if df is not None
+            )
+            progress_dialog, status_label, percent_label, progress = (
+                self._open_progress_dialog(
+                    "Importing Teachers",
+                    "Preparing teacher import...",
+                    allow_cancel=True,
+                )
+            )
+
+            def ensure_not_cancelled():
+                if self._progress_cancel_requested(progress_dialog):
+                    raise ImportCancelledError(
+                        "Teacher import cancelled.\n\nAny records already imported before cancellation were kept."
+                    )
+
+            def build_teacher_progress_details(
+                current_sheet="",
+                analyzed_rows=0,
+                total_rows_count=0,
+                ready_rows=0,
+                skipped_rows=0,
+                teachers_added=0,
+                teachers_updated=0,
+                subject_links=0,
+                class_links=0,
+            ):
+                detail_lines = []
+                if current_sheet:
+                    detail_lines.append(f"Sheet: {current_sheet}")
+                if total_rows_count:
+                    detail_lines.append(
+                        f"Rows analyzed: {analyzed_rows}/{total_rows_count}"
+                    )
+                detail_lines.append(f"Ready: {ready_rows}   Skipped: {skipped_rows}")
+                detail_lines.append(
+                    f"Teachers added: {teachers_added}   Updated: {teachers_updated}"
+                )
+                detail_lines.append(
+                    f"Subject links: {subject_links}   Grade Facilitators: {class_links}"
+                )
+                return "\n".join(detail_lines)
+
+            def update_teacher_import_progress(percent_value, message, details):
+                self._update_progress_dialog(
+                    progress_dialog,
+                    status_label,
+                    percent_label,
+                    progress,
+                    max(0, min(100, int(percent_value))),
+                    100,
+                    message,
+                    details,
+                )
+
             def clean(value):
                 if pd.isna(value):
                     return ""
@@ -7024,17 +8677,28 @@ class SchoolReportApp:
             subject_actions = []
             class_actions = []
             total_rows = 0
+            analyzed_rows = 0
+            ready_rows = 0
+            skipped_rows = 0
 
             teacher_lookup = self._build_teacher_import_lookup()
 
-            if teachers_sheet:
-                teachers_df = workbook.parse(teachers_sheet)
-                teachers_df.columns = [
-                    self._normalize_key(col) for col in teachers_df.columns
-                ]
-
+            if teachers_df is not None:
                 for idx, row in teachers_df.iterrows():
                     total_rows += 1
+                    analyzed_rows += 1
+                    update_teacher_import_progress(
+                        int((analyzed_rows / max(1, total_input_rows)) * 35),
+                        f"Analyzing teacher row {idx + 2}...",
+                        build_teacher_progress_details(
+                            current_sheet=teachers_sheet,
+                            analyzed_rows=analyzed_rows,
+                            total_rows_count=total_input_rows,
+                            ready_rows=ready_rows,
+                            skipped_rows=skipped_rows,
+                        ),
+                    )
+                    ensure_not_cancelled()
                     full_name = pick(row, "fullname", "name")
                     username = pick(row, "username", "teacherusername")
                     role = self._normalize_teacher_import_role(
@@ -7056,6 +8720,7 @@ class SchoolReportApp:
                                 "details": "full_name and username are required",
                             }
                         )
+                        skipped_rows += 1
                         continue
 
                     existing = self._find_teacher_for_import(username, teacher_lookup)
@@ -7070,6 +8735,7 @@ class SchoolReportApp:
                             "details": f"Role: {role}, Label: {abbreviation or '-'}",
                         }
                     )
+                    ready_rows += 1
                     teacher_actions.append(
                         {
                             "mode": "update" if existing else "add",
@@ -7094,14 +8760,22 @@ class SchoolReportApp:
                         },
                     )
 
-            if subject_sheet:
-                subject_df = workbook.parse(subject_sheet)
-                subject_df.columns = [
-                    self._normalize_key(col) for col in subject_df.columns
-                ]
-
+            if subject_df is not None:
                 for idx, row in subject_df.iterrows():
                     total_rows += 1
+                    analyzed_rows += 1
+                    update_teacher_import_progress(
+                        int((analyzed_rows / max(1, total_input_rows)) * 35),
+                        f"Analyzing subject assignment row {idx + 2}...",
+                        build_teacher_progress_details(
+                            current_sheet=subject_sheet,
+                            analyzed_rows=analyzed_rows,
+                            total_rows_count=total_input_rows,
+                            ready_rows=ready_rows,
+                            skipped_rows=skipped_rows,
+                        ),
+                    )
+                    ensure_not_cancelled()
                     teacher_ref = pick(row, "teacherusername", "username", "teacher")
                     raw_class = pick(row, "class", "classname")
                     raw_stream = pick(row, "stream", "classstream")
@@ -7120,6 +8794,7 @@ class SchoolReportApp:
                                 "details": "teacher_username, class, and subject are required",
                             }
                         )
+                        skipped_rows += 1
                         continue
 
                     teacher = self._find_teacher_for_import(teacher_ref, teacher_lookup)
@@ -7140,6 +8815,7 @@ class SchoolReportApp:
                                 "details": f'Unknown class "{raw_class}"',
                             }
                         )
+                        skipped_rows += 1
                         continue
                     if not teacher:
                         preview_rows.append(
@@ -7152,6 +8828,7 @@ class SchoolReportApp:
                                 "details": f'Teacher "{teacher_ref}" not found',
                             }
                         )
+                        skipped_rows += 1
                         continue
                     if raw_stream and not stream_name:
                         preview_rows.append(
@@ -7164,6 +8841,7 @@ class SchoolReportApp:
                                 "details": f'Stream "{raw_stream}" not found in {class_name}',
                             }
                         )
+                        skipped_rows += 1
                         continue
 
                     subject_name = self._map_sheet_subject(raw_subject, class_name)
@@ -7182,6 +8860,7 @@ class SchoolReportApp:
                                 "details": f'Subject "{raw_subject}" not valid for {class_name}',
                             }
                         )
+                        skipped_rows += 1
                         continue
 
                     preview_rows.append(
@@ -7194,6 +8873,7 @@ class SchoolReportApp:
                             "details": subject_name,
                         }
                     )
+                    ready_rows += 1
                     subject_actions.append(
                         {
                             "sheet": subject_sheet,
@@ -7205,14 +8885,22 @@ class SchoolReportApp:
                         }
                     )
 
-            if class_sheet:
-                class_df = workbook.parse(class_sheet)
-                class_df.columns = [
-                    self._normalize_key(col) for col in class_df.columns
-                ]
-
+            if class_df is not None:
                 for idx, row in class_df.iterrows():
                     total_rows += 1
+                    analyzed_rows += 1
+                    update_teacher_import_progress(
+                        int((analyzed_rows / max(1, total_input_rows)) * 35),
+                        f"Analyzing Grade Facilitator row {idx + 2}...",
+                        build_teacher_progress_details(
+                            current_sheet=class_sheet,
+                            analyzed_rows=analyzed_rows,
+                            total_rows_count=total_input_rows,
+                            ready_rows=ready_rows,
+                            skipped_rows=skipped_rows,
+                        ),
+                    )
+                    ensure_not_cancelled()
                     teacher_ref = pick(row, "teacherusername", "username", "teacher")
                     raw_class = pick(row, "class", "classname")
                     raw_stream = pick(row, "stream", "classstream")
@@ -7230,6 +8918,7 @@ class SchoolReportApp:
                                 "details": "teacher_username and class are required",
                             }
                         )
+                        skipped_rows += 1
                         continue
 
                     teacher = self._find_teacher_for_import(teacher_ref, teacher_lookup)
@@ -7250,6 +8939,7 @@ class SchoolReportApp:
                                 "details": f'Unknown class "{raw_class}"',
                             }
                         )
+                        skipped_rows += 1
                         continue
                     if not teacher:
                         preview_rows.append(
@@ -7262,6 +8952,7 @@ class SchoolReportApp:
                                 "details": f'Teacher "{teacher_ref}" not found',
                             }
                         )
+                        skipped_rows += 1
                         continue
                     if raw_stream and not stream_name:
                         preview_rows.append(
@@ -7274,6 +8965,7 @@ class SchoolReportApp:
                                 "details": f'Stream "{raw_stream}" not found in {class_name}',
                             }
                         )
+                        skipped_rows += 1
                         continue
 
                     preview_rows.append(
@@ -7286,6 +8978,7 @@ class SchoolReportApp:
                             "details": "Will replace current Grade Facilitator for this class/stream",
                         }
                     )
+                    ready_rows += 1
                     class_actions.append(
                         {
                             "sheet": class_sheet,
@@ -7306,28 +8999,17 @@ class SchoolReportApp:
                 name for name in [teachers_sheet, subject_sheet, class_sheet] if name
             ]
             if not preview_rows:
+                if progress_dialog is not None:
+                    try:
+                        progress_dialog.destroy()
+                    except Exception:
+                        pass
                 messagebox.showwarning(
                     "No Data",
                     "No teacher rows or assignment rows were found in the workbook.",
                 )
                 return
 
-            if not self._show_teacher_import_preview_dialog(
-                preview_rows,
-                {
-                    "total_rows": total_rows,
-                    "valid_rows": valid_rows,
-                    "skipped_rows": skipped_rows,
-                    "sheet_summary": ", ".join(sheet_names),
-                },
-            ):
-                return
-
-            progress_dialog, status_label, percent_label, progress = (
-                self._open_progress_dialog(
-                    "Importing Teachers", "Preparing teacher import..."
-                )
-            )
             total_actions = max(
                 1, len(teacher_actions) + len(subject_actions) + len(class_actions)
             )
@@ -7340,15 +9022,22 @@ class SchoolReportApp:
 
             for action in teacher_actions:
                 processed += 1
-                self._update_progress_dialog(
-                    progress_dialog,
-                    status_label,
-                    percent_label,
-                    progress,
-                    processed,
-                    total_actions,
+                update_teacher_import_progress(
+                    35 + int((processed / total_actions) * 65),
                     f"Processing teacher row {action['row']} ({processed}/{total_actions})",
+                    build_teacher_progress_details(
+                        current_sheet=action["sheet"],
+                        analyzed_rows=analyzed_rows,
+                        total_rows_count=total_input_rows,
+                        ready_rows=valid_rows,
+                        skipped_rows=skipped_rows,
+                        teachers_added=teachers_added,
+                        teachers_updated=teachers_updated,
+                        subject_links=subject_links,
+                        class_links=class_links,
+                    ),
                 )
+                ensure_not_cancelled()
                 if action["mode"] == "update":
                     success, msg = db.update_teacher(
                         action["teacher_id"],
@@ -7383,15 +9072,22 @@ class SchoolReportApp:
 
             for action in subject_actions:
                 processed += 1
-                self._update_progress_dialog(
-                    progress_dialog,
-                    status_label,
-                    percent_label,
-                    progress,
-                    processed,
-                    total_actions,
+                update_teacher_import_progress(
+                    35 + int((processed / total_actions) * 65),
                     f"Processing subject assignment row {action['row']} ({processed}/{total_actions})",
+                    build_teacher_progress_details(
+                        current_sheet=action["sheet"],
+                        analyzed_rows=analyzed_rows,
+                        total_rows_count=total_input_rows,
+                        ready_rows=valid_rows,
+                        skipped_rows=skipped_rows,
+                        teachers_added=teachers_added,
+                        teachers_updated=teachers_updated,
+                        subject_links=subject_links,
+                        class_links=class_links,
+                    ),
                 )
+                ensure_not_cancelled()
                 teacher = self._find_teacher_for_import(
                     action["teacher_username"], teacher_lookup
                 )
@@ -7414,15 +9110,22 @@ class SchoolReportApp:
 
             for action in class_actions:
                 processed += 1
-                self._update_progress_dialog(
-                    progress_dialog,
-                    status_label,
-                    percent_label,
-                    progress,
-                    processed,
-                    total_actions,
+                update_teacher_import_progress(
+                    35 + int((processed / total_actions) * 65),
                     f"Processing Grade Facilitator row {action['row']} ({processed}/{total_actions})",
+                    build_teacher_progress_details(
+                        current_sheet=action["sheet"],
+                        analyzed_rows=analyzed_rows,
+                        total_rows_count=total_input_rows,
+                        ready_rows=valid_rows,
+                        skipped_rows=skipped_rows,
+                        teachers_added=teachers_added,
+                        teachers_updated=teachers_updated,
+                        subject_links=subject_links,
+                        class_links=class_links,
+                    ),
                 )
+                ensure_not_cancelled()
                 teacher = self._find_teacher_for_import(
                     action["teacher_username"], teacher_lookup
                 )
@@ -7439,6 +9142,22 @@ class SchoolReportApp:
                     runtime_skipped.append(
                         f"{action['sheet']} row {action['row']}: could not save assignment"
                     )
+
+            update_teacher_import_progress(
+                100,
+                "Refreshing teacher view...",
+                build_teacher_progress_details(
+                    analyzed_rows=analyzed_rows,
+                    total_rows_count=total_input_rows,
+                    ready_rows=valid_rows,
+                    skipped_rows=skipped_rows,
+                    teachers_added=teachers_added,
+                    teachers_updated=teachers_updated,
+                    subject_links=subject_links,
+                    class_links=class_links,
+                ),
+            )
+            ensure_not_cancelled()
 
             try:
                 progress_dialog.destroy()
@@ -7471,7 +9190,19 @@ class SchoolReportApp:
                 )
                 msg += f"\n\nSkipped rows: {len(skipped_messages)}\n{preview}{extra}"
             messagebox.showinfo("Import Complete", msg)
+        except ImportCancelledError as exc:
+            if progress_dialog is not None:
+                try:
+                    progress_dialog.destroy()
+                except Exception:
+                    pass
+            messagebox.showinfo("Import Cancelled", str(exc))
         except Exception as exc:
+            if progress_dialog is not None:
+                try:
+                    progress_dialog.destroy()
+                except Exception:
+                    pass
             messagebox.showerror(
                 "Import Error", f"Failed to import teacher workbook:\n{exc}"
             )
@@ -7938,14 +9669,19 @@ class SchoolReportApp:
     def _delete_grading_scale(self, tree, class_name):
         selected = tree.selection()
         if not selected:
-            messagebox.showwarning("Select", "Please select a grading band to delete")
+            self._show_notice(
+                "Select Grading Band",
+                "Please select a grading band to delete.",
+                kind="info",
+            )
             return
-        if not messagebox.askyesno("Confirm", "Delete this grading band?"):
+        if not self._confirm_delete_action("grading band"):
             return
         if db.delete_grading_scale(selected[0]):
             self._load_grading_scale_tree(tree, class_name)
+            self._show_delete_result_notice("grading band", 1, 0)
         else:
-            messagebox.showerror("Error", "Failed to delete grading band")
+            self._show_delete_result_notice("grading band", 0, 1)
 
     def _build_assignments_tab(self, parent):
         """Build teacher assignments tab"""
@@ -8472,6 +10208,38 @@ class SchoolReportApp:
         ).pack(side="left", padx=5)
         tk.Button(
             toolbar,
+            text="Delete Selected",
+            bg="#d9534f",
+            fg="white",
+            font=(FF, 10),
+            padx=15,
+            pady=5,
+            command=lambda: self._delete_teacher(
+                tree, reload_callback=self.show_teachers
+            ),
+        ).pack(side="left", padx=5)
+        tk.Button(
+            toolbar,
+            text="Select All Filtered",
+            bg="#0f766e",
+            fg="white",
+            font=(FF, 10),
+            padx=15,
+            pady=5,
+            command=lambda: self.teachers_table.select_all_filtered(),
+        ).pack(side="left", padx=5)
+        tk.Button(
+            toolbar,
+            text="Clear Selection",
+            bg="#64748b",
+            fg="white",
+            font=(FF, 10),
+            padx=15,
+            pady=5,
+            command=lambda: self.teachers_table.clear_selection(),
+        ).pack(side="left", padx=5)
+        tk.Button(
+            toolbar,
             text="Template",
             bg=ORANGE,
             fg="white",
@@ -8501,6 +10269,16 @@ class SchoolReportApp:
             command=lambda: self.import_teachers_excel(on_complete=self.show_teachers),
         ).pack(side="left", padx=5)
 
+        tk.Button(
+            toolbar,
+            text="🗑️ Delete All Teachers",
+            bg="#e74c3c",
+            fg="white",
+            font=(FF, 10),
+            padx=15,
+            pady=5,
+            command=self._delete_all_teachers_batch,
+        ).pack(side="left", padx=5)
         tk.Button(
             toolbar,
             text="Refresh",
@@ -8887,16 +10665,24 @@ class SchoolReportApp:
         ).pack(side="left")
 
     def _delete_teacher(self, tree, reload_callback=None):
-        selected = list(tree.selection())
+        selected = (
+            self.teachers_table.get_selected_iids()
+            if hasattr(self, "teachers_table")
+            else list(tree.selection())
+        )
         if not selected:
-            messagebox.showwarning(
-                "Select Teacher", "Please select one or more teachers to delete"
+            self._show_notice(
+                "Select Teachers",
+                "Please select one or more teachers to delete.",
+                kind="info",
             )
             return
 
-        if not messagebox.askyesno(
-            "Confirm Delete",
-            f"Are you sure you want to delete {len(selected)} selected teacher(s)?",
+        if not self._confirm_delete_action(
+            "teacher",
+            len(selected),
+            scope="selected",
+            details="This will also remove the selected teachers' assignments.",
         ):
             return
 
@@ -8910,12 +10696,177 @@ class SchoolReportApp:
         else:
             self.show_teachers()
 
-        if failed:
-            messagebox.showerror("Error", f"Failed to delete {failed} teacher(s).")
-        else:
-            messagebox.showinfo(
-                "Success", f"Deleted {len(selected)} teacher(s) successfully."
+        self._show_delete_result_notice(
+            "teacher", len(selected) - failed, failed, duration_ms=4200
+        )
+
+    # ─────────────────────────── BATCH DELETION METHODS ───────────────────────────
+    def _delete_all_marks_for_term(self):
+        """Delete all marks for selected term and exam type with confirmation."""
+        if not hasattr(self, 'marks_term_cb') or not hasattr(self, 'marks_exam_cb'):
+            messagebox.showwarning("Not Available", "Navigate to Enter Marks first")
+            return
+        
+        term = self.marks_term_cb.get()
+        exam_type = self.marks_exam_cb.get()
+        
+        if not term or not exam_type:
+            messagebox.showwarning("Select Values", "Please select Term and Exam Type")
+            return
+        
+        if not self._confirm_delete_action(
+            "mark record",
+            1,
+            scope="all",
+            details=f"Term: {term}\nExam Type: {exam_type}",
+        ):
+            return
+        
+        success, message = db.clear_all_marks(term, exam_type)
+        if success:
+            self._show_notice(
+                "Marks Deleted", message, kind="success", duration_ms=4200
             )
+            self._load_marks_table()
+        else:
+            self._show_notice("Delete Failed", message, kind="error", duration_ms=4200)
+
+    def _delete_all_teachers_batch(self):
+        """Delete ALL teachers with confirmation."""
+        teachers = db.get_all_teachers()
+        if not teachers:
+            self._show_notice(
+                "No Teachers", "No teachers to delete.", kind="info", duration_ms=2800
+            )
+            return
+        
+        teacher_count = len(teachers)
+        if not self._confirm_delete_action(
+            "teacher",
+            teacher_count,
+            scope="all",
+            details="This will remove all teacher assignments.",
+        ):
+            return
+        
+        success, message = db.delete_all_teachers()
+        if success:
+            self._show_notice(
+                "Teachers Deleted", message, kind="success", duration_ms=4200
+            )
+            self.show_teachers()
+        else:
+            self._show_notice(
+                "Delete Failed", message, kind="error", duration_ms=4200
+            )
+
+    def _delete_all_subjects_batch(self):
+        """Delete ALL subjects with confirmation."""
+        subjects = db.get_subjects_by_level()
+        if not subjects:
+            self._show_notice(
+                "No Subjects", "No subjects to delete.", kind="info", duration_ms=2800
+            )
+            return
+        
+        subject_count = len(subjects)
+        if not self._confirm_delete_action(
+            "subject",
+            subject_count,
+            scope="all",
+            details="This will remove associated marks and teacher assignments.",
+        ):
+            return
+        
+        success, message = db.delete_all_subjects()
+        if success:
+            self._show_notice(
+                "Subjects Deleted", message, kind="success", duration_ms=4200
+            )
+            self.show_settings(initial_tab="subjects", nav_label="Subjects", show_tabs=False)
+        else:
+            self._show_notice(
+                "Delete Failed", message, kind="error", duration_ms=4200
+            )
+
+    def _delete_all_students_batch(self):
+        """Delete ALL students with confirmation."""
+        students = db.get_all_students()
+        if not students:
+            self._show_notice(
+                "No Students", "No students to delete.", kind="info", duration_ms=2800
+            )
+            return
+
+        student_count = len(students)
+        if not self._confirm_delete_action(
+            "student",
+            student_count,
+            scope="all",
+            details="This will also remove all marks linked to those students.",
+        ):
+            return
+
+        success, message = db.delete_all_students()
+        if success:
+            self._show_notice(
+                "Students Deleted", message, kind="success", duration_ms=4200
+            )
+            self.load_students()
+        else:
+            self._show_notice(
+                "Delete Failed", message, kind="error", duration_ms=4200
+            )
+
+    def _delete_all_classes_batch(self):
+        """Delete ALL classes with confirmation."""
+        classes = db.get_all_classes()
+        if not classes:
+            self._show_notice(
+                "No Classes", "No classes to delete.", kind="info", duration_ms=2800
+            )
+            return
+        
+        class_count = len(classes)
+        if not self._confirm_delete_action(
+            "class",
+            class_count,
+            scope="all",
+            details="This will remove all students, marks, streams, and assignments tied to those classes.",
+        ):
+            return
+        
+        success, message = db.delete_all_classes()
+        if success:
+            self._show_notice(
+                "Classes Deleted", message, kind="success", duration_ms=4200
+            )
+            self.show_settings(initial_tab="classes", nav_label="Classes", show_tabs=False)
+        else:
+            self._show_notice(
+                "Delete Failed", message, kind="error", duration_ms=4200
+            )
+
+    def _reset_all_data_batch(self):
+        """Complete database reset with multiple confirmations."""
+        if not messagebox.askyesno(
+            "⚠️ WARNING - Complete Reset",
+            "This will DELETE EVERYTHING:\n\n• ALL students\n• ALL marks\n• ALL classes & streams\n• ALL subjects\n• ALL teachers & assignments\n\n(Admin account will remain)"
+        ):
+            return
+        
+        if not messagebox.askyesno(
+            "Final Confirmation",
+            "Are you ABSOLUTELY sure?\n\nThis cannot be undone."
+        ):
+            return
+        
+        success, message = db.reset_all_data()
+        if success:
+            messagebox.showinfo("Success", message)
+            self.show_dashboard()
+        else:
+            messagebox.showerror("Error", message)
 
     # ==================== Grade Facilitator VIEWS ====================
     def show_class_students(self):
@@ -8954,8 +10905,44 @@ class SchoolReportApp:
         )
         class_cb.pack(side="left", padx=5)
         class_cb.bind(
-            "<<ComboboxSelected>>", lambda e: self._load_class_students(class_var.get())
+            "<<ComboboxSelected>>",
+            lambda e: self._update_class_streams_and_students(class_var.get(), stream_var, stream_cb),
         )
+
+        tk.Label(
+            ctrl,
+            text="Stream:",
+            bg=CONTENT_BG,
+            fg=TEXT_SECONDARY,
+            font=(FF, 10),
+        ).pack(side="left", padx=(16, 5))
+        stream_var = tk.StringVar(value="All Streams")
+        stream_cb = ttk.Combobox(
+            ctrl,
+            textvariable=stream_var,
+            values=["All Streams"],
+            state="readonly",
+            font=(FF, 10),
+            width=18,
+        )
+        stream_cb.pack(side="left", padx=5)
+        stream_cb.bind(
+            "<<ComboboxSelected>>",
+            lambda e: self._load_class_students(class_var.get(), stream_var.get()),
+        )
+
+        print_btn = tk.Button(
+            ctrl,
+            text="🖨️ Print Class List",
+            bg=GREEN,
+            fg="white",
+            font=(FF, 10, "bold"),
+            padx=14,
+            pady=6,
+            command=lambda: self._print_class_students_pdf(class_var.get(), stream_var.get()),
+            cursor="hand2",
+        )
+        print_btn.pack(side="left", padx=(8, 0))
 
         # Students list
         list_frame = tk.Frame(self.content_frame, bg=CARD_BG, relief="flat", bd=1)
@@ -8977,12 +10964,27 @@ class SchoolReportApp:
             search_label="Search learners",
         )
         self.class_students_tree = self.class_students_table.tree
-        self._load_class_students(classes[0])
+        self._update_class_streams_and_students(classes[0], stream_var, stream_cb)
 
-    def _load_class_students(self, class_name):
+    def _update_class_streams_and_students(self, class_name, stream_var, stream_cb):
+        stream_var.set("All Streams")
+        stream_values = ["All Streams"]
+        class_row = db.get_class_by_name(class_name)
+        if class_row:
+            streams = db.get_streams_for_class(class_row["id"])
+            stream_values.extend([s.get("name", "") for s in streams if s.get("name")])
+        stream_cb["values"] = stream_values
+        if stream_var.get() not in stream_values:
+            stream_var.set("All Streams")
+        self._load_class_students(class_name, stream_var.get())
+
+    def _load_class_students(self, class_name, stream_name=""):
         """Load students for a specific class"""
         rows = []
-        students = db.get_students_by_class(class_name)
+        if stream_name and stream_name != "All Streams":
+            students = db.get_students_by_class_and_stream(class_name, stream_name)
+        else:
+            students = db.get_students_by_class(class_name)
         for s in students:
             values = (s.get("admission_no", ""), s.get("name", ""), s.get("gender", ""))
             rows.append(
@@ -8999,6 +11001,32 @@ class SchoolReportApp:
             )
         if hasattr(self, "class_students_table"):
             self.class_students_table.set_rows(rows)
+
+    def _print_class_students_pdf(self, class_name, stream_name=""):
+        if not class_name:
+            messagebox.showwarning(
+                "Print Error",
+                "Please select a class before printing the student list.",
+            )
+            return
+
+        timestamp = datetime.now().strftime("%Y%m%d-%H%M")
+        filename = f"Student_List_{class_name.replace(' ', '_')}"
+        if stream_name and stream_name != "All Streams":
+            filename += f"_{stream_name.replace(' ', '_')}"
+        filename += f"_{timestamp}.pdf"
+
+        file_path = filedialog.asksaveasfilename(
+            title="Save Class Student List PDF",
+            defaultextension=".pdf",
+            filetypes=[("PDF files", "*.pdf")],
+            initialfile=filename,
+        )
+        if not file_path:
+            return
+
+        if self.generate_student_list_pdf(class_name, stream_name if stream_name != "All Streams" else "", file_path):
+            messagebox.showinfo("Saved", f"Class student list saved to {file_path}")
 
     def show_add_comments(self):
         """Show page for adding student comments"""
@@ -9942,19 +11970,35 @@ class SchoolReportApp:
         ).grid(row=0, column=0, sticky="w", padx=(0, 8))
         self.analytics_class_var = tk.StringVar(value="All Classes")
         class_options = ["All Classes"] + [c["name"] for c in db.get_all_classes()]
-        ttk.Combobox(
+        self.analytics_class_cb = ttk.Combobox(
             controls_frame,
             textvariable=self.analytics_class_var,
             values=class_options,
             state="readonly",
             width=18,
             style="App.TCombobox",
-        ).grid(row=0, column=1, padx=(0, 20))
+        )
+        self.analytics_class_cb.grid(row=0, column=1, padx=(0, 20))
+
+        # Stream filter
+        tk.Label(
+            controls_frame, text="Stream:", bg=CARD_BG, fg=TEXT_SECONDARY, font=(FF, 9)
+        ).grid(row=0, column=2, sticky="w", padx=(0, 8))
+        self.analytics_stream_var = tk.StringVar(value="All Streams")
+        self.analytics_stream_cb = ttk.Combobox(
+            controls_frame,
+            textvariable=self.analytics_stream_var,
+            values=["All Streams"],
+            state="readonly",
+            width=14,
+            style="App.TCombobox",
+        )
+        self.analytics_stream_cb.grid(row=0, column=3, padx=(0, 20))
 
         # Term filter
         tk.Label(
             controls_frame, text="Term:", bg=CARD_BG, fg=TEXT_SECONDARY, font=(FF, 9)
-        ).grid(row=0, column=2, sticky="w", padx=(0, 8))
+        ).grid(row=0, column=4, sticky="w", padx=(0, 8))
         self.analytics_term_var = tk.StringVar(value="All Terms")
         term_options = ["All Terms", "One", "Two", "Three"]
         ttk.Combobox(
@@ -9964,7 +12008,7 @@ class SchoolReportApp:
             state="readonly",
             width=14,
             style="App.TCombobox",
-        ).grid(row=0, column=3, padx=(0, 20))
+        ).grid(row=0, column=5, padx=(0, 20))
 
         # Exam type filter
         tk.Label(
@@ -9973,7 +12017,7 @@ class SchoolReportApp:
             bg=CARD_BG,
             fg=TEXT_SECONDARY,
             font=(FF, 9),
-        ).grid(row=0, column=4, sticky="w", padx=(0, 8))
+        ).grid(row=0, column=6, sticky="w", padx=(0, 8))
         self.analytics_exam_type_var = tk.StringVar(value="All Types")
         available_exam_types = {
             row.get("exam_type", "")
@@ -9998,11 +12042,15 @@ class SchoolReportApp:
             state="readonly",
             width=14,
             style="App.TCombobox",
-        ).grid(row=0, column=5, padx=(0, 20))
+        ).grid(row=0, column=7, padx=(0, 20))
 
         # Action buttons
         btn_frame = tk.Frame(filter_frame, bg=CARD_BG)
         btn_frame.pack(fill="x", padx=15, pady=(10, 12))
+        self.analytics_class_cb.bind(
+            "<<ComboboxSelected>>", lambda e: self._refresh_exam_analytics_streams()
+        )
+        self._refresh_exam_analytics_streams()
 
         tk.Button(
             btn_frame,
@@ -10089,20 +12137,36 @@ class SchoolReportApp:
         canvas.pack(side="left", fill="both", expand=True)
         scrollbar.pack(side="right", fill="y")
 
-        # ============ THREE-COLUMN RESULTS LAYOUT ============
-        top_results = tk.Frame(scrollable_frame, bg=CONTENT_BG)
-        top_results.pack(fill="both", expand=True, padx=0, pady=(0, 10))
-        top_results.grid_rowconfigure(0, weight=1)
-        top_results.grid_columnconfigure(0, weight=1, uniform="analytics")
-        top_results.grid_columnconfigure(1, weight=1, uniform="analytics")
-        top_results.grid_columnconfigure(2, weight=1, uniform="analytics")
+        # ============ RESULTS TABS ============
+        tabs_outer = tk.Frame(scrollable_frame, bg="#d1d5db", padx=1, pady=1)
+        tabs_outer.pack(fill="x", padx=0, pady=(0, 0))
+        tabs_bar = tk.Frame(tabs_outer, bg="#e5e7eb")
+        tabs_bar.pack(fill="x", padx=1, pady=1)
 
-        # Column 1 - Analysis Summary
-        summary_frame = tk.Frame(top_results, bg=CARD_BG, relief="flat", bd=1)
-        summary_frame.grid(row=0, column=0, sticky="nsew", padx=(0, 4))
-        summary_frame.grid_rowconfigure(1, weight=1)
-        summary_frame.grid_columnconfigure(0, weight=1)
+        content_outer = tk.Frame(scrollable_frame, bg="#d1d5db", padx=1, pady=1)
+        content_outer.pack(fill="x", padx=0, pady=(0, 10))
+        content_stack = tk.Frame(content_outer, bg=CONTENT_BG, height=480)
+        content_stack.pack(fill="x", padx=1, pady=1)
+        content_stack.pack_propagate(False)
 
+        analytics_tab_defs = [
+            ("summary", "📋 Analysis Summary", "#34495e"),
+            ("metrics", "📈 Deviation Metrics", "#2563eb"),
+            ("subjects", "🎯 Subject Deviation Matrix", "#0f766e"),
+        ]
+        analytics_tab_buttons = {}
+        analytics_tab_frames = {}
+        neutral_bg = "#475569"
+
+        for key, _label, _color in analytics_tab_defs:
+            frame = tk.Frame(content_stack, bg=CARD_BG)
+            frame.place(relx=0, rely=0, relwidth=1, relheight=1)
+            frame.grid_rowconfigure(1, weight=1)
+            frame.grid_columnconfigure(0, weight=1)
+            analytics_tab_frames[key] = frame
+
+        # ---- Summary Tab ----
+        summary_frame = analytics_tab_frames["summary"]
         summary_header = tk.Frame(summary_frame, bg=CARD_BG)
         summary_header.grid(row=0, column=0, sticky="ew", padx=12, pady=(12, 4))
         tk.Label(
@@ -10120,7 +12184,6 @@ class SchoolReportApp:
             font=(FF, 9),
         ).pack(anchor="w")
 
-        # Summary text with custom styling
         summary_body = tk.Frame(summary_frame, bg=CARD_BG)
         summary_body.grid(row=1, column=0, sticky="nsew", padx=12, pady=(4, 12))
         summary_body.grid_rowconfigure(0, weight=1)
@@ -10132,8 +12195,7 @@ class SchoolReportApp:
             font=(FF, 10),
             bg="white",
             fg=TEXT_PRIMARY,
-            height=18,
-            width=34,
+            height=22,
             bd=0,
             relief="flat",
             padx=12,
@@ -10175,12 +12237,8 @@ class SchoolReportApp:
             "critical", foreground="#e74c3c", font=(FF, 10, "bold")
         )
 
-        # Column 2 - Deviation Metrics
-        metrics_frame = tk.Frame(top_results, bg=CARD_BG, relief="flat", bd=1)
-        metrics_frame.grid(row=0, column=1, sticky="nsew", padx=4)
-        metrics_frame.grid_rowconfigure(1, weight=1)
-        metrics_frame.grid_columnconfigure(0, weight=1)
-
+        # ---- Deviation Metrics Tab ----
+        metrics_frame = analytics_tab_frames["metrics"]
         metric_header = tk.Frame(metrics_frame, bg=CARD_BG)
         metric_header.grid(row=0, column=0, sticky="ew", padx=12, pady=(12, 4))
         tk.Label(
@@ -10198,7 +12256,6 @@ class SchoolReportApp:
             font=(FF, 9),
         ).pack(anchor="w")
 
-        # Deviation metrics treeview with enhanced styling
         cols = ("metric", "value", "severity")
         metrics_body = tk.Frame(metrics_frame, bg=CARD_BG)
         metrics_body.grid(row=1, column=0, sticky="nsew", padx=12, pady=(4, 12))
@@ -10211,12 +12268,9 @@ class SchoolReportApp:
         self.analytics_tree.heading("metric", text="Metric")
         self.analytics_tree.heading("value", text="Value")
         self.analytics_tree.heading("severity", text="Status")
-
-        self.analytics_tree.column("metric", width=170, stretch=True)
-        self.analytics_tree.column("value", width=84, anchor="center", stretch=False)
-        self.analytics_tree.column(
-            "severity", width=108, anchor="center", stretch=False
-        )
+        self.analytics_tree.column("metric", width=220, stretch=True)
+        self.analytics_tree.column("value", width=110, anchor="center", stretch=False)
+        self.analytics_tree.column("severity", width=140, anchor="center", stretch=False)
 
         metrics_scroll = ttk.Scrollbar(
             metrics_body, orient="vertical", command=self.analytics_tree.yview
@@ -10240,12 +12294,8 @@ class SchoolReportApp:
             "critical", background="#fdecec", foreground="#9f1f1f"
         )
 
-        # Column 3 - Subject Deviation Matrix
-        subject_frame = tk.Frame(top_results, bg=CARD_BG, relief="flat", bd=1)
-        subject_frame.grid(row=0, column=2, sticky="nsew", padx=(4, 0))
-        subject_frame.grid_rowconfigure(1, weight=1)
-        subject_frame.grid_columnconfigure(0, weight=1)
-
+        # ---- Subject Deviation Matrix Tab ----
+        subject_frame = analytics_tab_frames["subjects"]
         subject_header = tk.Frame(subject_frame, bg=CARD_BG)
         subject_header.grid(row=0, column=0, sticky="ew", padx=12, pady=(12, 4))
         tk.Label(
@@ -10291,19 +12341,19 @@ class SchoolReportApp:
         self.analytics_subject_tree.heading("comparison", text="Compared")
         self.analytics_subject_tree.heading("deviation", text="Deviation (△)")
         self.analytics_subject_tree.heading("pass_change", text="Pass Shift")
-        self.analytics_subject_tree.column("subject", width=115, stretch=True)
-        self.analytics_subject_tree.column("pair", width=142, stretch=True)
+        self.analytics_subject_tree.column("subject", width=140, stretch=True)
+        self.analytics_subject_tree.column("pair", width=180, stretch=True)
         self.analytics_subject_tree.column(
-            "baseline", width=82, anchor="center", stretch=False
+            "baseline", width=90, anchor="center", stretch=False
         )
         self.analytics_subject_tree.column(
-            "comparison", width=86, anchor="center", stretch=False
+            "comparison", width=90, anchor="center", stretch=False
         )
         self.analytics_subject_tree.column(
-            "deviation", width=95, anchor="center", stretch=False
+            "deviation", width=110, anchor="center", stretch=False
         )
         self.analytics_subject_tree.column(
-            "pass_change", width=96, anchor="center", stretch=False
+            "pass_change", width=100, anchor="center", stretch=False
         )
         self.analytics_subject_tree.tag_configure(
             "gain", background="#eef9f1", foreground="#1f6f43"
@@ -10341,6 +12391,40 @@ class SchoolReportApp:
             ),
         )
 
+        # ---- Tab switching logic ----
+        def activate_analytics_tab(active_key):
+            for key, _label, color in analytics_tab_defs:
+                if key == active_key:
+                    analytics_tab_frames[key].lift()
+                    analytics_tab_buttons[key].configure(
+                        bg=color, fg="white", relief="sunken", bd=2
+                    )
+                else:
+                    analytics_tab_buttons[key].configure(
+                        bg=neutral_bg, fg="white", relief="raised", bd=1
+                    )
+
+        for key, label, color in analytics_tab_defs:
+            btn = tk.Button(
+                tabs_bar,
+                text=f"  {label}  ",
+                bg=neutral_bg,
+                fg="white",
+                activebackground=color,
+                activeforeground="white",
+                font=(FF, 10, "bold"),
+                padx=10,
+                pady=8,
+                relief="raised",
+                bd=1,
+                cursor="hand2",
+                command=lambda k=key: activate_analytics_tab(k),
+            )
+            btn.pack(side="left", padx=2, pady=2)
+            analytics_tab_buttons[key] = btn
+
+        activate_analytics_tab("summary")
+
     def _run_exam_analysis(self):
         """Run exam analysis based on selected filters."""
         # Get filter values
@@ -10352,10 +12436,12 @@ class SchoolReportApp:
         class_name = None if class_name == "All Classes" else class_name
         term = None if term == "All Terms" else term
         exam_type = None if exam_type == "All Types" else exam_type
+        stream = self.analytics_stream_var.get()
+        stream = None if stream == "All Streams" else stream
 
         # Get exam sessions
         sessions = exam_analytics.get_exam_sessions(
-            class_name=class_name, term=term, exam_type=exam_type
+            class_name=class_name, term=term, exam_type=exam_type, stream=stream
         )
 
         if len(sessions) < 2:
@@ -10661,11 +12747,19 @@ class SchoolReportApp:
     def show_students(self):
         self.clear_frame()
         self._set_nav("Students")
-        self._page_header("Students", "Manage student registrations")
+        self._page_header("Students", "View all students with class/stream filters. Print lists with header/footer.")
+        self.students_tab = StudentsTab(self.content_frame, self)
+        self.students_tab.build_ui()
 
-        # toolbar
+        # ── State ─────────────────────────────────────────────────────
+        self._students_level_filter = "All"
+        self._students_grouped = True
+        self._student_level_btns = {}
+        self._students_hover_iid = None
+
+        # ── Toolbar ───────────────────────────────────────────────────
         tb = tk.Frame(self.content_frame, bg=CONTENT_BG)
-        tb.pack(fill="x", pady=(0, 12))
+        tb.pack(fill="x", pady=(0, 8))
 
         self._toolbar_btn(tb, "+ Add Student", self.add_student).pack(side="left")
         self._toolbar_btn(tb, "Edit Selected", self.edit_student, bg=BLUE).pack(
@@ -10674,6 +12768,9 @@ class SchoolReportApp:
         self._toolbar_btn(
             tb, "Delete Selected", self.delete_student, bg="#d9534f"
         ).pack(side="left")
+        self._toolbar_btn(
+            tb, "Delete ALL Students", self._delete_all_students_batch, bg="#c41e3a"
+        ).pack(side="left", padx=10)
         self._toolbar_btn(tb, "📥 Template", self.download_template, bg=ORANGE).pack(
             side="left", padx=10
         )
@@ -10706,7 +12803,95 @@ class SchoolReportApp:
         )
         self.students_import_class_cb.pack(side="left", ipady=2)
 
-        # table card
+        # ── Level filter bar ──────────────────────────────────────────
+        _all_stu_snap = db.get_all_students()
+        _lvl_counts = {}
+        for _s in _all_stu_snap:
+            _lv = self._get_level_for_class(_s.get("class", ""))
+            _lvl_counts[_lv] = _lvl_counts.get(_lv, 0) + 1
+
+        filter_bar = tk.Frame(self.content_frame, bg=CONTENT_BG)
+        filter_bar.pack(fill="x", pady=(0, 6))
+
+        def _set_level_filter(level):
+            self._students_level_filter = level
+            for _lv, _btn in self._student_level_btns.items():
+                if _lv == level:
+                    _lc2 = LEVEL_DISPLAY.get(_lv, {})
+                    _btn.config(
+                        bg=_lc2.get("btn_active_bg", OLIVE_PRIMARY),
+                        fg="white",
+                        relief="sunken",
+                    )
+                else:
+                    _btn.config(bg="#f1f5f9", fg=TEXT_SECONDARY, relief="flat")
+            if level == "All":
+                self._student_all_btn.config(
+                    bg=OLIVE_DARK, fg="white", relief="sunken"
+                )
+            else:
+                self._student_all_btn.config(
+                    bg="#f1f5f9", fg=TEXT_SECONDARY, relief="flat"
+                )
+            self.load_students()
+
+        total_cnt = len(_all_stu_snap)
+        self._student_all_btn = tk.Button(
+            filter_bar,
+            text=f"All  ({total_cnt})",
+            bg=OLIVE_DARK,
+            fg="white",
+            font=(FF, 9, "bold"),
+            padx=12,
+            pady=5,
+            relief="sunken",
+            cursor="hand2",
+            bd=0,
+            command=lambda: _set_level_filter("All"),
+        )
+        self._student_all_btn.pack(side="left", padx=(0, 4))
+
+        for _lv_name in LEVEL_ORDER:
+            _lc = LEVEL_DISPLAY[_lv_name]
+            _cnt = _lvl_counts.get(_lv_name, 0)
+            _btn = tk.Button(
+                filter_bar,
+                text=f"{_lc['icon']} {_lc['short']}  ({_cnt})",
+                bg="#f1f5f9",
+                fg=TEXT_SECONDARY,
+                font=(FF, 9, "bold"),
+                padx=12,
+                pady=5,
+                relief="flat",
+                cursor="hand2",
+                bd=0,
+                command=lambda lv=_lv_name: _set_level_filter(lv),
+            )
+            _btn.pack(side="left", padx=(0, 4))
+            self._student_level_btns[_lv_name] = _btn
+
+        # Grouped view toggle
+        self._students_grouped_var = tk.BooleanVar(value=True)
+
+        def _on_grouped_toggle():
+            self._students_grouped = self._students_grouped_var.get()
+            self.load_students()
+
+        tk.Checkbutton(
+            filter_bar,
+            text="Grouped View",
+            variable=self._students_grouped_var,
+            command=_on_grouped_toggle,
+            bg=CONTENT_BG,
+            fg=TEXT_SECONDARY,
+            activebackground=CONTENT_BG,
+            activeforeground=TEXT_PRIMARY,
+            selectcolor=CARD_BG,
+            font=(FF, 9, "bold"),
+            cursor="hand2",
+        ).pack(side="right", padx=(0, 4))
+
+        # ── Table card ────────────────────────────────────────────────
         st_bo, st_bi = _card_colors("peach")
         tc_outer = tk.Frame(self.content_frame, bg=st_bo)
         tc_outer.pack(fill="both", expand=True, pady=4)
@@ -10719,13 +12904,13 @@ class SchoolReportApp:
                 {
                     "key": "adm_no",
                     "title": "Admission No",
-                    "width": 140,
+                    "width": 130,
                     "anchor": "center",
                 },
-                {"key": "name", "title": "Name", "width": 250, "anchor": "w"},
+                {"key": "name", "title": "Name", "width": 260, "anchor": "w"},
                 {"key": "class", "title": "Class", "width": 120, "anchor": "center"},
                 {"key": "stream", "title": "Stream", "width": 110, "anchor": "center"},
-                {"key": "gender", "title": "Gender", "width": 100, "anchor": "center"},
+                {"key": "gender", "title": "Gender", "width": 90, "anchor": "center"},
             ],
             page_size=20,
             search_label="Search students",
@@ -10734,37 +12919,257 @@ class SchoolReportApp:
         )
         self.students_tree = self.students_table.tree
 
+        # Configure level tags and hover
+        self._configure_students_tree_tags()
+        self.students_tree.bind("<Motion>", self._on_students_hover)
+        self.students_tree.bind("<Leave>", self._on_students_leave)
+
+        bulk_actions = tk.Frame(tc, bg=st_bi)
+        bulk_actions.pack(fill="x", padx=12, pady=(0, 8))
+        tk.Label(
+            bulk_actions,
+            text="Bulk Actions:",
+            bg=st_bi,
+            fg=TEXT_SECONDARY,
+            font=(FF, 9, "bold"),
+        ).pack(side="left")
+        tk.Button(
+            bulk_actions,
+            text="Select All Filtered",
+            bg="#0f766e",
+            fg="white",
+            font=(FF, 9, "bold"),
+            padx=10,
+            pady=4,
+            relief="flat",
+            command=lambda: self.students_table.select_all_filtered(),
+        ).pack(side="left", padx=(10, 6))
+        tk.Button(
+            bulk_actions,
+            text="Clear Selection",
+            bg="#64748b",
+            fg="white",
+            font=(FF, 9, "bold"),
+            padx=10,
+            pady=4,
+            relief="flat",
+            command=lambda: self.students_table.clear_selection(),
+        ).pack(side="left")
+        tk.Label(
+            bulk_actions,
+            text="Ctrl/Shift to select multiple rows. Edit Selected supports multi-student editing (Save & Next).",
+            bg=st_bi,
+            fg=TEXT_SECONDARY,
+            font=(FF, 9),
+        ).pack(side="right")
+
         self.students_tree.bind("<Double-Button-1>", lambda e: self.edit_student())
         self.students_tree.bind("<Button-3>", self._student_ctx)
         self.load_students()
 
     def load_students(self):
+        grouped = getattr(self, "_students_grouped", True)
+        level_filter = getattr(self, "_students_level_filter", "All")
+        all_students = db.get_all_students()
+
+        # Apply level filter
+        if level_filter != "All":
+            all_students = [
+                s for s in all_students
+                if self._get_level_for_class(s.get("class", "")) == level_filter
+            ]
+
         rows = []
-        for s in db.get_all_students():
-            values = (
-                s.get("admission_no", ""),
-                s.get("name", ""),
-                s.get("class", ""),
-                s.get("stream", ""),
-                s.get("gender", ""),
-            )
-            rows.append(
-                {
+
+        if grouped:
+            levels_to_show = LEVEL_ORDER if level_filter == "All" else [level_filter]
+            by_level = {lv: [] for lv in LEVEL_ORDER}
+            for s in all_students:
+                lv = self._get_level_for_class(s.get("class", ""))
+                by_level.setdefault(lv, []).append(s)
+
+            for lv_name in levels_to_show:
+                students = by_level.get(lv_name, [])
+                if not students:
+                    continue
+
+                # Sort by class order within level, then name
+                cls_order = CLASSES_BY_LEVEL.get(lv_name, [])
+
+                def _cls_key(s, _co=cls_order):
+                    try:
+                        idx = _co.index(s.get("class", ""))
+                    except ValueError:
+                        idx = 999
+                    return (idx, s.get("name", "").lower())
+
+                students.sort(key=_cls_key)
+
+                lc = LEVEL_DISPLAY.get(lv_name, {})
+                icon = lc.get("icon", "●")
+                hdr_tag = lc.get("hdr_tag", "group_header")
+                row_tag = lc.get("tag", "")
+                hdr_iid = "grp_" + lv_name.replace(" ", "_").replace("(", "").replace(")", "").replace("-", "_")
+
+                # Group header row
+                rows.append({
+                    "iid": hdr_iid,
+                    "values": (
+                        "",
+                        f"  {icon}  {lv_name}  ──  {len(students)} student{'s' if len(students) != 1 else ''}",
+                        "",
+                        "",
+                        "",
+                    ),
+                    "tags": ("group_header", "", hdr_tag),
+                    "value_map": {},
+                    "search": lv_name,
+                })
+
+                for s in students:
+                    gender_sym = "♂" if s.get("gender", "").lower() == "male" else "♀"
+                    values = (
+                        s.get("admission_no", ""),
+                        s.get("name", ""),
+                        s.get("class", ""),
+                        s.get("stream", ""),
+                        f"{gender_sym} {s.get('gender', '')}",
+                    )
+                    rows.append({
+                        "iid": s.get("id", str(uuid.uuid4())),
+                        "values": values,
+                        "tags": ("student_row", s.get("photo_path", ""), row_tag),
+                        "value_map": {
+                            "adm_no": s.get("admission_no", ""),
+                            "name": s.get("name", ""),
+                            "class": s.get("class", ""),
+                            "stream": s.get("stream", ""),
+                            "gender": s.get("gender", ""),
+                        },
+                        "search": " ".join([
+                            str(s.get("admission_no", "")),
+                            s.get("name", ""),
+                            s.get("class", ""),
+                            s.get("stream", ""),
+                            s.get("gender", ""),
+                        ]),
+                    })
+        else:
+            # Flat view – sorted by level → class → name
+            def _flat_key(s):
+                lv = self._get_level_for_class(s.get("class", ""))
+                try:
+                    lv_idx = LEVEL_ORDER.index(lv)
+                except ValueError:
+                    lv_idx = 999
+                cls_order = CLASSES_BY_LEVEL.get(lv, [])
+                try:
+                    cls_idx = cls_order.index(s.get("class", ""))
+                except ValueError:
+                    cls_idx = 999
+                return (lv_idx, cls_idx, s.get("name", "").lower())
+
+            all_students.sort(key=_flat_key)
+
+            for s in all_students:
+                lv = self._get_level_for_class(s.get("class", ""))
+                row_tag = LEVEL_DISPLAY.get(lv, {}).get("tag", "")
+                gender_sym = "♂" if s.get("gender", "").lower() == "male" else "♀"
+                values = (
+                    s.get("admission_no", ""),
+                    s.get("name", ""),
+                    s.get("class", ""),
+                    s.get("stream", ""),
+                    f"{gender_sym} {s.get('gender', '')}",
+                )
+                rows.append({
                     "iid": s.get("id", str(uuid.uuid4())),
                     "values": values,
-                    "tags": (s.get("id", ""), s.get("photo_path", "")),
+                    "tags": ("student_row", s.get("photo_path", ""), row_tag),
                     "value_map": {
-                        "adm_no": values[0],
-                        "name": values[1],
-                        "class": values[2],
-                        "stream": values[3],
-                        "gender": values[4],
+                        "adm_no": s.get("admission_no", ""),
+                        "name": s.get("name", ""),
+                        "class": s.get("class", ""),
+                        "stream": s.get("stream", ""),
+                        "gender": s.get("gender", ""),
                     },
-                    "search": " ".join(str(v) for v in values),
-                }
-            )
+                    "search": " ".join([
+                        str(s.get("admission_no", "")),
+                        s.get("name", ""),
+                        s.get("class", ""),
+                        s.get("stream", ""),
+                        s.get("gender", ""),
+                    ]),
+                })
+
         if hasattr(self, "students_table"):
             self.students_table.set_rows(rows, reset_page=False)
+
+    def _configure_students_tree_tags(self):
+        """Configure Treeview tags for CBC level colour-coding and hover highlight."""
+        tree = self.students_tree
+        # Group header row tags (bold, dark level colour)
+        for lv_name, lc in LEVEL_DISPLAY.items():
+            tree.tag_configure(
+                lc["hdr_tag"],
+                background=lc["hdr_bg"],
+                foreground=lc["hdr_fg"],
+                font=(FF, 10, "bold"),
+            )
+        # Student row level tags (light tinted background)
+        for lv_name, lc in LEVEL_DISPLAY.items():
+            tree.tag_configure(
+                lc["tag"],
+                background=lc["row_bg"],
+                foreground=TEXT_PRIMARY,
+            )
+        # Hover tag – always appended last so it wins over level colours
+        tree.tag_configure(
+            "hover",
+            background="#fef9c3",
+            foreground="#713f12",
+        )
+
+    def _on_students_hover(self, event):
+        """Highlight the treeview row under the cursor."""
+        tree = self.students_tree
+        item = tree.identify_row(event.y)
+        prev = getattr(self, "_students_hover_iid", None)
+        if item == prev:
+            return
+        # Remove hover from previous row
+        if prev:
+            try:
+                old_tags = list(tree.item(prev, "tags"))
+                if "hover" in old_tags:
+                    old_tags.remove("hover")
+                    tree.item(prev, tags=old_tags)
+            except tk.TclError:
+                pass
+        self._students_hover_iid = item
+        # Apply hover to new row (skip group headers)
+        if item and not str(item).startswith("grp_"):
+            try:
+                new_tags = list(tree.item(item, "tags"))
+                if "hover" not in new_tags:
+                    new_tags.append("hover")
+                    tree.item(item, tags=new_tags)
+            except tk.TclError:
+                pass
+
+    def _on_students_leave(self, event):
+        """Clear hover highlight when the cursor leaves the treeview."""
+        tree = self.students_tree
+        prev = getattr(self, "_students_hover_iid", None)
+        if prev:
+            try:
+                old_tags = list(tree.item(prev, "tags"))
+                if "hover" in old_tags:
+                    old_tags.remove("hover")
+                    tree.item(prev, tags=old_tags)
+            except tk.TclError:
+                pass
+        self._students_hover_iid = None
 
     def filter_students(self):
         if hasattr(self, "students_table"):
@@ -10792,47 +13197,102 @@ class SchoolReportApp:
         parent_email="",
         stream="",
         on_save=None,
+        nav_ids=None,
+        nav_index=0,
+        nav_save_fn=None,
     ):
         dlg = tk.Toplevel(self.root)
         dlg.title(title)
-        dlg.geometry("500x590")
         dlg.configure(bg=CONTENT_BG)
         dlg.transient(self.root)
         dlg.grab_set()
         dlg.resizable(False, False)
 
-        sd_bo, sd_bi = _card_colors("lilac")
-        outer = tk.Frame(dlg, bg=sd_bo)
-        outer.place(relx=0.5, rely=0.5, anchor="center")
-        card = tk.Frame(outer, bg=sd_bi, padx=30, pady=24)
-        card.pack(padx=1, pady=1)
+        # Centre on screen
+        DLG_W, DLG_H = 540, 660
+        dlg.update_idletasks()
+        sw = dlg.winfo_screenwidth()
+        sh = dlg.winfo_screenheight()
+        dlg.geometry(f"{DLG_W}x{DLG_H}+{(sw - DLG_W) // 2}+{(sh - DLG_H) // 2}")
+
+        # ── Header ──────────────────────────────────────────────────
+        hdr = tk.Frame(dlg, bg=OLIVE_PRIMARY, height=72)
+        hdr.pack(fill="x")
+        hdr.pack_propagate(False)
 
         tk.Label(
-            card, text=title, bg=sd_bi, fg=TEXT_PRIMARY, font=(FF, 14, "bold")
-        ).pack(anchor="w", pady=(0, 20))
+            hdr, text="👤", bg=OLIVE_PRIMARY, fg=LEMON_ACCENT, font=(FF, 22)
+        ).pack(side="left", padx=(20, 10))
 
-        # Photo selection
-        photo_frame = tk.Frame(card, bg=sd_bi)
-        photo_frame.pack(fill="x", pady=(0, 15))
-
-        self.temp_photo_path = photo_path
-        photo_label = tk.Label(
-            photo_frame, text="No Photo", bg="#f1f5f9", width=12, height=6
+        hdr_txt = tk.Frame(hdr, bg=OLIVE_PRIMARY)
+        hdr_txt.pack(side="left", fill="y")
+        tk.Label(
+            hdr_txt,
+            text=title,
+            bg=OLIVE_PRIMARY,
+            fg=LEMON_ACCENT,
+            font=(FF, 14, "bold"),
+        ).pack(anchor="w", pady=(14, 0))
+        hdr_subtitle_lbl = tk.Label(
+            hdr_txt,
+            text=f"Editing: {name}" if name else "Fill in the student details below",
+            bg=OLIVE_PRIMARY,
+            fg="#c8d9a4",
+            font=(FF, 9),
         )
-        photo_label.pack(side="left")
+        hdr_subtitle_lbl.pack(anchor="w")
 
-        def update_photo_display(p):
+        # ── Body ────────────────────────────────────────────────────
+        BODY_BG = "#f8f9f3"
+        body = tk.Frame(dlg, bg=BODY_BG)
+        body.pack(fill="both", expand=True)
+
+        # ── Photo row ───────────────────────────────────────────────
+        photo_row = tk.Frame(body, bg=BODY_BG)
+        photo_row.pack(fill="x", padx=24, pady=(18, 8))
+
+        AV = 72  # avatar size px
+        self.temp_photo_path = photo_path
+        self._dlg_avatar_ref = None
+
+        av_cv = tk.Canvas(
+            photo_row, width=AV, height=AV, bg=BODY_BG, highlightthickness=0
+        )
+        av_cv.pack(side="left")
+
+        def _draw_placeholder():
+            av_cv.delete("all")
+            av_cv.create_oval(1, 1, AV - 1, AV - 1, fill="#d1d5db", outline=BORDER_CLR, width=2)
+            cx = AV // 2
+            av_cv.create_oval(cx - 9, 12, cx + 9, 30, fill="#9ca3af", outline="")
+            av_cv.create_arc(cx - 18, 34, cx + 18, AV - 2, start=0, extent=180, fill="#9ca3af", outline="")
+
+        def _draw_photo(p):
             if p and os.path.exists(p):
                 try:
-                    img = Image.open(p)
-                    img.thumbnail((100, 100))
-                    photo_img = ImageTk.PhotoImage(img)
-                    photo_label.config(image=photo_img, text="")
-                    photo_label.image = photo_img
-                except:
-                    photo_label.config(image="", text="Error")
+                    img = Image.open(p).resize((AV - 4, AV - 4), Image.Resampling.LANCZOS)
+                    ref = ImageTk.PhotoImage(img)
+                    av_cv.delete("all")
+                    av_cv.create_oval(1, 1, AV - 1, AV - 1, fill="white", outline=BORDER_CLR, width=2)
+                    av_cv.create_image(AV // 2, AV // 2, image=ref)
+                    self._dlg_avatar_ref = ref
+                    return
+                except Exception:
+                    pass
+            _draw_placeholder()
 
-        update_photo_display(photo_path)
+        _draw_photo(photo_path)
+
+        photo_meta = tk.Frame(photo_row, bg=BODY_BG)
+        photo_meta.pack(side="left", padx=(14, 0), fill="y")
+        tk.Label(
+            photo_meta, text="Student Photo", bg=BODY_BG,
+            fg=TEXT_PRIMARY, font=(FF, 10, "bold"),
+        ).pack(anchor="w")
+        tk.Label(
+            photo_meta, text="JPG or PNG  •  Optional",
+            bg=BODY_BG, fg=TEXT_SECONDARY, font=(FF, 8),
+        ).pack(anchor="w", pady=(2, 8))
 
         def pick_photo():
             p = filedialog.askopenfilename(
@@ -10840,66 +13300,91 @@ class SchoolReportApp:
             )
             if p:
                 self.temp_photo_path = p
-                update_photo_display(p)
+                _draw_photo(p)
 
         tk.Button(
-            photo_frame,
-            text="Select Photo",
+            photo_meta,
+            text="📷  Change Photo",
             command=pick_photo,
-            bg=BLUE,
+            bg=OLIVE_PRIMARY,
             fg="white",
+            activebackground=OLIVE_DARK,
+            activeforeground="white",
+            font=(FF, 9, "bold"),
+            padx=12,
+            pady=5,
             relief="flat",
-            padx=10,
-        ).pack(side="left", padx=10)
+            cursor="hand2",
+        ).pack(anchor="w")
 
-        def lbl_entry(label_text, default=""):
-            tk.Label(
-                card,
-                text=label_text,
-                bg=sd_bi,
-                fg=TEXT_SECONDARY,
-                font=(FF, 10, "bold"),
-                anchor="w",
-            ).pack(fill="x", pady=(0, 3))
-            e = ttk.Entry(card, style="App.TEntry")
+        # ── Divider ─────────────────────────────────────────────────
+        tk.Frame(body, bg=BORDER_CLR, height=1).pack(fill="x", padx=24, pady=(0, 10))
+
+        # ── Form grid ───────────────────────────────────────────────
+        form = tk.Frame(body, bg=BODY_BG)
+        form.pack(fill="x", padx=24)
+        form.columnconfigure(0, weight=1, uniform="col")
+        form.columnconfigure(1, weight=1, uniform="col")
+
+        LBL_FONT = (FF, 9, "bold")
+        LBL_KW = dict(bg=BODY_BG, fg=TEXT_SECONDARY, font=LBL_FONT, anchor="w")
+        GAP = 8  # gap between columns
+
+        def _lbl2(text, row, col, span=1, pady_top=10):
+            px = (0, GAP) if col == 0 and span == 1 else (GAP, 0) if col == 1 else 0
+            tk.Label(form, text=text, **LBL_KW).grid(
+                row=row, column=col, columnspan=span,
+                sticky="w", padx=px, pady=(pady_top, 2)
+            )
+
+        def _entry2(row, col, default="", span=1):
+            px = (0, GAP) if col == 0 and span == 1 else (GAP, 0) if col == 1 else 0
+            e = ttk.Entry(form, style="App.TEntry")
             e.insert(0, default)
-            e.pack(fill="x", ipady=4, pady=(0, 10))
+            e.grid(row=row, column=col, columnspan=span,
+                   sticky="ew", padx=px, ipady=6, pady=(0, 2))
             return e
 
-        adm_e = lbl_entry("Admission No", adm)
-        name_e = lbl_entry("Full Name", name)
-        guardian_e = lbl_entry("Guardian Name", guardian_name)
-        parent_email_e = lbl_entry("Parent Email", parent_email)
+        def _combo2(widget, row, col, span=1):
+            px = (0, GAP) if col == 0 and span == 1 else (GAP, 0) if col == 1 else 0
+            widget.grid(row=row, column=col, columnspan=span,
+                        sticky="ew", padx=px, ipady=6, pady=(0, 2))
 
-        tk.Label(
-            card,
-            text="Class",
-            bg=sd_bi,
-            fg=TEXT_SECONDARY,
-            font=(FF, 10, "bold"),
-            anchor="w",
-        ).pack(fill="x", pady=(0, 3))
+        # Full Name – full width
+        _lbl2("Full Name *", 0, 0, span=2, pady_top=0)
+        name_e = _entry2(1, 0, name, span=2)
+
+        # Admission No | Gender
+        _lbl2("Admission No", 2, 0)
+        _lbl2("Gender", 2, 1)
+        adm_e = _entry2(3, 0, adm)
+        gen_cb = ttk.Combobox(
+            form, values=["Male", "Female"], state="readonly", style="App.TCombobox"
+        )
+        gen_cb.set(gender)
+        _combo2(gen_cb, 3, 1)
+
+        # Class | Stream
+        _lbl2("Class", 4, 0)
+        _lbl2("Stream", 4, 1)
         cls_cb = ttk.Combobox(
-            card,
-            values=self.get_current_classes(),
-            state="readonly",
-            style="App.TCombobox",
+            form, values=self.get_current_classes(), state="readonly", style="App.TCombobox"
         )
         cls_cb.set(cls)
-        cls_cb.pack(fill="x", ipady=4, pady=(0, 10))
+        _combo2(cls_cb, 5, 0)
+        stream_cb = ttk.Combobox(form, style="App.TCombobox")
+        _combo2(stream_cb, 5, 1)
 
+        # Guardian Name – full width
+        _lbl2("Guardian Name", 6, 0, span=2)
+        guardian_e = _entry2(7, 0, guardian_name, span=2)
+
+        # Parent Email – full width
+        _lbl2("Parent Email", 8, 0, span=2)
+        parent_email_e = _entry2(9, 0, parent_email, span=2)
+
+        # ── Stream / admission helpers ───────────────────────────────
         last_suggested_adm = {"value": ""}
-
-        tk.Label(
-            card,
-            text="Stream",
-            bg=sd_bi,
-            fg=TEXT_SECONDARY,
-            font=(FF, 10, "bold"),
-            anchor="w",
-        ).pack(fill="x", pady=(0, 3))
-        stream_cb = ttk.Combobox(card, style="App.TCombobox")
-        stream_cb.pack(fill="x", ipady=4, pady=(0, 10))
 
         def refresh_streams():
             current = stream_cb.get().strip()
@@ -10936,46 +13421,52 @@ class SchoolReportApp:
 
         cls_cb.bind("<<ComboboxSelected>>", on_class_selected)
 
-        tk.Label(
-            card,
-            text="Gender",
-            bg=sd_bi,
-            fg=TEXT_SECONDARY,
-            font=(FF, 10, "bold"),
-            anchor="w",
-        ).pack(fill="x", pady=(0, 3))
-        gen_cb = ttk.Combobox(
-            card, values=["Male", "Female"], state="readonly", style="App.TCombobox"
-        )
-        gen_cb.set(gender)
-        gen_cb.pack(fill="x", ipady=4, pady=(0, 18))
+        # ── Navigation state ─────────────────────────────────────────
+        _nav_ids = list(nav_ids) if nav_ids else []
+        _state = {"index": nav_index}
+        _use_nav = len(_nav_ids) > 1
 
-        btn_row = tk.Frame(card, bg=sd_bi)
-        btn_row.pack(fill="x")
-        cancel = tk.Label(
-            btn_row,
-            text="Cancel",
-            bg="#e8f5e9",
-            fg=TEXT_PRIMARY,
-            font=(FF, 10, "bold"),
-            padx=20,
-            pady=8,
-            cursor="hand2",
-        )
-        cancel.pack(side="left", padx=(0, 8))
-        cancel.bind("<Button-1>", lambda e: dlg.destroy())
+        # ── Field loader (in-place refresh for navigation) ───────────
+        def _load_fields(student):
+            hdr_subtitle_lbl.config(
+                text=f"Editing: {student.get('name', '')}"
+            )
+            if _use_nav:
+                idx = _state["index"]
+                _nav_counter_lbl.config(
+                    text=f"Student  {idx + 1}  of  {len(_nav_ids)}"
+                )
+                _prev_btn.config(state="normal" if idx > 0 else "disabled")
+                _next_btn.config(
+                    state="normal" if idx < len(_nav_ids) - 1 else "disabled"
+                )
+            name_e.delete(0, "end")
+            name_e.insert(0, student.get("name", ""))
+            adm_e.delete(0, "end")
+            adm_e.insert(0, student.get("admission_no", ""))
+            gen_cb.set(student.get("gender", "Male"))
+            _prev_cls = cls_cb.get()
+            cls_cb.set(student.get("class", CLASSES[0] if CLASSES else ""))
+            if cls_cb.get() != _prev_cls:
+                refresh_streams()
+            stream_cb.set(student.get("stream", ""))
+            guardian_e.delete(0, "end")
+            guardian_e.insert(0, student.get("guardian_name", ""))
+            parent_email_e.delete(0, "end")
+            parent_email_e.insert(0, student.get("parent_email", ""))
+            self.temp_photo_path = student.get("photo_path", "")
+            _draw_photo(self.temp_photo_path)
+            name_e.focus_set()
 
-        def do_save():
-            if not name_e.get().strip():
-                messagebox.showerror("Error", "Name is required", parent=dlg)
-                return
-            admission_no = adm_e.get().strip() or self._generate_admission_no(
+        # ── Save helpers ─────────────────────────────────────────────
+        def _collect_fields():
+            adm_val = adm_e.get().strip() or self._generate_admission_no(
                 cls_cb.get(), name_e.get().strip()
             )
             adm_e.delete(0, "end")
-            adm_e.insert(0, admission_no)
-            saved = on_save(
-                admission_no,
+            adm_e.insert(0, adm_val)
+            return (
+                adm_val,
                 name_e.get().strip(),
                 cls_cb.get(),
                 gen_cb.get(),
@@ -10984,21 +13475,205 @@ class SchoolReportApp:
                 parent_email_e.get().strip(),
                 stream_cb.get().strip(),
             )
-            if saved is not False:
+
+        def _save_current(close_after=True):
+            if not name_e.get().strip():
+                messagebox.showerror("Error", "Name is required", parent=dlg)
+                return False
+            fields = _collect_fields()
+            # nav_save_fn takes precedence regardless of _use_nav (also works for 1-item list)
+            if nav_save_fn and _nav_ids:
+                current_sid = _nav_ids[_state["index"]]
+                result = nav_save_fn(current_sid, *fields)
+            elif on_save:
+                result = on_save(*fields)
+            else:
+                result = True
+            if result is not False and close_after:
+                dlg.destroy()
+            return result is not False
+
+        def do_save():
+            student_name = name_e.get().strip()
+            if _save_current(close_after=True):
+                self._show_notice(
+                    "✓ Student Saved",
+                    f"{student_name} — record updated successfully.",
+                    kind="success",
+                    duration_ms=2800,
+                )
+
+        def on_cancel():
+            self._show_notice(
+                "Cancelled",
+                "No changes were saved.",
+                kind="info",
+                duration_ms=2000,
+            )
+            dlg.destroy()
+
+        # Mutable ref so do_save_next can update the button label after it is created
+        _btn_nav_ref = {}
+
+        def do_save_next():
+            """Save the current student and advance to the next one (or close if last)."""
+            student_name = name_e.get().strip()
+            if not _save_current(close_after=False):
+                return
+            new_idx = _state["index"] + 1
+            if new_idx < len(_nav_ids):
+                _state["index"] = new_idx
+                student = db.get_student(_nav_ids[new_idx]) or {}
+                _load_fields(student)
+                # Update button label based on whether this is now the last student
+                btn = _btn_nav_ref.get("save_next")
+                if btn:
+                    is_now_last = new_idx >= len(_nav_ids) - 1
+                    btn.config(text="✅  Save & Done" if is_now_last else "Save & Next  ▶")
+                self._show_notice(
+                    "✓ Saved",
+                    f"{student_name} saved — editing {new_idx + 1} of {len(_nav_ids)}.",
+                    kind="success",
+                    duration_ms=2000,
+                )
+            else:
+                self._show_notice(
+                    "✅ All Done",
+                    f"All {len(_nav_ids)} students updated successfully.",
+                    kind="success",
+                    duration_ms=3000,
+                )
                 dlg.destroy()
 
-        save = tk.Label(
-            btn_row,
-            text="Save",
-            bg=BLUE,
-            fg="white",
+        def _navigate(direction):
+            if not _save_current(close_after=False):
+                return
+            new_idx = _state["index"] + direction
+            if 0 <= new_idx < len(_nav_ids):
+                _state["index"] = new_idx
+                student = db.get_student(_nav_ids[new_idx]) or {}
+                _load_fields(student)
+                btn = _btn_nav_ref.get("save_next")
+                if btn:
+                    is_now_last = new_idx >= len(_nav_ids) - 1
+                    btn.config(text="✅  Save & Done" if is_now_last else "Save & Next  ▶")
+
+        # ── Action buttons ───────────────────────────────────────────
+        tk.Frame(body, bg=BORDER_CLR, height=1).pack(fill="x", padx=24, pady=(14, 0))
+
+        BODY_BG = "#f8f9f3"
+
+        # Navigation row (only when multiple students)
+        if _use_nav:
+            nav_bar = tk.Frame(body, bg=BODY_BG)
+            nav_bar.pack(fill="x", padx=24, pady=(10, 0))
+
+            _prev_btn = tk.Button(
+                nav_bar,
+                text="◀  Prev Student",
+                command=lambda: _navigate(-1),
+                bg="#eef2ff",
+                fg="#3730a3",
+                activebackground="#dde4ff",
+                font=(FF, 9, "bold"),
+                padx=12,
+                pady=5,
+                relief="flat",
+                cursor="hand2",
+                state="normal" if nav_index > 0 else "disabled",
+            )
+            _prev_btn.pack(side="left")
+
+            _nav_counter_lbl = tk.Label(
+                nav_bar,
+                text=f"Student  {nav_index + 1}  of  {len(_nav_ids)}",
+                bg=BODY_BG,
+                fg=TEXT_SECONDARY,
+                font=(FF, 9, "bold"),
+            )
+            _nav_counter_lbl.pack(side="left", padx=12)
+
+            _next_btn = tk.Button(
+                nav_bar,
+                text="Next Student  ▶",
+                command=lambda: _navigate(1),
+                bg="#eef2ff",
+                fg="#3730a3",
+                activebackground="#dde4ff",
+                font=(FF, 9, "bold"),
+                padx=12,
+                pady=5,
+                relief="flat",
+                cursor="hand2",
+                state="normal" if nav_index < len(_nav_ids) - 1 else "disabled",
+            )
+            _next_btn.pack(side="left")
+        else:
+            # placeholders so _load_fields references don't fail
+            _prev_btn = None
+            _next_btn = None
+            _nav_counter_lbl = None
+
+        btn_bar = tk.Frame(body, bg=BODY_BG)
+        btn_bar.pack(fill="x", padx=24, pady=(8, 18))
+
+        tk.Button(
+            btn_bar,
+            text="Cancel",
+            command=on_cancel,
+            bg="#e5e7eb",
+            fg=TEXT_PRIMARY,
+            activebackground="#d1d5db",
+            activeforeground=TEXT_PRIMARY,
             font=(FF, 10, "bold"),
             padx=20,
             pady=8,
+            relief="flat",
             cursor="hand2",
-        )
-        save.pack(side="left")
-        save.bind("<Button-1>", lambda e: do_save())
+        ).pack(side="left", padx=(0, 10))
+
+        save_label = "💾  Save & Close" if _use_nav else "💾  Save Student"
+        tk.Button(
+            btn_bar,
+            text=save_label,
+            command=do_save,
+            bg=OLIVE_PRIMARY,
+            fg="white",
+            activebackground=OLIVE_DARK,
+            activeforeground="white",
+            font=(FF, 10, "bold"),
+            padx=24,
+            pady=8,
+            relief="flat",
+            cursor="hand2",
+        ).pack(side="left")
+
+        if _use_nav:
+            _save_next_btn = tk.Button(
+                btn_bar,
+                text="Save & Next  ▶",
+                command=do_save_next,
+                bg="#1d4ed8",
+                fg="white",
+                activebackground="#1e40af",
+                activeforeground="white",
+                font=(FF, 10, "bold"),
+                padx=20,
+                pady=8,
+                relief="flat",
+                cursor="hand2",
+            )
+            _save_next_btn.pack(side="left", padx=(10, 0))
+            # Store reference so do_save_next can update the label
+            _btn_nav_ref["save_next"] = _save_next_btn
+            # Set initial label (in case we open starting at the last student)
+            if nav_index >= len(_nav_ids) - 1:
+                _save_next_btn.config(text="✅  Save & Done")
+
+        # Enter key → save; Escape key → cancel; focus first field
+        dlg.bind("<Return>", lambda _e: do_save())
+        dlg.bind("<Escape>", lambda _e: on_cancel())
+        name_e.focus_set()
 
     def add_student(self):
         def on_save(adm, name, cls, gender, photo, guardian_name, parent_email, stream):
@@ -11014,6 +13689,12 @@ class SchoolReportApp:
                 name, cls, gender, adm, photo, guardian_name, parent_email, stream
             )
             self.load_students()
+            self._show_notice(
+                "✓ Student Added",
+                f"{name} has been enrolled in {cls}.",
+                kind="success",
+                duration_ms=2800,
+            )
             return True
 
         self._student_dialog("Add Student", on_save=on_save)
@@ -11024,20 +13705,34 @@ class SchoolReportApp:
             if hasattr(self, "students_table")
             else list(self.students_tree.selection())
         )
-        if len(selected_iids) != 1:
+        if not selected_iids:
             messagebox.showwarning(
-                "Select One Student", "Please select exactly one student to edit"
+                "Select Student", "Please select one or more students to edit"
             )
             return
-        sid = selected_iids[0]
-        item = self.students_tree.item(sid)
-        tags = item.get("tags", ())
-        photo = tags[1] if len(tags) > 1 else ""
-        student = next(
-            (row for row in db.get_all_students() if row.get("id") == sid), {}
-        )
 
-        def on_save(a, n, c, g, p, guardian_name, parent_email, stream):
+        # ── Build nav_ids ─────────────────────────────────────────────
+        # Single selection → navigate through ALL currently filtered students
+        # Multiple selection → navigate through only the selected students
+        if len(selected_iids) == 1:
+            if hasattr(self, "students_table"):
+                nav_ids = [
+                    row["iid"]
+                    for row in self.students_table.filtered_rows
+                    if not str(row.get("iid", "")).startswith("grp_")
+                ]
+            else:
+                nav_ids = selected_iids
+            sid = selected_iids[0]
+            nav_index = nav_ids.index(sid) if sid in nav_ids else 0
+            title = "Edit Student"
+        else:
+            nav_ids = list(selected_iids)
+            nav_index = 0
+            title = f"Edit Students  ({len(nav_ids)} selected)"
+
+        # ── Shared save function ──────────────────────────────────────
+        def nav_save_fn(sid, a, n, c, g, p, guardian_name, parent_email, stream):
             existing = db.get_student_by_admission_no(a, c)
             if existing and existing.get("id") != sid:
                 messagebox.showerror(
@@ -11050,17 +13745,21 @@ class SchoolReportApp:
             self.load_students()
             return True
 
+        first_sid = nav_ids[nav_index]
+        first_student = db.get_student(first_sid) or {}
         self._student_dialog(
-            "Edit Student",
-            student.get("admission_no", ""),
-            student.get("name", ""),
-            student.get("class", CLASSES[0]),
-            student.get("gender", "Male"),
-            photo,
-            student.get("guardian_name", ""),
-            student.get("parent_email", ""),
-            student.get("stream", ""),
-            on_save=on_save,
+            title,
+            first_student.get("admission_no", ""),
+            first_student.get("name", ""),
+            first_student.get("class", CLASSES[0] if CLASSES else ""),
+            first_student.get("gender", "Male"),
+            first_student.get("photo_path", ""),
+            first_student.get("guardian_name", ""),
+            first_student.get("parent_email", ""),
+            first_student.get("stream", ""),
+            nav_ids=nav_ids,
+            nav_index=nav_index,
+            nav_save_fn=nav_save_fn,
         )
 
     def delete_student(self):
@@ -11070,14 +13769,17 @@ class SchoolReportApp:
             else list(self.students_tree.selection())
         )
         if not selected_iids:
-            messagebox.showwarning(
-                "Select Student", "Please select one or more students to delete"
+            self._show_notice(
+                "Select Students",
+                "Please select one or more students to delete.",
+                kind="info",
             )
             return
-        if not messagebox.askyesno(
-            "Confirm Delete",
-            f"Delete {len(selected_iids)} selected student(s)?",
-            parent=self.root,
+        if not self._confirm_delete_action(
+            "student",
+            len(selected_iids),
+            scope="selected",
+            details="This will also remove marks linked to the selected students.",
         ):
             return
         failed = 0
@@ -11085,14 +13787,14 @@ class SchoolReportApp:
             if not sid or not db.delete_student(sid):
                 failed += 1
         self.load_students()
-        if failed:
-            messagebox.showerror(
-                "Delete Failed", f"Failed to delete {failed} student(s)."
-            )
+        self._show_delete_result_notice(
+            "student", len(selected_iids) - failed, failed, duration_ms=4200
+        )
 
     def import_excel(self):
         """Import students from an Excel file"""
         import_target_class = ""
+        progress_dialog = None
         if hasattr(self, "students_import_class_var"):
             selected_target = (self.students_import_class_var.get() or "").strip()
             if selected_target and selected_target != "Use Class From File":
@@ -11129,7 +13831,7 @@ class SchoolReportApp:
                     "full_name",
                     "learner",
                 },
-                "class": {"class", "grade", "class_name"},
+                "class": {"class", "grade", "class_name", "student_class"},
                 "stream": {"stream", "student_stream", "class_stream"},
                 "gender": {"gender", "sex"},
                 "photo_path": {
@@ -11138,6 +13840,13 @@ class SchoolReportApp:
                     "photo path",
                     "image",
                     "image_path",
+                },
+                "subject": {
+                    "subject",
+                    "subject_name",
+                    "subj",
+                    "course",
+                    "course_name",
                 },
             }
 
@@ -11350,21 +14059,128 @@ class SchoolReportApp:
                 self.root.wait_window(top)
                 return decision["ok"]
 
-            if not show_import_preview_dialog():
-                return
+            # Import directly with realtime progress instead of blocking on a preview dialog.
 
             progress_dialog, status_label, percent_label, progress = (
                 self._open_progress_dialog(
-                    "Importing Students", "Preparing student rows..."
+                    "Importing Students",
+                    "Preparing student rows...",
+                    allow_cancel=True,
                 )
             )
+
+            def ensure_not_cancelled():
+                if self._progress_cancel_requested(progress_dialog):
+                    raise ImportCancelledError(
+                        "Student import cancelled.\n\nAny learners imported before cancellation were kept."
+                    )
+
+            def build_student_progress_details(
+                current_sheet="",
+                processed_rows=0,
+                total_rows_count=0,
+                added=0,
+                updated=0,
+                generated=0,
+                subjects_added_count=0,
+                classes_added_count=0,
+                sheets_processed=0,
+                total_sheet_count=0,
+            ):
+                detail_lines = []
+                if current_sheet:
+                    detail_lines.append(f"Sheet: {current_sheet}")
+                if total_rows_count:
+                    detail_lines.append(
+                        f"Rows processed: {processed_rows}/{total_rows_count}"
+                    )
+                if total_sheet_count:
+                    detail_lines.append(
+                        f"Sheets processed: {sheets_processed}/{total_sheet_count}"
+                    )
+                detail_lines.append(
+                    f"Added: {added}   Updated: {updated}   Generated adm: {generated}"
+                )
+                detail_lines.append(
+                    f"New subjects: {subjects_added_count}   New classes: {classes_added_count}"
+                )
+                return "\n".join(detail_lines)
+
+            # Collect unique subjects and classes from Excel data
+            unique_subjects = set()
+            unique_classes = set()
+            total_sheets = len(prepared_sheets)
+            
+            for sheet_index, sheet_pack in enumerate(prepared_sheets, start=1):
+                self._update_progress_dialog(
+                    progress_dialog,
+                    status_label,
+                    percent_label,
+                    progress,
+                    0,
+                    max(1, total_rows),
+                    f"Scanning sheet {sheet_index} of {total_sheets}: {sheet_pack['sheet_name']}",
+                    build_student_progress_details(
+                        current_sheet=sheet_pack["sheet_name"],
+                        total_rows_count=total_rows,
+                        sheets_processed=sheet_index - 1,
+                        total_sheet_count=total_sheets,
+                    ),
+                )
+                ensure_not_cancelled()
+                df = sheet_pack["df"]
+                subject_col = next((col for col in df.columns if col in col_aliases["subject"]), None)
+                class_col = sheet_pack["class_col"]
+                
+                # Collect subjects
+                if subject_col:
+                    subjects_in_sheet = df[subject_col].dropna().unique()
+                    for subj in subjects_in_sheet:
+                        subj_clean = clean_value(subj)
+                        if subj_clean:
+                            unique_subjects.add(subj_clean)
+                
+                # Collect classes
+                if class_col:
+                    classes_in_sheet = df[class_col].dropna().unique()
+                    for cls in classes_in_sheet:
+                        cls_clean = clean_value(cls)
+                        if cls_clean:
+                            unique_classes.add(cls_clean)
+                elif sheet_pack["sheet_default_class"]:
+                    unique_classes.add(sheet_pack["sheet_default_class"])
+
+            # Import subjects and classes without redundancy
+            subjects_added = 0
+            classes_added = 0
+            
+            # Import subjects
+            for subject_name in unique_subjects:
+                ensure_not_cancelled()
+                if not db.get_subject_by_name(subject_name):
+                    # Determine level from context or use default
+                    level = "Primary"  # Default level
+                    category = "Core"   # Default category
+                    success, _ = db.add_subject(subject_name, level, category)
+                    if success:
+                        subjects_added += 1
+            
+            # Import classes
+            for class_name in unique_classes:
+                ensure_not_cancelled()
+                if not db.get_class_by_name(class_name):
+                    # Determine level from class name
+                    level = self._determine_class_level(class_name)
+                    success, _ = db.add_class(class_name, level)
+                    if success:
+                        classes_added += 1
 
             imported_count = 0
             updated_count = 0
             generated_count = 0
             processed = 0
             class_import_summary = {}
-            for sheet_pack in prepared_sheets:
+            for sheet_index, sheet_pack in enumerate(prepared_sheets, start=1):
                 sheet_name = sheet_pack["sheet_name"]
                 df = sheet_pack["df"]
                 name_col = sheet_pack["name_col"]
@@ -11385,7 +14201,20 @@ class SchoolReportApp:
                         processed,
                         total_rows,
                         f"[{sheet_name}] Processing row {index}...",
+                        build_student_progress_details(
+                            current_sheet=sheet_name,
+                            processed_rows=processed,
+                            total_rows_count=total_rows,
+                            added=imported_count,
+                            updated=updated_count,
+                            generated=generated_count,
+                            subjects_added_count=subjects_added,
+                            classes_added_count=classes_added,
+                            sheets_processed=sheet_index - 1,
+                            total_sheet_count=total_sheets,
+                        ),
                     )
+                    ensure_not_cancelled()
                     processed += 1
 
                     name = clean_value(row.get(name_col, ""))
@@ -11457,7 +14286,19 @@ class SchoolReportApp:
                 total_rows,
                 total_rows,
                 "Refreshing student list...",
+                build_student_progress_details(
+                    processed_rows=total_rows,
+                    total_rows_count=total_rows,
+                    added=imported_count,
+                    updated=updated_count,
+                    generated=generated_count,
+                    subjects_added_count=subjects_added,
+                    classes_added_count=classes_added,
+                    sheets_processed=total_sheets,
+                    total_sheet_count=total_sheets,
+                ),
             )
+            ensure_not_cancelled()
             self.load_students()
             progress_dialog.destroy()
             scope_note = (
@@ -11483,6 +14324,8 @@ class SchoolReportApp:
                 f"Done!  {imported_count} new student(s) added, "
                 f"{updated_count} updated.\n"
                 f"Generated admission numbers: {generated_count}\n"
+                f"New subjects added: {subjects_added}\n"
+                f"New classes added: {classes_added}\n"
                 f"Sheets processed: {len(prepared_sheets)}\n"
                 f"Existing photos were preserved where no new photo was supplied."
                 f"\n\nClass breakdown:\n"
@@ -11490,6 +14333,12 @@ class SchoolReportApp:
                 + f"{scope_note}",
             )
 
+        except ImportCancelledError as e:
+            try:
+                progress_dialog.destroy()
+            except Exception:
+                pass
+            messagebox.showinfo("Import Cancelled", str(e))
         except Exception as e:
             try:
                 progress_dialog.destroy()
@@ -11688,6 +14537,12 @@ class SchoolReportApp:
             self.import_whole_school_marks_excel,
             bg=PURPLE,
         ).pack(side="right")
+        self._toolbar_btn(
+            actions,
+            "\U0001f4c4  Download Whole School Template",
+            self.download_whole_school_marks_template,
+            bg=ORANGE,
+        ).pack(side="right", padx=(0, 8))
 
         # Create scrollable container for class cards
         canvas_outer = tk.Frame(self.content_frame, bg=CONTENT_BG)
@@ -11989,8 +14844,18 @@ class SchoolReportApp:
         self.marks_class_cb.set(class_name)
         self.marks_class_cb.pack(side="left", ipady=4)
 
+        lbl("Stream:")
+        self.marks_stream_cb = ttk.Combobox(
+            ctrl,
+            state="readonly",
+            style="App.TCombobox",
+            width=14,
+        )
+        self.marks_stream_cb.pack(side="left", ipady=4)
+
         # Store the selected stream
         self._selected_marks_stream = stream
+        self._refresh_marks_streams(reload_results=False)
 
         lbl("Term:")
         self.marks_term_cb = ttk.Combobox(
@@ -12007,6 +14872,10 @@ class SchoolReportApp:
         self.marks_exam_cb.pack(side="left", ipady=4)
 
         self.marks_class_cb.bind(
+            "<<ComboboxSelected>>",
+            lambda e: self._refresh_marks_streams(reload_results=True),
+        )
+        self.marks_stream_cb.bind(
             "<<ComboboxSelected>>", lambda e: self._load_marks_table()
         )
         self.marks_term_cb.bind(
@@ -12024,6 +14893,9 @@ class SchoolReportApp:
         ).pack(side="left", padx=4)
         self._toolbar_btn(
             ctrl, "\U0001f4e5  Import Marks", self.import_marks_excel, bg=PURPLE
+        ).pack(side="left", padx=4)
+        self._toolbar_btn(
+            ctrl, "\U0001f5d1  Clear Term Marks", self._delete_all_marks_for_term, bg="#e74c3c"
         ).pack(side="left", padx=4)
 
         def validate_mark(event, sid, sub):
@@ -12201,7 +15073,8 @@ class SchoolReportApp:
         exam_type = self.marks_exam_cb.get() or DEFAULT_EXAM_TYPE
 
         # Get students based on stream selection
-        stream = getattr(self, "_selected_marks_stream", "")
+        stream = self._get_selected_marks_stream()
+        self._selected_marks_stream = stream
         if stream:
             students = [
                 s
@@ -12378,6 +15251,7 @@ class SchoolReportApp:
             scrollregion=self.marks_scroll_canvas.bbox("all")
         )
         self._marks_xview("moveto", "0")
+        self._update_marks_page_header()
 
     def _edit_student_marks(self, sid=None):
         if sid is None:
@@ -12643,6 +15517,255 @@ class SchoolReportApp:
         except Exception as exc:
             messagebox.showerror("Error", f"Could not create template:\n{exc}")
 
+    def _write_whole_school_results_template(self, file_path):
+        import openpyxl
+        from openpyxl.styles import PatternFill, Font, Alignment, Border, Side
+        from openpyxl.utils import get_column_letter
+
+        workbook = openpyxl.Workbook()
+        instructions_sheet = workbook.active
+        instructions_sheet.title = "SUMMARY - Instructions"
+        instructions_sheet.sheet_view.showGridLines = False
+
+        olive_fill = PatternFill("solid", fgColor="6F7C4A")
+        soft_fill = PatternFill("solid", fgColor="EEF3EF")
+        header_fill = PatternFill("solid", fgColor="D9E4D0")
+        white_fill = PatternFill("solid", fgColor="FFFFFF")
+        white_font = Font(bold=True, color="FFFFFF", name="Calibri", size=12)
+        dark_font = Font(bold=True, color="2F3B1A", name="Calibri", size=11)
+        normal_font = Font(name="Calibri", size=10)
+        center = Alignment(horizontal="center", vertical="center", wrap_text=True)
+        left = Alignment(horizontal="left", vertical="center", wrap_text=True)
+        thin = Side(style="thin", color="AAB58A")
+        border = Border(left=thin, right=thin, top=thin, bottom=thin)
+        subject_palette = [
+            "F57C00",
+            "E65100",
+            "D81B60",
+            "6D4C41",
+            "FB8C00",
+            "8E24AA",
+            "3949AB",
+            "FF8F00",
+            "9E9D24",
+            "2E7D32",
+            "1E88E5",
+            "C62828",
+        ]
+
+        instructions_sheet.merge_cells("A1:H1")
+        title_cell = instructions_sheet["A1"]
+        title_cell.value = "WHOLE SCHOOL RESULTS IMPORT TEMPLATE"
+        title_cell.fill = olive_fill
+        title_cell.font = Font(bold=True, color="FFFFFF", name="Calibri", size=14)
+        title_cell.alignment = center
+
+        instruction_rows = [
+            (
+                "What this file is for",
+                'Use this workbook with the "Import Whole School Results" button. Each class is on its own sheet.',
+            ),
+            (
+                "Term and exam",
+                "Choose the correct term and exam type in the app before importing this workbook.",
+            ),
+            (
+                "Sheet names",
+                "Keep class sheet names as they are: PP1, PP2, Grade 1 ... Grade 9.",
+            ),
+            (
+                "Required columns",
+                "Keep the header row with No, Admission No, Learner Name, then subject columns.",
+            ),
+            (
+                "Marks format",
+                "Enter marks from 0 to 100. Leave cells blank where a learner has no mark.",
+            ),
+            (
+                "Streams",
+                'If you use streams, you may rename a sheet like "Grade 4 Blue". The class will still be detected.',
+            ),
+            (
+                "Summary sheets",
+                "Any sheet with words like SUMMARY or ANALYSIS is skipped automatically during import.",
+            ),
+            (
+                "Important",
+                "Do not delete the Learner Name column. The importer uses it to identify each learner row.",
+            ),
+        ]
+
+        for row_idx, (label, text) in enumerate(instruction_rows, start=3):
+            for col_idx in range(1, 9):
+                cell = instructions_sheet.cell(row=row_idx, column=col_idx)
+                cell.border = border
+                cell.alignment = left
+                cell.font = normal_font
+            label_cell = instructions_sheet.cell(row=row_idx, column=1, value=label)
+            label_cell.fill = header_fill
+            label_cell.font = dark_font
+            text_cell = instructions_sheet.cell(row=row_idx, column=2, value=text)
+            text_cell.font = normal_font
+
+        note_row = 14
+        instructions_sheet.merge_cells(start_row=note_row, start_column=1, end_row=note_row, end_column=8)
+        note_cell = instructions_sheet.cell(
+            row=note_row,
+            column=1,
+            value="Class sheets below are ready for direct data entry. Fill learner rows only; blank rows are safe.",
+        )
+        note_cell.fill = soft_fill
+        note_cell.font = dark_font
+        note_cell.alignment = left
+        note_cell.border = border
+
+        for col, width in {
+            "A": 24,
+            "B": 70,
+            "C": 14,
+            "D": 14,
+            "E": 14,
+            "F": 14,
+            "G": 14,
+            "H": 14,
+        }.items():
+            instructions_sheet.column_dimensions[col].width = width
+
+        for level_name, class_names in CLASSES_BY_LEVEL.items():
+            for class_name in class_names:
+                subjects = self._get_whole_school_template_subject_headers(class_name)
+                stream_names = self._get_known_stream_names(class_name)
+                sheet_targets = (
+                    [(class_name, stream_name) for stream_name in stream_names]
+                    if stream_names
+                    else [(class_name, "")]
+                )
+
+                for _, stream_name in sheet_targets:
+                    sheet_title_text = (
+                        f"{class_name} {stream_name}".strip()
+                        if stream_name
+                        else class_name
+                    )
+                    sheet = workbook.create_sheet(
+                        title=self._safe_excel_sheet_name(
+                            sheet_title_text, class_name
+                        )
+                    )
+                    sheet.sheet_view.showGridLines = False
+                    headers = ["No", "Admission No", "Learner Name"] + list(subjects)
+                    total_cols = len(headers)
+
+                    sheet.merge_cells(
+                        start_row=1, start_column=1, end_row=1, end_column=total_cols
+                    )
+                    sheet_title = sheet.cell(
+                        row=1,
+                        column=1,
+                        value=f"{sheet_title_text} | Whole School Import Template",
+                    )
+                    sheet_title.fill = olive_fill
+                    sheet_title.font = Font(
+                        bold=True, color="FFFFFF", name="Calibri", size=13
+                    )
+                    sheet_title.alignment = center
+                    sheet_title.border = border
+
+                    sheet.merge_cells(
+                        start_row=2, start_column=1, end_row=2, end_column=total_cols
+                    )
+                    subtitle_text = (
+                        f"Fill learner marks below for stream {stream_name}. Keep the header row unchanged. Blanks are allowed."
+                        if stream_name
+                        else "Fill learner marks below. Keep the header row unchanged. Blanks are allowed."
+                    )
+                    subtitle = sheet.cell(
+                        row=2,
+                        column=1,
+                        value=subtitle_text,
+                    )
+                    subtitle.fill = soft_fill
+                    subtitle.font = Font(
+                        bold=True, color="2F3B1A", name="Calibri", size=10
+                    )
+                    subtitle.alignment = left
+                    subtitle.border = border
+
+                    for col_idx, header in enumerate(headers, start=1):
+                        cell = sheet.cell(row=4, column=col_idx, value=header)
+                        cell.border = border
+                        cell.alignment = left if col_idx == 3 else center
+                        if col_idx <= 3:
+                            cell.fill = olive_fill
+                            cell.font = white_font
+                        else:
+                            cell.fill = PatternFill(
+                                "solid",
+                                fgColor=subject_palette[
+                                    (col_idx - 4) % len(subject_palette)
+                                ],
+                            )
+                            cell.font = white_font
+
+                    for row_idx in range(5, 45):
+                        row_fill = soft_fill if row_idx % 2 == 0 else white_fill
+                        for col_idx in range(1, total_cols + 1):
+                            cell = sheet.cell(row=row_idx, column=col_idx)
+                            cell.fill = row_fill
+                            cell.font = normal_font
+                            cell.border = border
+                            cell.alignment = left if col_idx == 3 else center
+                        sheet.cell(row=row_idx, column=1, value=row_idx - 4)
+
+                    sheet.column_dimensions["A"].width = 8
+                    sheet.column_dimensions["B"].width = 16
+                    sheet.column_dimensions["C"].width = 30
+                    for col_idx in range(4, total_cols + 1):
+                        sheet.column_dimensions[get_column_letter(col_idx)].width = 15
+                    sheet.freeze_panes = "D5"
+                    sheet.auto_filter.ref = f"A4:{get_column_letter(total_cols)}44"
+
+        workbook.save(file_path)
+
+    def _open_whole_school_template_guide(self):
+        guide_path = os.path.join(
+            os.path.dirname(os.path.abspath(__file__)),
+            "WHOLE_SCHOOL_IMPORT_TEMPLATE_GUIDE.md",
+        )
+        if not os.path.exists(guide_path):
+            return False
+        try:
+            os.startfile(guide_path)
+            return True
+        except Exception:
+            return False
+
+    def download_whole_school_marks_template(self):
+        """Export a multi-sheet marks template covering all classes in the school."""
+        file_path = filedialog.asksaveasfilename(
+            title="Save Whole School Results Template",
+            defaultextension=".xlsx",
+            filetypes=[("Excel files", "*.xlsx")],
+            initialfile="whole_school_results_template.xlsx",
+        )
+        if not file_path:
+            return
+
+        try:
+            self._write_whole_school_results_template(file_path)
+            messagebox.showinfo(
+                "Template Saved",
+                f"Whole-school results template saved to:\n{file_path}\n\n"
+                "It includes one sheet for each class, and one sheet per stream where streams already exist.\n"
+                "The guide will open automatically.",
+            )
+            self._open_whole_school_template_guide()
+        except Exception as exc:
+            messagebox.showerror(
+                "Template Error",
+                f"Could not create whole-school template:\n{exc}",
+            )
+
     def import_whole_school_marks_excel(self):
         """Import a multi-sheet workbook that contains results for many classes."""
         dlg = tk.Toplevel(self.root)
@@ -12756,13 +15879,60 @@ class SchoolReportApp:
             wb = openpyxl.load_workbook(file_path, data_only=True)
             progress_dialog, status_label, percent_label, progress = (
                 self._open_progress_dialog(
-                    "Importing Marks", "Scanning workbook sheets..."
+                    "Importing Marks",
+                    "Scanning workbook sheets...",
+                    allow_cancel=True,
                 )
             )
 
             parsed_sheets = []
             skipped_sheets = []
             total_sheets = len(wb.worksheets)
+
+            def ensure_not_cancelled():
+                if self._progress_cancel_requested(progress_dialog):
+                    raise ImportCancelledError(
+                        "Marks import cancelled.\n\nAny rows imported before cancellation were kept."
+                    )
+
+            def build_marks_progress_details(
+                current_sheet="",
+                processed_students=0,
+                total_students=0,
+                updated=0,
+                created=0,
+                skipped=0,
+                unmatched=0,
+                sheets_ready=0,
+                sheets_skipped=0,
+                subjects_added_count=0,
+                classes_added_count=0,
+            ):
+                detail_lines = []
+                if current_sheet:
+                    detail_lines.append(f"Sheet: {current_sheet}")
+                if total_students:
+                    detail_lines.append(
+                        f"Rows processed: {processed_students}/{total_students}"
+                    )
+                detail_lines.append(
+                    f"Updated: {updated}   Created: {created}   Skipped: {skipped}"
+                )
+                if unmatched:
+                    detail_lines.append(f"Unmatched rows: {unmatched}")
+                detail_lines.append(
+                    f"Sheets ready: {sheets_ready}   Sheets skipped: {sheets_skipped}"
+                )
+                if subjects_added_count or classes_added_count:
+                    detail_lines.append(
+                        f"New subjects: {subjects_added_count}   New classes: {classes_added_count}"
+                    )
+                return "\n".join(detail_lines)
+            
+            # Collect and import subjects and classes from mark sheets
+            unique_subjects = set()
+            unique_classes = set()
+            
             for sheet_index, ws in enumerate(wb.worksheets, start=1):
                 self._update_progress_dialog(
                     progress_dialog,
@@ -12772,12 +15942,47 @@ class SchoolReportApp:
                     sheet_index - 1,
                     total_sheets,
                     f"Scanning sheet {sheet_index} of {total_sheets}: {ws.title}",
+                    build_marks_progress_details(
+                        current_sheet=ws.title,
+                        sheets_ready=len(parsed_sheets),
+                        sheets_skipped=len(skipped_sheets),
+                    ),
                 )
+                ensure_not_cancelled()
                 parsed = self._parse_assessment_sheet(ws)
                 if parsed:
                     parsed_sheets.append(parsed)
+                    # Collect subjects
+                    for student_data in parsed.get("students", []):
+                        for subject in student_data.get("marks", {}).keys():
+                            unique_subjects.add(subject)
+                    # Collect class
+                    class_name_from_sheet = parsed.get("class_name", "")
+                    if class_name_from_sheet:
+                        unique_classes.add(class_name_from_sheet)
                 elif not self._get_sheet_context(ws.title, ws).get("is_summary"):
                     skipped_sheets.append(ws.title)
+            
+            # Import subjects without redundancy
+            subjects_added = 0
+            for subject_name in unique_subjects:
+                ensure_not_cancelled()
+                if not db.get_subject_by_name(subject_name):
+                    level = self._determine_class_level(term)  # Use term as hint
+                    category = "Core"
+                    success, _ = db.add_subject(subject_name, level, category)
+                    if success:
+                        subjects_added += 1
+            
+            # Import classes without redundancy
+            classes_added = 0
+            for class_name_from_data in unique_classes:
+                ensure_not_cancelled()
+                if not db.get_class_by_name(class_name_from_data):
+                    level = self._determine_class_level(class_name_from_data)
+                    success, _ = db.add_class(class_name_from_data, level)
+                    if success:
+                        classes_added += 1
 
             if parsed_sheets:
                 total_updated = 0
@@ -12787,11 +15992,16 @@ class SchoolReportApp:
                     len(parsed["students"]) for parsed in parsed_sheets
                 )
                 processed_students = 0
+                unmatched_students = 0
+                skipped_students = 0
                 class_import_summary = {}
 
                 for parsed in parsed_sheets:
                     sheet_class = parsed["class_name"]
                     stream_name = parsed.get("stream_name", "")
+                    sheet_class, stream_name = self._ensure_import_class_setup(
+                        sheet_class, stream_name
+                    )
                     target_label = (
                         f"{sheet_class} [{stream_name}]" if stream_name else sheet_class
                     )
@@ -12828,7 +16038,21 @@ class SchoolReportApp:
                             processed_students,
                             total_students,
                             f"Importing {item['name'].strip()} into {sheet_class} ({processed_students}/{total_students})",
+                            build_marks_progress_details(
+                                current_sheet=parsed.get("sheet_name", target_label),
+                                processed_students=processed_students,
+                                total_students=total_students,
+                                updated=total_updated,
+                                created=total_created,
+                                skipped=skipped_students,
+                                unmatched=unmatched_students,
+                                sheets_ready=len(parsed_sheets),
+                                sheets_skipped=len(skipped_sheets),
+                                subjects_added_count=subjects_added,
+                                classes_added_count=classes_added,
+                            ),
                         )
+                        ensure_not_cancelled()
                         name_key = self._normalize_key(item["name"])
                         student = name_to_student.get(name_key)
                         if not student:
@@ -12867,7 +16091,20 @@ class SchoolReportApp:
                     total_students,
                     total_students,
                     "Refreshing marks grid...",
+                    build_marks_progress_details(
+                        processed_students=total_students,
+                        total_students=total_students,
+                        updated=total_updated,
+                        created=total_created,
+                        skipped=skipped_students,
+                        unmatched=unmatched_students,
+                        sheets_ready=len(parsed_sheets),
+                        sheets_skipped=len(skipped_sheets),
+                        subjects_added_count=subjects_added,
+                        classes_added_count=classes_added,
+                    ),
                 )
+                ensure_not_cancelled()
                 if (
                     getattr(self, "marks_class_cb", None)
                     and self.marks_class_cb.winfo_exists()
@@ -12897,7 +16134,9 @@ class SchoolReportApp:
                     f"Sheets skipped: {len(skipped_sheets)}\n"
                     f"Targets: {', '.join(affected_targets)}\n"
                     f"Student records updated: {total_updated}\n"
-                    f"New students created with auto admission numbers: {total_created}\n\n"
+                    f"New students created with auto admission numbers: {total_created}\n"
+                    f"New subjects added: {subjects_added}\n"
+                    f"New classes added: {classes_added}\n\n"
                     f"Class breakdown:\n"
                     + "\n".join(breakdown_lines)
                     + (
@@ -12936,7 +16175,17 @@ class SchoolReportApp:
                 0,
                 max(1, total_rows),
                 "Workbook did not match assessment layout. Using flat table import...",
+                build_marks_progress_details(
+                    current_sheet="Flat table import",
+                    processed_students=0,
+                    total_students=total_rows,
+                    sheets_ready=len(parsed_sheets),
+                    sheets_skipped=len(skipped_sheets),
+                    subjects_added_count=subjects_added,
+                    classes_added_count=classes_added,
+                ),
             )
+            ensure_not_cancelled()
 
             df.columns = [str(c).strip().lower() for c in df.columns]
 
@@ -13010,7 +16259,20 @@ class SchoolReportApp:
                     index - 1,
                     total_rows,
                     f"Importing marks row {index} of {total_rows}...",
+                    build_marks_progress_details(
+                        current_sheet="Flat table import",
+                        processed_students=index - 1,
+                        total_students=total_rows,
+                        updated=updated,
+                        skipped=skipped,
+                        unmatched=len(not_found),
+                        sheets_ready=len(parsed_sheets),
+                        sheets_skipped=len(skipped_sheets),
+                        subjects_added_count=subjects_added,
+                        classes_added_count=classes_added,
+                    ),
                 )
+                ensure_not_cancelled()
 
                 def _clean(val):
                     value = str(val).strip()
@@ -13049,7 +16311,20 @@ class SchoolReportApp:
                 total_rows,
                 total_rows,
                 "Refreshing marks grid...",
+                build_marks_progress_details(
+                    current_sheet="Flat table import",
+                    processed_students=total_rows,
+                    total_students=total_rows,
+                    updated=updated,
+                    skipped=skipped,
+                    unmatched=len(not_found),
+                    sheets_ready=len(parsed_sheets),
+                    sheets_skipped=len(skipped_sheets),
+                    subjects_added_count=subjects_added,
+                    classes_added_count=classes_added,
+                ),
             )
+            ensure_not_cancelled()
             if (
                 getattr(self, "marks_class_cb", None)
                 and self.marks_class_cb.winfo_exists()
@@ -13071,6 +16346,14 @@ class SchoolReportApp:
             messagebox.showinfo("Import Complete", msg)
             return True
 
+        except ImportCancelledError as exc:
+            if progress_dialog is not None:
+                try:
+                    progress_dialog.destroy()
+                except Exception:
+                    pass
+            messagebox.showinfo("Import Cancelled", str(exc))
+            return False
         except Exception as exc:
             if progress_dialog is not None:
                 try:
@@ -13823,8 +17106,8 @@ class SchoolReportApp:
                 pagesize=pagesize,
                 rightMargin=content_block_x,
                 leftMargin=content_block_x,
-                topMargin=content_inset,
-                bottomMargin=content_inset,
+                topMargin=header_height + content_inset,
+                bottomMargin=footer_height + content_inset,
             )
 
             styles = getSampleStyleSheet()
@@ -13879,8 +17162,6 @@ class SchoolReportApp:
             )
 
             elements = []
-            if header_path:
-                elements.append(Spacer(1, header_height + 6))
             if not header_path:
                 elements.append(Paragraph("MT OLIVES ADVENTIST SCHOOL", styles["ResultsTitle"]))
             elements.append(
@@ -14341,6 +17622,301 @@ class SchoolReportApp:
             return True
         except Exception as exc:
             messagebox.showerror("Error", f"Failed to generate results PDF:\n{exc}")
+            return False
+
+    def generate_student_list_pdf(self, class_name, stream_name, file_path):
+        """Generate a printable student list PDF with report-style letterhead."""
+        try:
+            students = db.get_students_by_class_and_stream(class_name, stream_name)
+            if not students:
+                messagebox.showwarning("No Data", f"No students found for {class_name} {stream_name}")
+                return False
+
+            class_level = self._get_level_for_class(class_name)
+            theme = self._get_level_theme(class_level)
+            context = {"is_pp": self._is_pre_primary_level(class_level)}
+            layout = self._get_report_layout_profile(context)
+
+            letterhead_assets = get_letterhead_assets()
+            header_path = letterhead_assets.get("header_path")
+            footer_path = letterhead_assets.get("footer_path")
+            footer_lines = letterhead_assets.get("footer_lines", [])
+            meta_label_color = OLIVE_DARK
+            meta_value_color = theme["title"]
+
+            def _image_height(image_path, width, min_height, max_height):
+                if not image_path or not os.path.exists(image_path):
+                    return min_height
+                try:
+                    image_obj = get_processed_letterhead_image(
+                        image_path, "header" if image_path == header_path else "footer"
+                    )
+                    if image_obj is None:
+                        return min_height
+                    scaled = width * image_obj.height / float(image_obj.width)
+                    return max(min_height, min(max_height, scaled))
+                except Exception:
+                    return min_height
+
+            pagesize = A4  # Portrait for student lists usually better
+            border_inset = 10
+            content_inset = 24
+            max_content_width = pagesize[0] - (content_inset * 2)
+
+            # Columns: #, Adm No, Student Name, Gender, Stream, Guardian, Email
+            col_widths = [
+                max_content_width * 0.05,  # #
+                max_content_width * 0.12,  # Adm No
+                max_content_width * 0.25,  # Student Name
+                max_content_width * 0.08,  # Gender
+                max_content_width * 0.10,  # Stream
+                max_content_width * 0.18,  # Guardian
+                max_content_width * 0.22,  # Email
+            ]
+
+            page_inner_width = sum(col_widths)
+            header_height = _image_height(
+                header_path,
+                page_inner_width,
+                layout["pdf_header_min"],
+                layout["pdf_header_max"],
+            )
+            footer_height = _image_height(
+                footer_path,
+                page_inner_width,
+                layout["pdf_footer_min"],
+                layout["pdf_footer_max"],
+            )
+
+            doc = SimpleDocTemplate(
+                file_path,
+                pagesize=pagesize,
+                rightMargin=content_inset,
+                leftMargin=content_inset,
+                topMargin=header_height + content_inset,
+                bottomMargin=footer_height + content_inset,
+            )
+
+            styles = getSampleStyleSheet()
+            styles.add(
+                ParagraphStyle(
+                    name="ResultsTitle",
+                    parent=styles["Heading1"],
+                    fontName="Helvetica-Bold",
+                    fontSize=max(12, layout["pdf_title_font"]),
+                    leading=layout["pdf_title_font"] + 2,
+                    alignment=1,
+                    textColor=colors.HexColor(theme["title"]),
+                    spaceAfter=6,
+                )
+            )
+            styles.add(
+                ParagraphStyle(
+                    name="ResultsMetaValue",
+                    parent=styles["BodyText"],
+                    fontName="Helvetica-Bold",
+                    fontSize=max(8, layout["pdf_normal_font"]),
+                    leading=layout["pdf_normal_font"] + 2,
+                    textColor=colors.HexColor(theme["title"]),
+                )
+            )
+            styles.add(
+                ParagraphStyle(
+                    name="ResultsCell",
+                    parent=styles["BodyText"],
+                    fontName="Helvetica",
+                    fontSize=max(7, layout["pdf_normal_font"] - 1),
+                    leading=max(8, layout["pdf_normal_font"]),
+                    alignment=1,
+                )
+            )
+            styles.add(
+                ParagraphStyle(
+                    name="ResultsCellLeft",
+                    parent=styles["ResultsCell"],
+                    alignment=0,
+                )
+            )
+
+            elements = []
+            if not header_path:
+                elements.append(Paragraph("MT OLIVES ADVENTIST SCHOOL", styles["ResultsTitle"]))
+            
+            elements.append(
+                Table([[""]], colWidths=[doc.width], rowHeights=[2], style=TableStyle([
+                    ("BACKGROUND", (0, 0), (-1, -1), colors.HexColor(theme["title"])),
+                    ("LEFTPADDING", (0, 0), (-1, -1), 0),
+                    ("RIGHTPADDING", (0, 0), (-1, -1), 0),
+                    ("TOPPADDING", (0, 0), (-1, -1), 0),
+                    ("BOTTOMPADDING", (0, 0), (-1, -1), 0),
+                ]))
+            )
+            elements.append(Spacer(1, 6))
+
+            title_text = f"STUDENT LIST - {class_name.upper()}"
+            if stream_name:
+                title_text += f" ({stream_name.upper()})"
+            elements.append(Paragraph(title_text, styles["ResultsTitle"]))
+            elements.append(Spacer(1, 4))
+
+            info_items = [
+                ("Class", class_name),
+                ("Stream", stream_name if stream_name else "All Streams"),
+                ("Date", datetime.now().strftime("%d %b %Y")),
+                ("Total Students", str(len(students))),
+            ]
+
+            info_rows = [[
+                Paragraph(
+                    f"<font color='{meta_label_color}'><b>{label}</b></font><br/>"
+                    f"<font color='{meta_value_color}'>{value}</font>",
+                    styles["ResultsMetaValue"],
+                )
+                for label, value in info_items
+            ]]
+            info_table = Table(
+                info_rows,
+                colWidths=[page_inner_width / len(info_items)] * len(info_items),
+                hAlign="CENTER",
+            )
+            info_table.setStyle(
+                TableStyle([
+                    ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+                    ("LEFTPADDING", (0, 0), (-1, -1), 8),
+                    ("RIGHTPADDING", (0, 0), (-1, -1), 8),
+                    ("TOPPADDING", (0, 0), (-1, -1), 5),
+                    ("BOTTOMPADDING", (0, 0), (-1, -1), 5),
+                    ("BACKGROUND", (0, 0), (-1, -1), colors.HexColor(theme["header_bg"])),
+                    ("BOX", (0, 0), (-1, -1), 0.8, colors.HexColor(theme["line"])),
+                ])
+            )
+            elements.append(info_table)
+            elements.append(Spacer(1, 12))
+
+            table_headers = [
+                Paragraph("<b>#</b>", styles["ResultsCell"]),
+                Paragraph("<b>Adm No</b>", styles["ResultsCell"]),
+                Paragraph("<b>Student Name</b>", styles["ResultsCellLeft"]),
+                Paragraph("<b>Gnd</b>", styles["ResultsCell"]),
+                Paragraph("<b>Stream</b>", styles["ResultsCell"]),
+                Paragraph("<b>Guardian</b>", styles["ResultsCellLeft"]),
+                Paragraph("<b>Contact Email</b>", styles["ResultsCellLeft"]),
+            ]
+
+            table_data = [table_headers]
+            for idx, student in enumerate(students, 1):
+                row = [
+                    Paragraph(str(idx), styles["ResultsCell"]),
+                    Paragraph(str(student.get("admission_no", "")), styles["ResultsCell"]),
+                    Paragraph(str(student.get("name", "")), styles["ResultsCellLeft"]),
+                    Paragraph(str(student.get("gender", "")[:1]), styles["ResultsCell"]),
+                    Paragraph(str(student.get("stream", "")), styles["ResultsCell"]),
+                    Paragraph(str(student.get("guardian_name", "")), styles["ResultsCellLeft"]),
+                    Paragraph(str(student.get("parent_email", "")), styles["ResultsCellLeft"]),
+                ]
+                table_data.append(row)
+
+            students_table = Table(table_data, colWidths=col_widths, repeatRows=1, hAlign="LEFT")
+            table_style = [
+                ("BOX", (0, 0), (-1, -1), 0.8, colors.HexColor(theme["grid"])),
+                ("GRID", (0, 0), (-1, -1), 0.35, colors.HexColor(theme["grid"])),
+                ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor(theme["header_bg"])),
+                ("TEXTCOLOR", (0, 0), (-1, 0), colors.HexColor(theme["muted"])),
+                ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+                ("LEFTPADDING", (0, 0), (-1, -1), 4),
+                ("RIGHTPADDING", (0, 0), (-1, -1), 4),
+                ("TOPPADDING", (0, 0), (-1, -1), 4),
+                ("BOTTOMPADDING", (0, 0), (-1, -1), 4),
+            ]
+            for row_index in range(1, len(table_data)):
+                row_bg = colors.white if row_index % 2 else colors.HexColor(theme["accent_soft"])
+                table_style.append(("BACKGROUND", (0, row_index), (-1, row_index), row_bg))
+            
+            students_table.setStyle(TableStyle(table_style))
+            elements.append(students_table)
+
+            footer_text = " | ".join(footer_lines) if footer_lines else "In God We Excel"
+
+            def _draw_student_list_page(canvas_obj, pdf_doc, page_num, total_pages):
+                canvas_obj.saveState()
+                canvas_obj.setStrokeColor(colors.HexColor(theme["title"]))
+                canvas_obj.setLineWidth(1.6)
+                canvas_obj.rect(
+                    border_inset,
+                    border_inset,
+                    pdf_doc.pagesize[0] - (border_inset * 2),
+                    pdf_doc.pagesize[1] - (border_inset * 2),
+                )
+
+                inner_x = pdf_doc.leftMargin
+                inner_width = pdf_doc.width
+                page_height = pdf_doc.pagesize[1]
+
+                if header_path and os.path.exists(header_path):
+                    header_img = get_processed_letterhead_image(header_path, "header")
+                    if header_img is not None:
+                        canvas_obj.drawImage(
+                            ImageReader(header_img),
+                            inner_x,
+                            page_height - content_inset + 8 - header_height,
+                            width=inner_width,
+                            height=header_height,
+                            preserveAspectRatio=False,
+                            mask="auto",
+                        )
+
+                page_number_y = 16
+                if footer_path or footer_text:
+                    page_number_y = max(page_number_y, 18 + footer_height + 2)
+
+                canvas_obj.setFont("Helvetica", 8)
+                canvas_obj.setFillColor(colors.HexColor("#666666"))
+                canvas_obj.drawRightString(
+                    pdf_doc.pagesize[0] - content_inset,
+                    page_number_y,
+                    f"Page {page_num} of {total_pages}",
+                )
+
+                if footer_path and os.path.exists(footer_path):
+                    footer_img = get_processed_letterhead_image(footer_path, "footer")
+                    if footer_img is not None:
+                        canvas_obj.drawImage(
+                            ImageReader(footer_img),
+                            inner_x,
+                            16,
+                            width=inner_width,
+                            height=footer_height,
+                            preserveAspectRatio=False,
+                            mask="auto",
+                        )
+                    else:
+                        canvas_obj.drawCentredString(pdf_doc.pagesize[0] / 2, 24, footer_text)
+                else:
+                    canvas_obj.drawCentredString(pdf_doc.pagesize[0] / 2, 24, footer_text)
+
+                canvas_obj.restoreState()
+
+            class StudentListPageCanvas(canvas.Canvas):
+                def __init__(self, *args, **kwargs):
+                    super().__init__(*args, **kwargs)
+                    self._saved_page_states = []
+
+                def showPage(self):
+                    self._saved_page_states.append(dict(self.__dict__))
+                    self._startPage()
+
+                def save(self):
+                    total_pages = len(self._saved_page_states)
+                    for state in self._saved_page_states:
+                        self.__dict__.update(state)
+                        _draw_student_list_page(self, doc, self._pageNumber, total_pages)
+                        super().showPage()
+                    super().save()
+
+            doc.build(elements, canvasmaker=StudentListPageCanvas)
+            return True
+        except Exception as exc:
+            messagebox.showerror("Error", f"Failed to generate student list PDF:\n{exc}")
             return False
 
     # ==================== WESTERN SPOTLIGHT EXPORT ====================
@@ -15221,111 +18797,15 @@ class SchoolReportApp:
 
             # Preview-style aligned assessment matrix for all report-card PDFs
             term_marks = self._get_student_term_marks(s["id"], term)
-            assessment_titles = ["1ST ASSESSMENT", "2ND ASSESSMENT", "3RD ASSESSMENT"]
-            assessment_order = ["Opener", "Mid-Term", "End-Term"]
-            scale_entries = context.get("grade_scales", []) or pp_scales
-            scale_codes = (
-                context.get("grade_codes", []) or pp_codes or ["EE", "ME", "AE", "BE"]
-            )
-            scale_display_map = {
-                str(scale.get("code", "") or "").strip(): str(
-                    scale.get("display", "") or scale.get("code", "") or ""
-                ).strip()
-                for scale in scale_entries
-            }
-            scale_codes_sorted = [code for code in scale_codes if code] or [
-                "EE",
-                "ME",
-                "AE",
-                "BE",
-            ]
-
-            def _format_mark(raw_value):
-                try:
-                    value = float(raw_value)
-                    return str(int(value)) if value.is_integer() else f"{value:.1f}"
-                except (TypeError, ValueError):
-                    return str(raw_value or "")
-
-            def _get_base_and_suffix(code):
-                code_str = str(code).strip()
-                if (
-                    len(code_str) > 1
-                    and code_str[-1].isdigit()
-                    and code_str[:-1].isalpha()
-                ):
-                    return code_str[:-1], code_str[-1]
-                return code_str, None
-
-            has_prefixed_codes = any(
-                _get_base_and_suffix(c)[1] is not None for c in scale_codes_sorted
-            )
-
-            if has_prefixed_codes:
-                # Group codes by base (EE -> EE1, EE2)
-                base_groups = {}
-                for code in scale_codes_sorted:
-                    base, suffix = _get_base_and_suffix(code)
-                    if base not in base_groups:
-                        base_groups[base] = []
-                    base_groups[base].append((code, suffix))
-
-                # Get scale info for sorting bases
-                base_order = []
-                for base in base_groups.keys():
-                    base_info = next(
-                        (
-                            s
-                            for s in scale_entries
-                            if str(s.get("code", s.get("grade_code", ""))).startswith(
-                                base
-                            )
-                        ),
-                        {},
-                    )
-                    sort_val = base_info.get("value") or base_info.get("points", 0) or 0
-                    base_order.append((base, sort_val))
-                base_order.sort(
-                    key=lambda x: x[1] if x[1] is not None else 0, reverse=True
-                )
-                sorted_bases = [b[0] for b in base_order]
-
-                # Build 3-row header for prefixed codes
-                top_header = ["LEARNING AREAS"]
-                mid_header = [""]
-                sub_header = [""]
-                for title in assessment_titles:
-                    for base in sorted_bases:
-                        group_size = len(base_groups[base])
-                        top_header.extend([base] + [""] * (group_size - 1))
-                        mid_header.extend([base] + [""] * (group_size - 1))
-                        for code, suffix in base_groups[base]:
-                            code_info = next(
-                                (
-                                    s
-                                    for s in scale_entries
-                                    if s.get("code", s.get("grade_code", "")) == code
-                                ),
-                                {},
-                            )
-                            value = code_info.get("value", code_info.get("points", ""))
-                            sub_header.append(f"{suffix}({value})" if value else suffix)
-                marks_data = [top_header, mid_header, sub_header]
-                repeat_rows = 3
-            else:
-                # Original 2-row header
-                top_header = ["LEARNING AREAS"]
-                sub_header = [""]
-                for title in assessment_titles:
-                    top_header.extend([title] + [""] * (len(scale_codes_sorted) - 1))
-                    sub_header.extend(
-                        [
-                            scale_display_map.get(code, code)
-                            for code in scale_codes_sorted
-                        ]
-                    )
-                marks_data = [top_header, sub_header]
-                repeat_rows = 2
+            matrix_spec = self._get_report_assessment_matrix_spec(context)
+            assessment_titles = matrix_spec["assessment_titles"]
+            assessment_order = matrix_spec["assessment_order"]
+            scale_codes_sorted = matrix_spec["scale_codes"]
+            marks_data = [["LEARNING AREAS"], [""]]
+            for title in assessment_titles:
+                marks_data[0].extend([title] + [""] * (len(scale_codes_sorted) - 1))
+                marks_data[1].extend(scale_codes_sorted)
+            repeat_rows = 2
 
             for subj in subjects:
                 row = [
@@ -15349,7 +18829,9 @@ class SchoolReportApp:
                     except (TypeError, ValueError):
                         grade_code = ""
                     display_mark = (
-                        _format_mark(raw_mark) if str(raw_mark).strip() != "" else ""
+                        self._format_report_mark_value(raw_mark)
+                        if str(raw_mark).strip() != ""
+                        else ""
                     )
                     for code in scale_codes_sorted:
                         row.append(display_mark if grade_code == code else "")
@@ -15395,31 +18877,26 @@ class SchoolReportApp:
             ]
             current_col = 1
             for _ in assessment_order:
-                if has_prefixed_codes:
-                    for base in sorted_bases:
-                        group_size = len(base_groups[base])
-                        marks_table_style.append(
-                            (
-                                "SPAN",
-                                (current_col, 0),
-                                (current_col + group_size - 1, 0),
-                            )
-                        )
-                        current_col += group_size
-                else:
-                    marks_table_style.append(
-                        (
-                            "SPAN",
-                            (current_col, 0),
-                            (current_col + len(scale_codes_sorted) - 1, 0),
-                        )
-                    )
-                    current_col += len(scale_codes_sorted)
-
-            # Add line between header rows for 3-row case
-            if has_prefixed_codes:
                 marks_table_style.append(
-                    ("LINEBELOW", (0, 1), (-1, 1), 0.5, pdf_grid_color)
+                    (
+                        "SPAN",
+                        (current_col, 0),
+                        (current_col + len(scale_codes_sorted) - 1, 0),
+                    )
+                )
+                current_col += len(scale_codes_sorted)
+
+            group_width = len(scale_codes_sorted)
+            for assessment_idx in range(1, len(assessment_order)):
+                group_start_col = 1 + (assessment_idx * group_width)
+                marks_table_style.append(
+                    (
+                        "LINEBEFORE",
+                        (group_start_col, 0),
+                        (group_start_col, -1),
+                        0.8,
+                        pdf_grid_color,
+                    )
                 )
 
             for row_index in range(repeat_rows, len(marks_data)):
@@ -15430,19 +18907,6 @@ class SchoolReportApp:
                 marks_table_style.append(
                     ("LINEBELOW", (0, row_index), (-1, row_index), 0.35, pdf_grid_color)
                 )
-                # Add vertical borders between assessments
-                current_col = 1 + left_width  # Start after the subject column
-                for assessment_idx in range(len(assessment_order) - 1):
-                    current_col += len(scale_codes_sorted)
-                    marks_table_style.append(
-                        (
-                            "LINEABOVE",
-                            (current_col, row_index),
-                            (current_col, row_index),
-                            0.35,
-                            pdf_grid_color,
-                        )
-                    )
 
             marks_table.setStyle(TableStyle(marks_table_style))
             elements.append(marks_table)
@@ -16337,6 +19801,15 @@ class SchoolReportApp:
         )
         self.ch_cls_cb.set("All")
         self.ch_cls_cb.pack(side="left", ipady=4)
+        lbl("Stream:")
+        self.ch_stream_cb = ttk.Combobox(
+            ctrl,
+            state="readonly",
+            style="App.TCombobox",
+            width=14,
+        )
+        self.ch_stream_cb.pack(side="left", ipady=4)
+        self._refresh_chart_streams(reload_results=False)
         lbl("Term:")
         self.ch_term_cb = ttk.Combobox(
             ctrl, values=TERMS, state="readonly", style="App.TCombobox", width=10
@@ -16349,7 +19822,10 @@ class SchoolReportApp:
         )
         self.ch_exam_cb.set(DEFAULT_EXAM_TYPE)
         self.ch_exam_cb.pack(side="left", ipady=4)
-        self.ch_cls_cb.bind("<<ComboboxSelected>>", lambda e: self.load_charts())
+        self.ch_cls_cb.bind(
+            "<<ComboboxSelected>>", lambda e: self._refresh_chart_streams()
+        )
+        self.ch_stream_cb.bind("<<ComboboxSelected>>", lambda e: self.load_charts())
         self.ch_term_cb.bind("<<ComboboxSelected>>", lambda e: self.load_charts())
         self.ch_exam_cb.bind("<<ComboboxSelected>>", lambda e: self.load_charts())
 
@@ -16372,7 +19848,14 @@ class SchoolReportApp:
         cls = self.ch_cls_cb.get()
         term = self.ch_term_cb.get()
         exam_type = self.ch_exam_cb.get() or DEFAULT_EXAM_TYPE
+        selected_stream = self._get_selected_chart_stream()
         results = self._get_ranked_results(cls, term, exam_type)
+        if selected_stream:
+            results = [
+                r
+                for r in results
+                if r.get("student", {}).get("stream", "").strip() == selected_stream
+            ]
         subjects = self._get_subjects_for_scope(cls, term, exam_type, results)
         plot_panel = _mix_hex(getattr(self, "_chart_card_bg", CARD_BG), "#ffffff", 0.5)
         for ax in self.axes.flat:
@@ -16496,6 +19979,12 @@ class SchoolReportApp:
             cls_perf = {}
             for c in self.get_current_classes():
                 cr = self._get_ranked_results(c, term, exam_type)
+                if selected_stream:
+                    cr = [
+                        r
+                        for r in cr
+                        if r.get("student", {}).get("stream", "").strip() == selected_stream
+                    ]
                 cls_perf[c] = (
                     round(sum(r["average"] for r in cr) / len(cr), 1) if cr else 0
                 )
@@ -16678,6 +20167,43 @@ class SchoolReportApp:
         else:
             entries = list(catalog)
         return [name for _, name, _, _ in entries]
+
+    def _get_whole_school_template_subject_headers(self, class_name):
+        resolved_class = self._match_known_class_name(class_name) or str(
+            class_name or ""
+        ).strip()
+        if resolved_class in {"PP1", "PP2"}:
+            return ["LANG", "MATH", "ENVI", "CRE", "CREATIVE"]
+        if resolved_class in {"Grade 1", "Grade 2", "Grade 3"}:
+            return ["LANG", "MATH", "KIS", "ENVI", "CRE", "CREATIVE", "FRENCH"]
+        if resolved_class in {"Grade 4", "Grade 5", "Grade 6"}:
+            return [
+                "ENG",
+                "MATH",
+                "KIS",
+                "SCI",
+                "AGRI",
+                "SST",
+                "CRE",
+                "CREATIVE",
+                "FRENCH",
+            ]
+        if resolved_class in {"Grade 7", "Grade 8", "Grade 9"}:
+            return [
+                "MATH",
+                "ENG",
+                "KIS",
+                "INT. SCI",
+                "AGRI",
+                "SST",
+                "CRE",
+                "C/A",
+                "PRE-TECH",
+                "FRENCH",
+            ]
+        return self._get_catalog_subject_names_for_level(
+            self._get_level_for_class(resolved_class)
+        )
 
     def _get_class_teacher_name(self, class_name, stream_name=""):
         def alias_keys(value):
@@ -16910,6 +20436,40 @@ class SchoolReportApp:
             "Junior School (Grade 7-9)": "JUNIOR SCHOOL",
         }.get(class_level, "LEARNER")
         return f"ASSESSMENT SUMMARY REPORT\n{level_short}"
+
+    def _get_report_assessment_matrix_spec(self, context):
+        default_codes = (
+            ["EE", "ME", "AE", "BE"]
+            if context.get("is_pp")
+            else ["EE", "ME", "AE", "BE", "IE"]
+        )
+        scale_codes = []
+        for scale in context.get("grade_scales", []):
+            code = str(scale.get("code", scale.get("grade_code", "")) or "").strip()
+            if code and code not in scale_codes:
+                scale_codes.append(code)
+        for code in context.get("grade_codes", []) or default_codes:
+            code = str(code or "").strip()
+            if code and code not in scale_codes:
+                scale_codes.append(code)
+        if not scale_codes:
+            scale_codes = list(default_codes)
+        return {
+            "assessment_order": ["Opener", "Mid-Term", "End-Term"],
+            "assessment_titles": [
+                "1ST ASSESSMENT",
+                "2ND ASSESSMENT",
+                "3RD ASSESSMENT",
+            ],
+            "scale_codes": scale_codes,
+        }
+
+    def _format_report_mark_value(self, raw_value):
+        try:
+            value = float(raw_value)
+            return str(int(value)) if value.is_integer() else f"{value:.1f}"
+        except (TypeError, ValueError):
+            return str(raw_value or "")
 
     def _get_level_theme(self, class_level):
         palette = {
@@ -17462,8 +21022,6 @@ class SchoolReportApp:
         comment_text = context.get("comment_text") or " "
         term_marks = self._get_student_term_marks(s["id"], term)
         subjects = context.get("subjects", [])
-        scales = context.get("grade_scales", [])
-        scale_codes = context.get("grade_codes", ["EE", "ME", "AE", "BE"])
         year_text = context.get("year", str(datetime.now().year))
 
         layout = self._get_report_layout_profile(context)
@@ -17476,8 +21034,10 @@ class SchoolReportApp:
         accent_soft = theme.get("accent_soft", "#f7f7f7")
 
         # Assessment info
-        assessments = ["Opener", "Mid-Term", "End-Term"]
-        assessment_titles = ["1ST ASSESSMENT", "2ND ASSESSMENT", "3RD ASSESSMENT"]
+        matrix_spec = self._get_report_assessment_matrix_spec(context)
+        assessments = matrix_spec["assessment_order"]
+        assessment_titles = matrix_spec["assessment_titles"]
+        scale_codes = matrix_spec["scale_codes"]
         class_level = context.get("class_level", "")
 
         # Render level-specific header
@@ -17552,29 +21112,8 @@ class SchoolReportApp:
         tbl_inner.pack(fill="both", expand=True)
 
         num_grades = len(scale_codes)
-        scale_codes_sorted = sorted(
-            scale_codes,
-            key=lambda x: next(
-                (
-                    s.get("value", 0)
-                    for s in scales
-                    if s.get("code", s.get("grade_code", "")) == x
-                ),
-                0,
-            ),
-            reverse=True,
-        )
-
-        # Detect if using prefixed grade codes (EE1, EE2, ME1, ME2, etc.)
-        def _get_base_and_suffix(code):
-            code_str = str(code).strip()
-            if len(code_str) > 1 and code_str[-1].isdigit() and code_str[:-1].isalpha():
-                return code_str[:-1], code_str[-1]
-            return code_str, None
-
-        has_prefixed_codes = any(
-            _get_base_and_suffix(c)[1] is not None for c in scale_codes_sorted
-        )
+        separator_columns = []
+        assessment_start_cols = []
 
         # Header row 1: Learning Areas + Assessment titles
         tk.Label(
@@ -17589,160 +21128,54 @@ class SchoolReportApp:
         ).grid(
             row=0,
             column=0,
-            rowspan=2 if not has_prefixed_codes else 3,
+            rowspan=2,
             sticky="nsew",
             padx=0,
             pady=0,
         )
         tbl_inner.grid_columnconfigure(0, weight=2, minsize=140)
 
-        if has_prefixed_codes:
-            # Group codes by base (EE -> EE1, EE2)
-            base_groups = {}
-            for code in scale_codes_sorted:
-                base, suffix = _get_base_and_suffix(code)
-                if base not in base_groups:
-                    base_groups[base] = []
-                base_groups[base].append((code, suffix))
-
-            # Sort bases by their sort order in scales
-            base_order = []
-            for base in base_groups.keys():
-                base_info = next(
-                    (
-                        s
-                        for s in scales
-                        if s.get("code", s.get("grade_code", "")).startswith(base)
-                    ),
-                    {},
-                )
-                sort_val = base_info.get("value") or base_info.get("points", 0) or 0
-                base_order.append((base, sort_val))
-            base_order.sort(key=lambda x: x[1] if x[1] is not None else 0, reverse=True)
-            sorted_bases = [b[0] for b in base_order]
-
         current_col = 1
-        for idx, (assessment, title) in enumerate(zip(assessments, assessment_titles)):
-            if has_prefixed_codes:
-                # For prefixed codes, create merged header for each base group
-                for base in sorted_bases:
-                    group_size = len(base_groups[base])
-                    tk.Label(
-                        tbl_inner,
-                        text=base,
-                        bg=header_bg,
-                        fg=text_muted,
-                        font=(FF, layout["table_header_font"], "bold"),
-                        pady=layout["row_pad"],
-                    ).grid(
-                        row=0,
-                        column=current_col,
-                        columnspan=group_size,
-                        sticky="nsew",
-                        padx=0,
-                        pady=0,
-                    )
-                    current_col += group_size
-            else:
+        for assessment_idx, title in enumerate(assessment_titles):
+            assessment_start_cols.append(current_col)
+            tk.Label(
+                tbl_inner,
+                text=title,
+                bg=header_bg,
+                fg=text_muted,
+                font=(FF, layout["table_header_font"], "bold"),
+                pady=layout["row_pad"],
+            ).grid(
+                row=0,
+                column=current_col,
+                columnspan=num_grades,
+                sticky="nsew",
+                padx=0,
+                pady=0,
+            )
+            for grade_idx, code in enumerate(scale_codes):
+                col_index = current_col + grade_idx
+                bg = "#f5f5f5" if grade_idx % 2 == 0 else accent_soft
                 tk.Label(
                     tbl_inner,
-                    text=title,
-                    bg=header_bg,
+                    text=code,
+                    bg=bg,
                     fg=text_muted,
-                    font=(FF, layout["table_header_font"], "bold"),
-                    pady=layout["row_pad"],
-                ).grid(
-                    row=0,
-                    column=current_col,
-                    columnspan=num_grades,
-                    sticky="nsew",
-                    padx=0,
-                    pady=0,
+                    font=(FF, layout["table_sub_font"], "bold"),
+                    pady=max(3, layout["row_pad"] - 1),
+                ).grid(row=1, column=col_index, sticky="nsew", padx=0, pady=0)
+                tbl_inner.grid_columnconfigure(col_index, weight=1, minsize=45)
+            current_col += num_grades
+            if assessment_idx < len(assessment_titles) - 1:
+                separator_columns.append(current_col)
+                tk.Label(tbl_inner, text="", bg=header_bg).grid(
+                    row=0, column=current_col, sticky="nsew", padx=0, pady=0
                 )
-                current_col += num_grades
-
-        # Header row 2: Sub-headers for prefixed codes OR grade codes
-        current_col = 1
-        if has_prefixed_codes:
-            # Row 2: base group headers (merged per group)
-            for assessment in assessments:
-                for base in sorted_bases:
-                    group_size = len(base_groups[base])
-                    bg_color = header_bg
-                    tk.Label(
-                        tbl_inner,
-                        text=base,
-                        bg=bg_color,
-                        fg=text_muted,
-                        font=(FF, layout["table_sub_font"], "bold"),
-                        pady=max(3, layout["row_pad"] - 1),
-                    ).grid(
-                        row=1,
-                        column=current_col,
-                        columnspan=group_size,
-                        sticky="nsew",
-                        padx=0,
-                        pady=0,
-                    )
-                    current_col += group_size
-
-            # Row 3: suffix numbers (1, 2, etc.)
-            current_col = 1
-            for assessment in assessments:
-                for base in sorted_bases:
-                    for code, suffix in base_groups[base]:
-                        grade_info = next(
-                            (
-                                s
-                                for s in scales
-                                if s.get("code", s.get("grade_code", "")) == code
-                            ),
-                            {},
-                        )
-                        value = grade_info.get("value", grade_info.get("points", ""))
-                        display = f"{suffix}({value})" if value else suffix
-                        bg = (
-                            "#f5f5f5"
-                            if (base_groups[base].index((code, suffix)) % 2 == 0)
-                            else accent_soft
-                        )
-                        tk.Label(
-                            tbl_inner,
-                            text=display,
-                            bg=bg,
-                            fg=text_muted,
-                            font=(FF, layout["table_sub_font"], "bold"),
-                            pady=max(3, layout["row_pad"] - 1),
-                        ).grid(row=2, column=current_col, sticky="nsew", padx=0, pady=0)
-                        tbl_inner.grid_columnconfigure(
-                            current_col, weight=1, minsize=45
-                        )
-                        current_col += 1
-        else:
-            # Original: Grade codes directly
-            for assessment in assessments:
-                for grade_idx, code in enumerate(scale_codes_sorted):
-                    grade_info = next(
-                        (
-                            s
-                            for s in scales
-                            if s.get("code", s.get("grade_code", "")) == code
-                        ),
-                        {},
-                    )
-                    value = grade_info.get("value", grade_info.get("points", ""))
-                    display = f"{code}({value})" if value else code
-                    bg = "#f5f5f5" if grade_idx % 2 == 0 else accent_soft
-                    tk.Label(
-                        tbl_inner,
-                        text=display,
-                        bg=bg,
-                        fg=text_muted,
-                        font=(FF, layout["table_sub_font"], "bold"),
-                        pady=max(3, layout["row_pad"] - 1),
-                    ).grid(row=1, column=current_col, sticky="nsew", padx=0, pady=0)
-                    tbl_inner.grid_columnconfigure(current_col, weight=1, minsize=45)
-                    current_col += 1
+                tk.Label(tbl_inner, text="", bg=accent_soft).grid(
+                    row=1, column=current_col, sticky="nsew", padx=0, pady=0
+                )
+                tbl_inner.grid_columnconfigure(current_col, minsize=2)
+                current_col += 1
 
         # Data rows
         for row_index, subject in enumerate(subjects, start=2):
@@ -17762,24 +21195,30 @@ class SchoolReportApp:
             ).grid(row=row_index, column=0, sticky="nsew", padx=0, pady=0)
 
             # Grade cells for each assessment
-            current_col = 1
             for assessment_idx, assessment in enumerate(assessments):
+                current_col = assessment_start_cols[assessment_idx]
                 marks_data = term_marks.get(assessment, {})
                 mark = marks_data.get(subject, "")
+                if str(mark).strip() == "" and assessment == exam_type:
+                    mark = result.get("marks", {}).get(subject, "")
 
                 # Get grade for this mark
                 grade = None
-                if str(mark).strip() not in ("", "None", "0"):
+                if str(mark).strip() not in ("", "None"):
                     try:
                         mark_value = float(mark)
                         grade = self._get_grade_code_for_class(mark_value, class_name)
                     except:
                         pass
 
-                for grade_idx, code in enumerate(scale_codes_sorted):
+                for code in scale_codes:
                     # Display mark if grade matches
                     cell_bg = row_bg
-                    cell_text = str(mark) if grade == code and mark else ""
+                    cell_text = (
+                        self._format_report_mark_value(mark)
+                        if grade == code and str(mark).strip() != ""
+                        else ""
+                    )
                     cell_font = (FF, layout["table_row_font"])
 
                     tk.Label(
@@ -17795,14 +21234,17 @@ class SchoolReportApp:
                     )
                     current_col += 1
 
-                # Add visible border after each assessment (except the last)
-                if assessment_idx < len(assessments) - 1:
-                    # Vertical separator line after this assessment group
-                    sep_col = current_col
-                    sep = tk.Frame(tbl_inner, bg=grid_border, width=2)
-                    sep.grid(row=row_index, column=sep_col, sticky="ns", padx=0, pady=0)
-                    tbl_inner.grid_columnconfigure(sep_col, minsize=2)
-                    current_col += 1
+        if subjects:
+            for sep_col in separator_columns:
+                sep = tk.Frame(tbl_inner, bg=grid_border, width=2)
+                sep.grid(
+                    row=2,
+                    column=sep_col,
+                    rowspan=len(subjects),
+                    sticky="nsew",
+                    padx=0,
+                    pady=0,
+                )
 
         # Comments
         comment_shell = tk.Frame(parent, bg=grid_border, padx=1, pady=1)
