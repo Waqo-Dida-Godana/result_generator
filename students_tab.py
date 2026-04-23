@@ -3,6 +3,7 @@ from tkinter import ttk, messagebox, filedialog
 from database import db
 from datetime import datetime
 
+
 class StudentsTab:
     def __init__(self, parent, app):
         self.parent = parent
@@ -15,20 +16,46 @@ class StudentsTab:
         filters = tk.Frame(self.parent, bg=self.app.CONTENT_BG, padx=12, pady=8)
         filters.pack(fill="x", pady=(0, 10))
 
-        tk.Label(filters, text="Class:", bg=self.app.CONTENT_BG, fg=self.app.TEXT_SECONDARY, font=(self.app.FF, 10)).pack(side="left", padx=(0, 4))
+        tk.Label(
+            filters,
+            text="Class:",
+            bg=self.app.CONTENT_BG,
+            fg=self.app.TEXT_SECONDARY,
+            font=(self.app.FF, 10),
+        ).pack(side="left", padx=(0, 4))
         self.class_var = tk.StringVar()
-        self.class_cb = ttk.Combobox(filters, textvariable=self.class_var, style="App.TCombobox", width=20, state="readonly")
+        self.class_cb = ttk.Combobox(
+            filters,
+            textvariable=self.class_var,
+            style="App.TCombobox",
+            width=20,
+            state="readonly",
+        )
         self.class_cb.pack(side="left", padx=(0, 12))
         self.class_cb.bind("<<ComboboxSelected>>", self.on_filter_change)
 
         # Load class options
-        class_names = [row.get("name", "") for row in db.get_all_classes() if row.get("name")]
+        class_names = [
+            row.get("name", "") for row in db.get_all_classes() if row.get("name")
+        ]
         self.class_cb["values"] = ["All Classes"] + class_names
         self.class_var.set("All Classes")
 
-        tk.Label(filters, text="Stream:", bg=self.app.CONTENT_BG, fg=self.app.TEXT_SECONDARY, font=(self.app.FF, 10)).pack(side="left", padx=(0, 4))
+        tk.Label(
+            filters,
+            text="Stream:",
+            bg=self.app.CONTENT_BG,
+            fg=self.app.TEXT_SECONDARY,
+            font=(self.app.FF, 10),
+        ).pack(side="left", padx=(0, 4))
         self.stream_var = tk.StringVar(value="All Streams")
-        self.stream_cb = ttk.Combobox(filters, textvariable=self.stream_var, style="App.TCombobox", width=18, state="readonly")
+        self.stream_cb = ttk.Combobox(
+            filters,
+            textvariable=self.stream_var,
+            style="App.TCombobox",
+            width=18,
+            state="readonly",
+        )
         self.stream_cb.pack(side="left", padx=(0, 12))
         self.stream_cb.bind("<<ComboboxSelected>>", self.on_filter_change)
 
@@ -72,17 +99,30 @@ class StudentsTab:
         view_info.pack(side="right")
 
         # Students table
-        self.students_frame = tk.Frame(self.parent, bg=self.app.CARD_BG, relief="sunken", bd=1)
+        self.students_frame = tk.Frame(
+            self.parent, bg=self.app.CARD_BG, relief="sunken", bd=1
+        )
         self.students_frame.pack(fill="both", expand=True, pady=8)
-        
+
         columns = [
-            {"key": "name", "title": "Student Name", "width": 220},
-            {"key": "admission_no", "title": "Adm #", "width": 90},
-            {"key": "gender", "title": "Gender", "width": 70},
-            {"key": "class", "title": "Class", "width": 90},
-            {"key": "stream", "title": "Stream", "width": 100},
-            {"key": "guardian_name", "title": "Guardian", "width": 160},
-            {"key": "parent_email", "title": "Email", "width": 200},
+            {"key": "sno", "title": "#", "width": 50, "anchor": "center"},
+            {
+                "key": "admission_no",
+                "title": "Adm No",
+                "width": 110,
+                "anchor": "center",
+            },
+            {"key": "name", "title": "Student Name", "width": 200, "anchor": "w"},
+            {"key": "class", "title": "Class", "width": 110, "anchor": "center"},
+            {"key": "stream", "title": "Stream", "width": 100, "anchor": "center"},
+            {"key": "gender", "title": "Gnd", "width": 60, "anchor": "center"},
+            {"key": "guardian_name", "title": "Guardian", "width": 150, "anchor": "w"},
+            {
+                "key": "parent_email",
+                "title": "Contact Email",
+                "width": 180,
+                "anchor": "w",
+            },
         ]
         self.students_table = self.app.AdvancedDataTable(
             self.students_frame,
@@ -96,7 +136,7 @@ class StudentsTab:
         self.refresh_streams()
 
     def refresh_students(self):
-        """Load students for current filters."""
+        """Load students for current filters with serial numbers."""
         class_name = self.class_var.get().strip()
         stream_name = self.stream_var.get().strip()
 
@@ -109,31 +149,46 @@ class StudentsTab:
             students = db.get_students_by_class(class_name)
 
         rows = []
-        for student in students:
+        for idx, student in enumerate(students, 1):
+            gender_letter = (
+                student.get("gender", "")[:1] if student.get("gender") else ""
+            )
             row_data = {
                 "iid": student.get("id", ""),
                 "values": (
-                    student.get("name", ""),
+                    str(idx),  # Serial number
                     student.get("admission_no", ""),
-                    student.get("gender", ""),
+                    student.get("name", ""),
                     student.get("class", ""),
                     student.get("stream", ""),
-                    student.get("guardian_name", ""),
-                    student.get("parent_email", ""),
+                    gender_letter,
+                    student.get("guardian_name", "") or "",
+                    student.get("parent_email", "") or "",
                 ),
                 "value_map": {
-                    "name": student.get("name", ""),
+                    "sno": str(idx),
                     "admission_no": student.get("admission_no", ""),
-                    "gender": student.get("gender", ""),
+                    "name": student.get("name", ""),
                     "class": student.get("class", ""),
                     "stream": student.get("stream", ""),
-                    "guardian_name": student.get("guardian_name", ""),
-                    "parent_email": student.get("parent_email", ""),
+                    "gender": student.get("gender", ""),
+                    "guardian_name": student.get("guardian_name", "") or "",
+                    "parent_email": student.get("parent_email", "") or "",
                 },
-                "search": f"{student.get('name', '')} {student.get('admission_no', '')} {student.get('class', '')} {student.get('stream', '')}",
+                "search": " ".join(
+                    [
+                        str(student.get("admission_no", "")),
+                        student.get("name", ""),
+                        student.get("class", ""),
+                        student.get("stream", ""),
+                        student.get("gender", ""),
+                        student.get("guardian_name", "") or "",
+                        student.get("parent_email", "") or "",
+                    ]
+                ),
             }
             rows.append(row_data)
-        
+
         self.students_table.set_rows(rows)
 
     def refresh_streams(self):
@@ -161,27 +216,26 @@ class StudentsTab:
         stream_name = self.stream_var.get().strip()
         if stream_name == "All Streams":
             stream_name = ""
-        
+
         if not class_name or class_name == "All Classes":
             messagebox.showwarning("Warning", "Please select a class first.")
             return
-        
+
         # Generate filename
         timestamp = datetime.now().strftime("%Y%m%d-%H%M")
         filename = f"Student_List_{class_name.replace(' ', '_')}"
         if stream_name:
             filename += f"_{stream_name}"
         filename += f"_{timestamp}.pdf"
-        
+
         file_path = filedialog.asksaveasfilename(
             title="Save Student List PDF",
             defaultextension=".pdf",
             filetypes=[("PDF files", "*.pdf")],
-            initialfile=filename
+            initialfile=filename,
         )
         if not file_path:
             return
-        
+
         # Generate PDF
         self.app.generate_student_list_pdf(class_name, stream_name, file_path)
-
