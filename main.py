@@ -218,7 +218,7 @@ DEFAULT_LEVEL_ORDER = [
     "Junior School (Grade 7-9)",
 ]
 
-DEFAULT_SUBJECT_SHORT_NAMES = {
+LEGACY_DEFAULT_SUBJECT_SHORT_NAMES = {
     "Kiswahili / Kenyan Sign Language": "Kiswahili /\\nKSL",
     "Integrated Science": "Integrated\\nScience",
     "Health Education": "Health\\nEducation",
@@ -243,6 +243,21 @@ DEFAULT_SUBJECT_SHORT_NAMES = {
     "German": "German",
     "Arabic": "Arabic",
     "Kenyan Sign Language": "KSL",
+}
+
+DEFAULT_SUBJECT_SHORT_NAMES = {
+    "Mathematics": "Math",
+    "English": "English",
+    "Kiswahili": "Kiswahili",
+    "Integrated Science": "Integrated Science",
+    "Agriculture": "Agriculture",
+    "Social Studies": "Social Studies",
+    "Christian Religious Education (CRE)": "CRE",
+    "Creative Arts & Sports": "C/A",
+    "Pre-Technical Studies": "Pre-Technical Studies",
+    "French": "French",
+    "Language": "Lang",
+    "Environmental": "Envi",
 }
 
 DEFAULT_SCHOOL_PROFILE = {
@@ -306,14 +321,24 @@ def _load_level_order_from_db():
 def _load_subject_short_names_from_db():
     """Load subject short/display names from database. Fall back to defaults if not configured."""
     subject_names_json = db.get_setting("subject_short_names", "")
-    names = DEFAULT_SUBJECT_SHORT_NAMES.copy()
     if subject_names_json:
         try:
             db_names = json.loads(subject_names_json)
-            names.update(db_names)
+            if db_names == LEGACY_DEFAULT_SUBJECT_SHORT_NAMES:
+                db.set_setting(
+                    "subject_short_names",
+                    json.dumps(DEFAULT_SUBJECT_SHORT_NAMES),
+                )
+                return DEFAULT_SUBJECT_SHORT_NAMES.copy()
+            if isinstance(db_names, dict) and db_names:
+                return {
+                    str(key).strip(): str(value).strip()
+                    for key, value in db_names.items()
+                    if str(key).strip()
+                }
         except (json.JSONDecodeError, ValueError):
             pass
-    return names
+    return DEFAULT_SUBJECT_SHORT_NAMES.copy()
 
 
 def _load_school_profile_from_db():
@@ -355,15 +380,47 @@ def _sort_class_name(name):
     return (int(match.group(1)) if match else 999, str(name or ""))
 
 
+def _is_legacy_subject_level(level):
+    normalized = str(level or "").strip()
+    return normalized in {
+        "Primary",
+        "Pre-Primary",
+        "Lower Primary",
+        "Upper Primary",
+        "Junior Secondary",
+    }
+
+
+def _canonicalize_subject_level(level, fallback=""):
+    normalized = str(level or "").strip()
+    if not normalized:
+        return str(fallback or "").strip()
+    if normalized in LEVELS or normalized == ALL_SUBJECT_LEVEL:
+        return normalized
+
+    lookup = {
+        "pre-primary": "Pre-Primary (PP1-PP2)",
+        "pre primary": "Pre-Primary (PP1-PP2)",
+        "lower primary": "Lower Primary (Grade 1-3)",
+        "upper primary": "Upper Primary (Grade 4-6)",
+        "junior secondary": "Junior School (Grade 7-9)",
+        "junior school": "Junior School (Grade 7-9)",
+    }
+    lowered = normalized.lower()
+    if lowered == "primary":
+        return str(fallback or "").strip() or "Lower Primary (Grade 1-3)"
+    return lookup.get(lowered, normalized)
+
+
 def _build_subject_catalog_from_db():
     rows = db.get_subjects_by_level()
     if not rows:
-        return DEFAULT_SUBJECT_CATALOG
+        return {}
 
     catalog = {}
     for row in rows:
         level = str(row.get("level") or "").strip()
-        if not level:
+        if not level or _is_legacy_subject_level(level):
             continue
         entry = (
             str(row.get("code") or "").strip(),
@@ -402,7 +459,7 @@ def _load_levels_from_db():
             levels.append(level)
     for row in db.get_subjects_by_level():
         level = str(row.get("level") or "").strip()
-        if level and level not in levels:
+        if level and not _is_legacy_subject_level(level) and level not in levels:
             levels.append(level)
     if not levels:
         return DEFAULT_LEVELS
@@ -513,9 +570,9 @@ DEFAULT_SUBJECT_CATALOG = {
     },
 }
 
-# Seed import-time globals from defaults; refresh_dynamic_school_config()
+# Seed import-time globals with empty runtime state; refresh_dynamic_school_config()
 # replaces these with database-backed values once module setup is complete.
-SUBJECT_CATALOG = DEFAULT_SUBJECT_CATALOG
+SUBJECT_CATALOG = {}
 SUBJECTS_BY_LEVEL = _build_subjects_by_level_from_db(SUBJECT_CATALOG)
 
 # Classes by Level
@@ -1562,7 +1619,6 @@ class SchoolReportApp:
             print(f"Could not set window icon: {e}")
 
         self._ensure_default_class_catalog()
-        self._ensure_default_subject_catalog()
         self._ensure_default_grading_scales()
         refresh_dynamic_school_config()
         self.set_level(self.current_level)
@@ -1704,7 +1760,10 @@ class SchoolReportApp:
             meta = db.get_subject_by_name(subject, ALL_SUBJECT_LEVEL)
             if meta:
                 return meta
-        return db.get_subject_by_name(subject) or {}
+        meta = db.get_subject_by_name(subject) or {}
+        if meta and not _is_legacy_subject_level(meta.get("level", "")):
+            return meta
+        return {}
 
     def _get_teacher_label(self, teacher):
         if isinstance(teacher, dict):
@@ -1901,7 +1960,11 @@ class SchoolReportApp:
                             seen.add(subject)
                 for row in all_rows:
                     name = row.get("name", "")
-                    if name and name not in seen:
+                    if (
+                        name
+                        and not _is_legacy_subject_level(row.get("level", ""))
+                        and name not in seen
+                    ):
                         subjects.append(name)
                         seen.add(name)
                 return subjects
@@ -2025,7 +2088,7 @@ class SchoolReportApp:
 
     def _determine_class_level(self, class_name):
         """Determine the appropriate level for a class name during import."""
-        class_name_lower = class_name.lower()
+        class_name_lower = str(class_name or "").lower()
 
         # Check against known level mappings
         for level, classes in CLASSES_BY_LEVEL.items():
@@ -2041,7 +2104,7 @@ class SchoolReportApp:
             word in class_name_lower
             for word in ["pp1", "pp2", "baby", "nursery", "pre"]
         ):
-            return "Pre-Primary"
+            return "Pre-Primary (PP1-PP2)"
         elif any(word in class_name_lower for word in ["grade", "class", "std"]):
             # Extract grade number
             import re
@@ -2050,14 +2113,12 @@ class SchoolReportApp:
             if match:
                 grade_num = int(match.group(1))
                 if grade_num <= 3:
-                    return "Lower Primary"
+                    return "Lower Primary (Grade 1-3)"
                 elif grade_num <= 6:
-                    return "Upper Primary"
-                else:
-                    return "Junior Secondary"
+                    return "Upper Primary (Grade 4-6)"
+                return "Junior School (Grade 7-9)"
 
-        # Default to Primary
-        return "Primary"
+        return LEVELS[0] if LEVELS else DEFAULT_LEVELS[0]
 
     def _get_level_for_class(self, class_name):
         """Get the school level for the given class name."""
@@ -2123,14 +2184,6 @@ class SchoolReportApp:
                 class_name, term, exam_type
             )
             return done_subjects
-
-        # Entry mode fallback: include class pool plus any ad-hoc subjects already captured in marks.
-        subject_set = set(subjects)
-        for student in db.get_students_by_class(class_name):
-            for subject in db.get_student_marks(student["id"], term, exam_type).keys():
-                if subject not in subject_set:
-                    subjects.append(subject)
-                    subject_set.add(subject)
 
         return subjects
 
@@ -2912,7 +2965,7 @@ class SchoolReportApp:
             if raw_key and (raw_key in subject_key or subject_key in raw_key):
                 return subject
 
-        return mapped_candidates[0]
+        return ""
 
     def _find_assessment_header_row(self, worksheet, class_name=""):
         name_aliases = {
@@ -3065,7 +3118,9 @@ class SchoolReportApp:
             label = self._normalize_text(cell)
             if col_idx == learner_col_idx or not label or label in excluded:
                 continue
-            subject_columns.append((col_idx, self._map_sheet_subject(cell, class_name)))
+            mapped_subject = self._map_sheet_subject(cell, class_name)
+            if mapped_subject:
+                subject_columns.append((col_idx, mapped_subject))
 
         if not subject_columns:
             return None
@@ -7004,6 +7059,8 @@ class SchoolReportApp:
         query = str(search_query or "").strip().lower()
 
         for subj in db.get_subjects_by_level():
+            if _is_legacy_subject_level(subj.get("level", "")):
+                continue
             subject_name = subj.get("name", "")
 
             # Find which classes take this subject
@@ -7097,6 +7154,8 @@ class SchoolReportApp:
             rows = db.get_subjects_by_level()
             template_rows = []
             for row in rows:
+                if _is_legacy_subject_level(row.get("level", "")):
+                    continue
                 template_rows.append(
                     {
                         "code": row.get("code", "")
@@ -7296,6 +7355,10 @@ class SchoolReportApp:
                 level = item["level"] or (
                     self.current_level if self.current_level in LEVELS else LEVELS[0]
                 )
+                level = _canonicalize_subject_level(
+                    level,
+                    self.current_level if self.current_level in LEVELS else LEVELS[0],
+                )
                 category = item["category"] or "Core"
                 code = (
                     item["code"]
@@ -7471,8 +7534,16 @@ class SchoolReportApp:
     def _get_subject_pool_for_class(self, class_name):
         level = self._get_level_for_class(class_name)
         subjects = self._get_subjects_for_level(level)
-        level_subjects = db.get_subjects_by_level(level)
-        global_subjects = db.get_subjects_by_level(ALL_SUBJECT_LEVEL)
+        level_subjects = [
+            row
+            for row in db.get_subjects_by_level(level)
+            if not _is_legacy_subject_level(row.get("level", ""))
+        ]
+        global_subjects = [
+            row
+            for row in db.get_subjects_by_level(ALL_SUBJECT_LEVEL)
+            if not _is_legacy_subject_level(row.get("level", ""))
+        ]
         combined_subjects = list(level_subjects or [])
         for row in global_subjects or []:
             name = row.get("name", "")
@@ -7511,9 +7582,6 @@ class SchoolReportApp:
             )
             if matched and matched not in ordered:
                 ordered.append(matched)
-        for subject in remaining:
-            if subject not in ordered:
-                ordered.append(subject)
         return ordered
 
     def _open_class_subjects_done_dialog(self):
@@ -7921,7 +7989,10 @@ class SchoolReportApp:
             code = code_entry.get().strip().upper()
             name = name_entry.get().strip()
             abbreviation = code or abbr_entry.get().strip().upper()
-            level = level_var.get().strip()
+            level = _canonicalize_subject_level(
+                level_var.get().strip(),
+                self.current_level if self.current_level in LEVELS else LEVELS[0],
+            )
             category = category_entry.get().strip()
 
             if not code or not name or not level or not category:
@@ -14683,20 +14754,9 @@ class SchoolReportApp:
                 elif sheet_pack["sheet_default_class"]:
                     unique_classes.add(sheet_pack["sheet_default_class"])
 
-            # Import subjects and classes without redundancy
+            # Import classes without redundancy
             subjects_added = 0
             classes_added = 0
-
-            # Import subjects
-            for subject_name in unique_subjects:
-                ensure_not_cancelled()
-                if not db.get_subject_by_name(subject_name):
-                    # Determine level from context or use default
-                    level = "Primary"  # Default level
-                    category = "Core"  # Default category
-                    success, _ = db.add_subject(subject_name, level, category)
-                    if success:
-                        subjects_added += 1
 
             # Import classes
             for class_name in unique_classes:
@@ -14858,7 +14918,6 @@ class SchoolReportApp:
                 f"Done!  {imported_count} new student(s) added, "
                 f"{updated_count} updated.\n"
                 f"Generated admission numbers: {generated_count}\n"
-                f"New subjects added: {subjects_added}\n"
                 f"New classes added: {classes_added}\n"
                 f"Sheets processed: {len(prepared_sheets)}\n"
                 f"Existing photos were preserved where no new photo was supplied."
@@ -16500,16 +16559,7 @@ class SchoolReportApp:
                 elif not self._get_sheet_context(ws.title, ws).get("is_summary"):
                     skipped_sheets.append(ws.title)
 
-            # Import subjects without redundancy
             subjects_added = 0
-            for subject_name in unique_subjects:
-                ensure_not_cancelled()
-                if not db.get_subject_by_name(subject_name):
-                    level = self._determine_class_level(term)  # Use term as hint
-                    category = "Core"
-                    success, _ = db.add_subject(subject_name, level, category)
-                    if success:
-                        subjects_added += 1
 
             # Import classes without redundancy
             classes_added = 0
@@ -16673,7 +16723,6 @@ class SchoolReportApp:
                     f"Targets: {', '.join(affected_targets)}\n"
                     f"Student records updated: {total_updated}\n"
                     f"New students created with auto admission numbers: {total_created}\n"
-                    f"New subjects added: {subjects_added}\n"
                     f"New classes added: {classes_added}\n\n"
                     f"Class breakdown:\n"
                     + "\n".join(breakdown_lines)
