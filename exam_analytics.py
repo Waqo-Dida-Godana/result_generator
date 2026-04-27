@@ -11,6 +11,7 @@ from typing import List, Dict, Optional, Tuple, Any
 from dataclasses import dataclass, field
 from enum import Enum
 import statistics
+import json
 from database import db
 
 
@@ -89,18 +90,35 @@ class ExamAnalytics:
         DeviationMetric.GRADE_DISTRIBUTION_SHIFT: {'low': 10, 'medium': 25, 'high': 50},
         DeviationMetric.PERFORMANCE_CONSISTENCY: {'low': 0.8, 'medium': 0.6, 'high': 0.4},
     }
-    EXAM_TYPE_ORDER = {
-        'Opener': 1,
-        'Quiz': 2,
-        'Assignment': 3,
-        'Mid-Term': 4,
-        'CAT': 5,
-        'End-Term': 6,
-        'Final': 7,
-    }
-    
     def __init__(self):
         self.db = db
+
+    def _canonical_exam_type(self, raw_exam_type: Any) -> str:
+        raw_value = str(raw_exam_type or '').strip()
+        exam_value = raw_value.lower()
+        if exam_value in ('opener', 'opening'):
+            return 'Opener'
+        if exam_value in ('mid-term', 'midterm', 'mid term'):
+            return 'Mid-Term'
+        if exam_value in ('end-term', 'endterm', 'end term'):
+            return 'End-Term'
+        return raw_value
+
+    def _get_configured_exam_type_order(self) -> Dict[str, int]:
+        raw = self.db.get_setting('exam_types', '')
+        configured = []
+        if raw:
+            try:
+                configured = json.loads(raw)
+            except (json.JSONDecodeError, TypeError, ValueError):
+                configured = []
+        if not configured:
+            configured = ['Opener', 'Mid-Term', 'End-Term']
+        return {
+            self._canonical_exam_type(exam_type): index
+            for index, exam_type in enumerate(configured)
+            if str(exam_type or '').strip()
+        }
     
     # ── Data Retrieval Methods ──────────────────────────────────────────────
     
@@ -184,10 +202,12 @@ class ExamAnalytics:
         return sessions
     
     def _sort_exam_types(self, exam_types: List[str]) -> List[str]:
+        configured_order = self._get_configured_exam_type_order()
         return sorted(
             exam_types,
             key=lambda exam_name: (
-                self.EXAM_TYPE_ORDER.get(str(exam_name or '').strip(), 999),
+                configured_order.get(self._canonical_exam_type(exam_name), 999),
+                self._canonical_exam_type(exam_name).lower(),
                 str(exam_name or '').strip().lower(),
             )
         )
@@ -309,10 +329,12 @@ class ExamAnalytics:
                 **aggregated,
             })
 
+        configured_order = self._get_configured_exam_type_order()
         return sorted(
             summaries,
             key=lambda row: (
-                self.EXAM_TYPE_ORDER.get(row['exam_type'], 999),
+                configured_order.get(self._canonical_exam_type(row['exam_type']), 999),
+                self._canonical_exam_type(row['exam_type']).lower(),
                 str(row['exam_type']).lower(),
             )
         )
@@ -375,12 +397,16 @@ class ExamAnalytics:
                     ),
                 })
 
+        configured_order = self._get_configured_exam_type_order()
         return sorted(
             rows,
             key=lambda row: (
                 -abs(row['score_deviation']),
                 row['subject'].lower(),
-                self.EXAM_TYPE_ORDER.get(row['comparison_exam_type'], 999),
+                configured_order.get(
+                    self._canonical_exam_type(row['comparison_exam_type']), 999
+                ),
+                self._canonical_exam_type(row['comparison_exam_type']).lower(),
             )
         )
     

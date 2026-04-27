@@ -194,6 +194,7 @@ EXAM_TYPES = []
 CBC_GRADE_LEVELS = {}
 LEVEL_ORDER = []
 SUBJECT_SHORT_NAMES = {}
+SCHOOL_PROFILE = {}
 
 # ====================== DEFAULT SEED DATA =====================
 # Fallback defaults used only if database is empty; serve as seed on first run
@@ -242,6 +243,17 @@ DEFAULT_SUBJECT_SHORT_NAMES = {
     "German": "German",
     "Arabic": "Arabic",
     "Kenyan Sign Language": "KSL",
+}
+
+DEFAULT_SCHOOL_PROFILE = {
+    "school_name": "MT OLIVES ADVENTIST SCHOOL",
+    "school_address": "Sajin Close, Along Ngong-Matasia Road, Next to Oryx Petrol Station, Ngong",
+    "school_contact_line": "school@mountolivessda.org | +254 788 700073 | https://mountolivessda.org/",
+    "school_motto": "In God We Excel",
+    "school_location": "Nairobi, Kenya",
+    "school_app_title": "MT OLIVES ADVENTIST SCHOOL, NGONG",
+    "school_sidebar_title": "MT OLIVES",
+    "school_sidebar_subtitle": "ADVENTIST SCHOOL",
 }
 
 # Dynamic database-backed helpers
@@ -304,6 +316,15 @@ def _load_subject_short_names_from_db():
     return names
 
 
+def _load_school_profile_from_db():
+    profile = DEFAULT_SCHOOL_PROFILE.copy()
+    for key, default_value in DEFAULT_SCHOOL_PROFILE.items():
+        value = str(db.get_setting(key, "") or "").strip()
+        if value:
+            profile[key] = value
+    return profile
+
+
 def _seed_school_config_to_db():
     """Seed default school configuration to database if not already set.
     Called during app initialization to populate defaults.
@@ -323,6 +344,10 @@ def _seed_school_config_to_db():
     # Seed subject short names if not already configured
     if not db.get_setting("subject_short_names", ""):
         db.set_setting("subject_short_names", json.dumps(DEFAULT_SUBJECT_SHORT_NAMES))
+
+    for key, default_value in DEFAULT_SCHOOL_PROFILE.items():
+        if not db.get_setting(key, ""):
+            db.set_setting(key, str(default_value))
 
 
 def _sort_class_name(name):
@@ -407,10 +432,10 @@ def _load_classes_by_level_from_db():
 
 def refresh_dynamic_school_config():
     global LEVELS, LEVEL_ORDER, SUBJECT_CATALOG, SUBJECTS_BY_LEVEL, CLASSES_BY_LEVEL, ALL_CLASSES, GRADE_LABELS
-    global EXAM_TYPES, CBC_GRADE_LEVELS, SUBJECT_SHORT_NAMES
+    global EXAM_TYPES, CBC_GRADE_LEVELS, SUBJECT_SHORT_NAMES, SCHOOL_PROFILE
 
-    LEVELS = _load_levels_from_db()
     LEVEL_ORDER = _load_level_order_from_db()
+    LEVELS = _load_levels_from_db()
     CLASSES_BY_LEVEL = _load_classes_by_level_from_db()
     ALL_CLASSES = [
         class_name
@@ -423,6 +448,7 @@ def refresh_dynamic_school_config():
     EXAM_TYPES = _load_exam_types_from_db()
     CBC_GRADE_LEVELS = _load_cbc_grade_levels_from_db()
     SUBJECT_SHORT_NAMES = _load_subject_short_names_from_db()
+    SCHOOL_PROFILE = _load_school_profile_from_db()
 
 
 # Subjects by Level
@@ -791,11 +817,14 @@ def get_processed_letterhead_image(image_path, section="header"):
 
 def get_letterhead_print_lines():
     """Return text lines for printed report headers/footers."""
+    profile = SCHOOL_PROFILE if SCHOOL_PROFILE else DEFAULT_SCHOOL_PROFILE
     default_lines = [
-        "MT OLIVES ADVENTIST SCHOOL",
-        "Sajin Close, Along Ngong-Matasia Road, Next to Oryx Petrol Station, Ngong",
-        "school@mountolivessda.org | +254 788 700073 | https://mountolivessda.org/",
-        "In God We Excel",
+        profile.get("school_name", DEFAULT_SCHOOL_PROFILE["school_name"]),
+        profile.get("school_address", DEFAULT_SCHOOL_PROFILE["school_address"]),
+        profile.get(
+            "school_contact_line", DEFAULT_SCHOOL_PROFILE["school_contact_line"]
+        ),
+        profile.get("school_motto", DEFAULT_SCHOOL_PROFILE["school_motto"]),
     ]
 
     assets = get_letterhead_assets()
@@ -803,6 +832,11 @@ def get_letterhead_print_lines():
     if lines:
         return lines
     return default_lines
+
+
+def get_school_profile():
+    profile = SCHOOL_PROFILE if SCHOOL_PROFILE else DEFAULT_SCHOOL_PROFILE
+    return profile.copy()
 
 
 # ====================== HELPERS ============================
@@ -1439,7 +1473,7 @@ class AdvancedDataTable:
 class SchoolReportApp:
     def __init__(self, root: tk.Tk):
         self.root = root
-        self.root.title("MT OLIVES ADVENTIST SCHOOL,NGONG")
+        self.root.title(get_school_profile().get("school_app_title", "School Report"))
         self.root.geometry("1280x760")
         self.root.configure(bg=CONTENT_BG)
         self.root.minsize(960, 620)
@@ -4353,14 +4387,20 @@ class SchoolReportApp:
             title_box.pack(side="left", padx=8)
             tk.Label(
                 title_box,
-                text="MT OLIVES",
+                text=get_school_profile().get(
+                    "school_sidebar_title",
+                    DEFAULT_SCHOOL_PROFILE["school_sidebar_title"],
+                ),
                 bg=SIDEBAR_BG,
                 fg="white",
                 font=(FF, 10, "bold"),
             ).pack(anchor="w")
             tk.Label(
                 title_box,
-                text="ADVENTIST SCHOOL",
+                text=get_school_profile().get(
+                    "school_sidebar_subtitle",
+                    DEFAULT_SCHOOL_PROFILE["school_sidebar_subtitle"],
+                ),
                 bg=SIDEBAR_BG,
                 fg=SIDEBAR_TEXT,
                 font=(FF, 7),
@@ -4729,7 +4769,8 @@ class SchoolReportApp:
         exam_filter_cb = ttk.Combobox(
             controls,
             textvariable=exam_filter_var,
-            values=["All"] + EXAM_TYPES,
+            values=["All"]
+            + self._get_ordered_exam_type_options(canonicalize_output=True),
             state="readonly",
             style="App.TCombobox",
             width=12,
@@ -4894,16 +4935,6 @@ class SchoolReportApp:
                 tree.move(item_id, "", index)
             sort_state[group_key][column] = not descending
 
-        def normalize_exam_type(raw_exam_type):
-            exam_value = str(raw_exam_type or "").strip().lower()
-            if exam_value in ("opener", "opening"):
-                return "Opener"
-            if exam_value in ("mid-term", "midterm", "mid term"):
-                return "Mid-Term"
-            if exam_value in ("end-term", "endterm", "end term"):
-                return "End-Term"
-            return raw_exam_type or DEFAULT_EXAM_TYPE
-
         def get_stream_options(class_info):
             options = []
             class_name = class_info.get("class_name", "")
@@ -5007,7 +5038,7 @@ class SchoolReportApp:
 
             exams = []
             for index, exam in enumerate(all_exams):
-                exam_type = normalize_exam_type(exam.get("exam_type", ""))
+                exam_type = self._canonical_exam_type(exam.get("exam_type", ""))
                 if selected_exam_type != "All" and exam_type != selected_exam_type:
                     continue
                 exam_copy = dict(exam)
@@ -7388,7 +7419,7 @@ class SchoolReportApp:
 
         divider = "-+-".join("-" * w for w in col_widths)
         lines = [
-            "MT OLIVES ADVENTIST SCHOOL - SUBJECTS LIST",
+            f"{get_school_profile().get('school_name', DEFAULT_SCHOOL_PROFILE['school_name'])} - SUBJECTS LIST",
             "",
             fmt_row(headers),
             divider,
@@ -12906,21 +12937,8 @@ class SchoolReportApp:
             font=(FF, 9),
         ).grid(row=0, column=6, sticky="w", padx=(0, 8))
         self.analytics_exam_type_var = tk.StringVar(value="All Types")
-        available_exam_types = {
-            row.get("exam_type", "")
-            for row in db.get_available_exam_sessions()
-            if str(row.get("exam_type", "")).strip()
-        }
-        exam_type_options = ["All Types"] + sorted(
-            available_exam_types.union({"Opener", "Mid-Term", "End-Term"}),
-            key=lambda value: {
-                "Opener": 1,
-                "Quiz": 2,
-                "Assignment": 3,
-                "Mid-Term": 4,
-                "CAT": 5,
-                "End-Term": 6,
-            }.get(value, 999),
+        exam_type_options = ["All Types"] + self._get_ordered_exam_type_options(
+            include_available_sessions=True
         )
         ttk.Combobox(
             controls_frame,
@@ -17694,7 +17712,12 @@ class SchoolReportApp:
             elements = []
             if not header_path:
                 elements.append(
-                    Paragraph("MT OLIVES ADVENTIST SCHOOL", styles["ResultsTitle"])
+                    Paragraph(
+                        get_school_profile().get(
+                            "school_name", DEFAULT_SCHOOL_PROFILE["school_name"]
+                        ),
+                        styles["ResultsTitle"],
+                    )
                 )
             elements.append(
                 Table(
@@ -18199,8 +18222,8 @@ class SchoolReportApp:
                 )
                 elements.append(summary_row)
 
-            footer_text = (
-                " | ".join(footer_lines) if footer_lines else "In God We Excel"
+            footer_text = " | ".join(footer_lines) if footer_lines else get_school_profile().get(
+                "school_motto", DEFAULT_SCHOOL_PROFILE["school_motto"]
             )
 
             if footer_path or footer_text:
@@ -18416,7 +18439,12 @@ class SchoolReportApp:
             elements = []
             if not header_path:
                 elements.append(
-                    Paragraph("MT OLIVES ADVENTIST SCHOOL", styles["ResultsTitle"])
+                    Paragraph(
+                        get_school_profile().get(
+                            "school_name", DEFAULT_SCHOOL_PROFILE["school_name"]
+                        ),
+                        styles["ResultsTitle"],
+                    )
                 )
 
             elements.append(
@@ -18549,8 +18577,8 @@ class SchoolReportApp:
             students_table.setStyle(TableStyle(table_style))
             elements.append(students_table)
 
-            footer_text = (
-                " | ".join(footer_lines) if footer_lines else "In God We Excel"
+            footer_text = " | ".join(footer_lines) if footer_lines else get_school_profile().get(
+                "school_motto", DEFAULT_SCHOOL_PROFILE["school_motto"]
             )
 
             def _draw_student_list_page(canvas_obj, pdf_doc, page_num, total_pages):
@@ -19119,13 +19147,22 @@ class SchoolReportApp:
             ws.page_setup.fitToHeight = 0
             ws.freeze_panes = f"A{first_data_row}"
             header_lines = get_letterhead_print_lines()
+            school_profile = get_school_profile()
             left_header = (
-                header_lines[0] if header_lines else "MT OLIVES ADVENTIST SCHOOL"
+                header_lines[0]
+                if header_lines
+                else school_profile.get(
+                    "school_name", DEFAULT_SCHOOL_PROFILE["school_name"]
+                )
             )
             center_header = header_lines[1] if len(header_lines) > 1 else ""
             right_header = header_lines[2] if len(header_lines) > 2 else ""
             footer_line = (
-                header_lines[3] if len(header_lines) > 3 else "In God We Excel"
+                header_lines[3]
+                if len(header_lines) > 3
+                else school_profile.get(
+                    "school_motto", DEFAULT_SCHOOL_PROFILE["school_motto"]
+                )
             )
             ws.oddHeader.left.text = left_header
             ws.oddHeader.center.text = center_header
@@ -19331,6 +19368,15 @@ class SchoolReportApp:
             footer_path = letterhead_assets["footer_path"]
             header_lines = letterhead_assets["header_lines"]
             footer_lines = letterhead_assets["footer_lines"]
+            term_marks = self._get_student_term_marks(s["id"], term)
+            matrix_spec = self._get_report_assessment_matrix_spec(
+                context,
+                assessment_types=term_marks.keys(),
+                include_exam_type=exam_type,
+            )
+            assessment_titles = matrix_spec["assessment_matrix_titles"]
+            assessment_order = matrix_spec["assessment_order"]
+            scale_codes_sorted = matrix_spec["scale_codes"]
 
             def _image_height(image_path, target_width, min_height, max_height):
                 if not image_path or not os.path.exists(image_path):
@@ -19354,7 +19400,7 @@ class SchoolReportApp:
                 )
                 if c
             ]
-            _num_early_cols = len(_early_codes) * 3  # 3 assessments
+            _num_early_cols = len(_early_codes) * max(1, len(assessment_order))
             _preferred_code_w = layout.get("pdf_marks_code_width_pp", 28)
             _portrait_inner = A4[0] - 40  # ~555 pt
             needs_landscape = (
@@ -19391,7 +19437,12 @@ class SchoolReportApp:
 
             if not header_path:
                 elements.append(
-                    Paragraph("MT OLIVES ADVENTIST SCHOOL", styles["SchoolName"])
+                    Paragraph(
+                        get_school_profile().get(
+                            "school_name", DEFAULT_SCHOOL_PROFILE["school_name"]
+                        ),
+                        styles["SchoolName"],
+                    )
                 )
             divider = Table([[""]], colWidths=[doc.width], rowHeights=[2])
             divider.setStyle(
@@ -19535,11 +19586,6 @@ class SchoolReportApp:
             elements.append(Spacer(1, layout["pdf_section_gap"]))
 
             # Preview-style aligned assessment matrix for all report-card PDFs
-            term_marks = self._get_student_term_marks(s["id"], term)
-            matrix_spec = self._get_report_assessment_matrix_spec(context)
-            assessment_titles = matrix_spec["assessment_titles"]
-            assessment_order = matrix_spec["assessment_order"]
-            scale_codes_sorted = matrix_spec["scale_codes"]
             marks_data = [["LEARNING AREAS"], [""]]
             for title in assessment_titles:
                 marks_data[0].extend([title] + [""] * (len(scale_codes_sorted) - 1))
@@ -19708,8 +19754,8 @@ class SchoolReportApp:
             )
             elements.append(sign_table)
 
-            footer_text = (
-                " | ".join(footer_lines) if footer_lines else "In God We Excel"
+            footer_text = " | ".join(footer_lines) if footer_lines else get_school_profile().get(
+                "school_motto", DEFAULT_SCHOOL_PROFILE["school_motto"]
             )
 
             def add_border(canvas, doc):
@@ -19858,7 +19904,9 @@ class SchoolReportApp:
         )
         sender_name = self._get_report_email_entry_value(
             self._report_email_settings_entries["smtp_sender_name"]
-        ) or "School Results"
+        ) or get_school_profile().get(
+            "school_name", DEFAULT_SCHOOL_PROFILE["school_name"]
+        )
 
         if not host or not port or not username or not password:
             self._set_report_email_settings_status(
@@ -20404,7 +20452,11 @@ class SchoolReportApp:
         return bool(re.match(r"[^@]+@[^@]+\.[^@]+", str(email or "").strip()))
 
     def _create_result_email_html(self, student, term, exam_type, settings):
-        school_name = "MT. OLIVES ADVENTIST SCHOOL, NGONG"
+        profile = get_school_profile()
+        school_name = profile.get("school_app_title", profile.get("school_name", ""))
+        school_location = profile.get(
+            "school_location", DEFAULT_SCHOOL_PROFILE["school_location"]
+        )
         guardian_name = student.get("guardian_name", "").strip() or "Parent/Guardian"
         sender_name = settings.get("smtp_sender_name", "").strip() or school_name
         stream_html = ""
@@ -20434,8 +20486,8 @@ class SchoolReportApp:
                 <p>
                     Regards,<br>
                     <b>{sender_name}</b><br>
-                    MT. OLIVES ADVENTIST SCHOOL, NGONG<br>
-                    Nairobi, Kenya
+                    {school_name}<br>
+                    {school_location}
                 </p>
                 </div>
             </div>
@@ -20447,7 +20499,9 @@ class SchoolReportApp:
         self, to_email, subject, body, attachment_path, settings, html_body=""
     ):
         msg = EmailMessage()
-        sender_name = settings.get("smtp_sender_name", "").strip() or "School Results"
+        sender_name = settings.get("smtp_sender_name", "").strip() or get_school_profile().get(
+            "school_name", DEFAULT_SCHOOL_PROFILE["school_name"]
+        )
         username = settings.get("smtp_username", "").strip()
         msg["Subject"] = subject
         msg["From"] = f"{sender_name} <{username}>"
@@ -20563,7 +20617,7 @@ class SchoolReportApp:
                         f"Class: {student['class']}\n"
                         f"Term: {log['term']}\n"
                         f"Exam: {log.get('exam_type', DEFAULT_EXAM_TYPE)}\n\n"
-                        f"Regards,\n{settings.get('smtp_sender_name', 'School Results')}"
+                        f"Regards,\n{settings.get('smtp_sender_name', get_school_profile().get('school_name', DEFAULT_SCHOOL_PROFILE['school_name']))}"
                     )
                     html_body = self._create_result_email_html(
                         student,
@@ -20739,7 +20793,7 @@ class SchoolReportApp:
                     f"{'Stream: ' + student.get('stream', '').strip() + chr(10) if student.get('stream', '').strip() else ''}"
                     f"Term: {term}\n"
                     f"Exam: {exam_type}\n\n"
-                    f"Regards,\n{settings.get('smtp_sender_name', 'School Results')}"
+                    f"Regards,\n{settings.get('smtp_sender_name', get_school_profile().get('school_name', DEFAULT_SCHOOL_PROFILE['school_name']))}"
                 )
                 html_body = self._create_result_email_html(
                     student, term, exam_type, settings
@@ -20890,7 +20944,7 @@ class SchoolReportApp:
                         f"{'Stream: ' + student.get('stream', '').strip() + chr(10) if student.get('stream', '').strip() else ''}"
                         f"Term: {term}\n"
                         f"Exam: {exam_type}\n\n"
-                        f"Regards,\n{settings.get('smtp_sender_name', 'School Results')}"
+                        f"Regards,\n{settings.get('smtp_sender_name', get_school_profile().get('school_name', DEFAULT_SCHOOL_PROFILE['school_name']))}"
                     )
                     html_body = self._create_result_email_html(
                         student, term, exam_type, settings
@@ -21351,38 +21405,35 @@ class SchoolReportApp:
         resolved_class = (
             self._match_known_class_name(class_name) or str(class_name or "").strip()
         )
-        if resolved_class in {"PP1", "PP2"}:
-            return ["LANG", "MATH", "ENVI", "CRE", "CREATIVE"]
-        if resolved_class in {"Grade 1", "Grade 2", "Grade 3"}:
-            return ["LANG", "MATH", "KIS", "ENVI", "CRE", "CREATIVE", "FRENCH"]
-        if resolved_class in {"Grade 4", "Grade 5", "Grade 6"}:
-            return [
-                "ENG",
-                "MATH",
-                "KIS",
-                "SCI",
-                "AGRI",
-                "SST",
-                "CRE",
-                "CREATIVE",
-                "FRENCH",
-            ]
-        if resolved_class in {"Grade 7", "Grade 8", "Grade 9"}:
-            return [
-                "MATH",
-                "ENG",
-                "KIS",
-                "INT. SCI",
-                "AGRI",
-                "SST",
-                "CRE",
-                "C/A",
-                "PRE-TECH",
-                "FRENCH",
-            ]
-        return self._get_catalog_subject_names_for_level(
-            self._get_level_for_class(resolved_class)
-        )
+        class_level = self._get_level_for_class(resolved_class)
+        subject_names = self._get_catalog_subject_names_for_level(class_level)
+        headers = []
+        seen = set()
+
+        for subject_name in subject_names:
+            meta = self._get_subject_meta(subject_name, resolved_class)
+            header_value = (
+                str(meta.get("code", "") or "").strip()
+                or str(meta.get("abbreviation", "") or "").strip()
+                or str(self._get_subject_label(subject_name, resolved_class) or "").strip()
+                or str(subject_name or "").strip()
+            )
+            header_value = header_value.upper()
+            if header_value and header_value not in seen:
+                headers.append(header_value)
+                seen.add(header_value)
+
+        if headers:
+            return headers
+
+        fallback_subjects = self._get_subjects_for_level(class_level)
+        return [
+            str(self._get_subject_label(subject_name, resolved_class) or subject_name)
+            .strip()
+            .upper()
+            for subject_name in fallback_subjects
+            if str(subject_name or "").strip()
+        ]
 
     def _get_class_teacher_name(self, class_name, stream_name=""):
         def alias_keys(value):
@@ -21624,7 +21675,105 @@ class SchoolReportApp:
         }.get(class_level, "LEARNER")
         return f"ASSESSMENT SUMMARY REPORT\n{level_short}"
 
-    def _get_report_assessment_matrix_spec(self, context):
+    def _canonical_exam_type(self, raw_exam_type):
+        raw = str(raw_exam_type or "").strip()
+        exam_value = raw.lower()
+        if exam_value in ("opener", "opening"):
+            return "Opener"
+        if exam_value in ("mid-term", "midterm", "mid term"):
+            return "Mid-Term"
+        if exam_value in ("end-term", "endterm", "end term"):
+            return "End-Term"
+        return raw
+
+    def _format_assessment_ordinal(self, number):
+        number = max(1, int(number or 1))
+        if 10 <= (number % 100) <= 20:
+            suffix = "TH"
+        else:
+            suffix = {1: "ST", 2: "ND", 3: "RD"}.get(number % 10, "TH")
+        return f"{number}{suffix}"
+
+    def _get_report_assessment_specs(
+        self, assessment_types=None, include_exam_type=None
+    ):
+        ordered = []
+        seen = set()
+
+        def add(raw_value):
+            value = self._canonical_exam_type(raw_value)
+            if not value or value in seen:
+                return
+            seen.add(value)
+            ordered.append(value)
+
+        for exam_type in EXAM_TYPES:
+            add(exam_type)
+        for exam_type in assessment_types or []:
+            add(exam_type)
+        add(include_exam_type)
+
+        if not ordered:
+            ordered = [self._canonical_exam_type(DEFAULT_EXAM_TYPE)]
+
+        specs = []
+        for index, exam_type in enumerate(ordered, start=1):
+            ordinal = self._format_assessment_ordinal(index)
+            specs.append(
+                {
+                    "key": exam_type,
+                    "title": f"{ordinal} ASSESSMENT",
+                    "label": exam_type,
+                    "matrix_title": f"{ordinal} {str(exam_type).upper()}",
+                }
+            )
+        return specs
+
+    def _get_exam_type_sort_key(self, raw_exam_type):
+        raw_value = str(raw_exam_type or "").strip()
+        canonical_value = self._canonical_exam_type(raw_value)
+        configured_map = {
+            self._canonical_exam_type(exam_type): index
+            for index, exam_type in enumerate(EXAM_TYPES)
+            if str(exam_type or "").strip()
+        }
+        return (
+            configured_map.get(canonical_value, 999),
+            canonical_value.lower(),
+            raw_value.lower(),
+        )
+
+    def _get_ordered_exam_type_options(
+        self, include_available_sessions=False, canonicalize_output=False
+    ):
+        configured = []
+        seen = set()
+        for exam_type in EXAM_TYPES:
+            raw_value = str(exam_type or "").strip()
+            canonical_value = self._canonical_exam_type(raw_value)
+            if not canonical_value or canonical_value in seen:
+                continue
+            configured.append(canonical_value if canonicalize_output else raw_value)
+            seen.add(canonical_value)
+
+        available = []
+        if include_available_sessions:
+            for row in db.get_available_exam_sessions():
+                raw_value = str(row.get("exam_type", "") or "").strip()
+                canonical_value = self._canonical_exam_type(raw_value)
+                if not canonical_value or canonical_value in seen:
+                    continue
+                available.append(
+                    canonical_value if canonicalize_output else raw_value
+                )
+                seen.add(canonical_value)
+
+        available.sort(key=self._get_exam_type_sort_key)
+        return configured + available
+
+    def _get_report_assessment_matrix_spec(
+        self, context, assessment_types=None, include_exam_type=None
+    ):
         default_codes = (
             ["EE", "ME", "AE", "BE"]
             if context.get("is_pp")
@@ -21641,12 +21790,16 @@ class SchoolReportApp:
                 scale_codes.append(code)
         if not scale_codes:
             scale_codes = list(default_codes)
+        assessment_specs = self._get_report_assessment_specs(
+            assessment_types=assessment_types, include_exam_type=include_exam_type
+        )
         return {
-            "assessment_order": ["Opener", "Mid-Term", "End-Term"],
-            "assessment_titles": [
-                "1ST ASSESSMENT",
-                "2ND ASSESSMENT",
-                "3RD ASSESSMENT",
+            "assessment_specs": assessment_specs,
+            "assessment_order": [spec["key"] for spec in assessment_specs],
+            "assessment_titles": [spec["title"] for spec in assessment_specs],
+            "assessment_labels": [spec["label"] for spec in assessment_specs],
+            "assessment_matrix_titles": [
+                spec["matrix_title"] for spec in assessment_specs
             ],
             "scale_codes": scale_codes,
         }
@@ -21830,16 +21983,17 @@ class SchoolReportApp:
                 print(f"Failed to load letterhead header: {exc}")
 
         if not using_header:
+            profile = get_school_profile()
             tk.Label(
                 parent,
-                text="MT OLIVES ADVENTIST SCHOOL",
+                text=profile.get("school_name", DEFAULT_SCHOOL_PROFILE["school_name"]),
                 bg="white",
                 fg="#1b5e20",
                 font=(FF, 15, "bold"),
             ).pack()
             tk.Label(
                 parent,
-                text="In God We Excel",
+                text=profile.get("school_motto", DEFAULT_SCHOOL_PROFILE["school_motto"]),
                 bg="white",
                 fg="#7b8794",
                 font=(FF, 9, "italic"),
@@ -21896,30 +22050,16 @@ class SchoolReportApp:
         accent_soft = theme.get("accent_soft", "#f7f7f7")
         accent_med = theme.get("accent_med", "#e8e8e8")
 
-        # Determine assessments from available data
-        assessments = []
-        assessment_titles = {}
-        assessment_mapping = {
-            "Opener": "1st ASSESSMENT",
-            "Quiz": "QUIZ",
-            "Assignment": "ASSIGNMENT",
-            "Mid-Term": "2nd ASSESSMENT",
-            "CAT": "CAT",
-            "End-Term": "3rd ASSESSMENT",
-            "Final": "FINAL",
+        matrix_spec = self._get_report_assessment_matrix_spec(
+            context,
+            assessment_types=term_marks.keys(),
+            include_exam_type=exam_type,
+        )
+        assessments = matrix_spec["assessment_order"]
+        assessment_titles = {
+            spec["key"]: spec["matrix_title"]
+            for spec in matrix_spec.get("assessment_specs", [])
         }
-
-        for assessment_type in ["Opener", "Mid-Term", "End-Term"]:
-            if any(
-                subject in term_marks.get(assessment_type, {}) for subject in subjects
-            ):
-                assessments.append(assessment_type)
-                assessment_titles[assessment_type] = assessment_mapping.get(
-                    assessment_type, assessment_type
-                )
-
-        if not assessments:
-            assessments = ["Opener", "Mid-Term", "End-Term"]
 
         # Build sorted scale codes with labels and values
         scale_info = {}
@@ -22221,9 +22361,13 @@ class SchoolReportApp:
         accent_soft = theme.get("accent_soft", "#f7f7f7")
 
         # Assessment info
-        matrix_spec = self._get_report_assessment_matrix_spec(context)
+        matrix_spec = self._get_report_assessment_matrix_spec(
+            context,
+            assessment_types=term_marks.keys(),
+            include_exam_type=exam_type,
+        )
         assessments = matrix_spec["assessment_order"]
-        assessment_titles = matrix_spec["assessment_titles"]
+        assessment_titles = matrix_spec["assessment_matrix_titles"]
         scale_codes = matrix_spec["scale_codes"]
         class_level = context.get("class_level", "")
 
@@ -22610,8 +22754,13 @@ class SchoolReportApp:
         tbl_inner.pack(fill="x")
         table_cell_pad = (0, 0)
 
-        assessments = ["Opener", "Mid-Term", "End-Term"]
-        assessment_titles = ["1st ASSESSMENT", "2nd ASSESSMENT", "3rd ASSESSMENT"]
+        matrix_spec = self._get_report_assessment_matrix_spec(
+            context,
+            assessment_types=term_marks.keys(),
+            include_exam_type=exam_type,
+        )
+        assessments = matrix_spec["assessment_order"]
+        assessment_titles = matrix_spec["assessment_matrix_titles"]
 
         tk.Label(
             tbl_inner,
@@ -22973,15 +23122,22 @@ class SchoolReportApp:
             pady=table_cell_pad[1],
         )
 
+        matrix_spec = self._get_report_assessment_matrix_spec(
+            context,
+            assessment_types=term_marks.keys(),
+            include_exam_type=exam_type,
+        )
+        assessment_order = matrix_spec["assessment_order"]
         grouped_headers = [
-            ("1ST ASSESSMENT", "Opener"),
-            ("2ND ASSESSMENT", "Mid-Term"),
-            ("3RD ASSESSMENT", "End-Term"),
-            ("AVERAGE", "Score"),
-            ("GRADE / REMARK", "Result"),
-        ]
+            (title, label)
+            for title, label in zip(
+                matrix_spec["assessment_titles"], matrix_spec["assessment_labels"]
+            )
+        ] + [("AVERAGE", "Score"), ("GRADE / REMARK", "Result")]
         for idx, (header, sublabel) in enumerate(grouped_headers, start=1):
-            tbl_inner.grid_columnconfigure(idx, weight=2 if idx == 5 else 1)
+            tbl_inner.grid_columnconfigure(
+                idx, weight=2 if idx == len(grouped_headers) else 1
+            )
             tk.Label(
                 tbl_inner,
                 text=header,
@@ -23012,17 +23168,18 @@ class SchoolReportApp:
                 sticky="nsew",
                 padx=table_cell_pad[0],
                 pady=table_cell_pad[1],
-            )
+        )
         tbl_inner.grid_columnconfigure(0, weight=3)
 
         for row_index, subject in enumerate(subjects, start=2):
-            opener = term_marks.get("Opener", {}).get(subject, "")
-            mid_term = term_marks.get("Mid-Term", {}).get(subject, "")
-            end_term = term_marks.get("End-Term", {}).get(
-                subject, marks.get(subject, "")
-            )
+            assessment_values = []
+            for assessment in assessment_order:
+                value = term_marks.get(assessment, {}).get(subject, "")
+                if str(value).strip() == "" and assessment == exam_type:
+                    value = marks.get(subject, "")
+                assessment_values.append(value)
             numeric_marks = []
-            for raw in (opener, mid_term, end_term):
+            for raw in assessment_values:
                 try:
                     if str(raw).strip() != "":
                         numeric_marks.append(float(raw))
@@ -23053,7 +23210,7 @@ class SchoolReportApp:
                 padx=table_cell_pad[0],
                 pady=table_cell_pad[1],
             )
-            for col, value in enumerate([opener, mid_term, end_term], start=1):
+            for col, value in enumerate(assessment_values, start=1):
                 tk.Label(
                     tbl_inner,
                     text="" if str(value).strip() == "" else str(value),
@@ -23077,7 +23234,7 @@ class SchoolReportApp:
                 pady=layout["row_pad"],
             ).grid(
                 row=row_index,
-                column=4,
+                column=len(assessment_order) + 1,
                 sticky="nsew",
                 padx=table_cell_pad[0],
                 pady=table_cell_pad[1],
@@ -23092,7 +23249,7 @@ class SchoolReportApp:
                 anchor="w",
             ).grid(
                 row=row_index,
-                column=5,
+                column=len(assessment_order) + 2,
                 sticky="nsew",
                 padx=table_cell_pad[0],
                 pady=table_cell_pad[1],
@@ -23105,9 +23262,9 @@ class SchoolReportApp:
             f"Total: {result['total']}/{result.get('possible_total', len(subjects) * 100)}",
             f"Avg: {result['average']}",
             f"Position: {result['position']} / {total_students}",
-            "",
-            "",
         ]
+        while len(summary_values) < len(assessment_order) + 3:
+            summary_values.append("")
         for col, value in enumerate(summary_values):
             tk.Label(
                 tbl_inner,
@@ -23394,7 +23551,12 @@ class SchoolReportApp:
 
         if is_pp:
             term_marks = self._get_student_term_marks(s["id"], term)
-            assess_types = ["Opener", "Mid-Term", "End-Term"]
+            assess_types = [
+                spec["key"]
+                for spec in self._get_report_assessment_specs(
+                    assessment_types=term_marks.keys(), include_exam_type=exam_type
+                )
+            ]
 
             # Header Row 1
             tk.Label(
@@ -23411,11 +23573,7 @@ class SchoolReportApp:
             for i, at in enumerate(assess_types):
                 tk.Label(
                     tbl,
-                    text=f"{i + 1}st ASSESSMENT"
-                    if i == 0
-                    else (
-                        f"{i + 1}nd ASSESSMENT" if i == 1 else f"{i + 1}rd ASSESSMENT"
-                    ),
+                    text=f"{self._format_assessment_ordinal(i + 1)} ASSESSMENT",
                     bg=HDR_BG,
                     fg=SCH_BLUE,
                     font=(FF, 8, "bold"),
@@ -23747,9 +23905,17 @@ class SchoolReportApp:
             if is_pp
             else "LEARNER ASSESSMENT REPORT CARD"
         )
+        assessment_specs = self._get_report_assessment_specs(
+            assessment_types=self._get_student_term_marks(s["id"], term).keys(),
+            include_exam_type=exam_type,
+        )
+        assessment_order = [spec["key"] for spec in assessment_specs]
+        school_name = get_school_profile().get(
+            "school_name", DEFAULT_SCHOOL_PROFILE["school_name"]
+        )
         lines = [
             "=" * 62,
-            f"      MT OLIVES ADVENTIST SCHOOL",
+            f"      {school_name}",
             f"          {title}",
             "=" * 62,
             f"  Name    : {s['name']:<20}  Grade  : {s.get('class', '').replace('Grade ', '')}",
@@ -23767,7 +23933,11 @@ class SchoolReportApp:
 
         lines.append("-" * 62)
         if is_pp:
-            lines.append(f"  {'Learning Area':<30} {'1st':<4} {'2nd':<4} {'3rd':<4}")
+            assessment_headers = " ".join(
+                f"{self._format_assessment_ordinal(idx):<6}"
+                for idx in range(1, len(assessment_order) + 1)
+            )
+            lines.append(f"  {'Learning Area':<30} {assessment_headers}".rstrip())
         else:
             lines.append(
                 f"  {'Subject':<16} {'Marks':>6}  {'Avg':>6}  Performance Level"
@@ -23778,14 +23948,14 @@ class SchoolReportApp:
             term_marks = self._get_student_term_marks(s["id"], term)
             for sub in subjects:
                 row = f"  {sub[:30]:<30} "
-                for et in ["Opener", "Mid-Term", "End-Term"]:
+                for et in assessment_order:
                     mk = term_marks.get(et, {}).get(sub, "")
                     g = (
                         self._get_grade_code_for_class(mk, s.get("class", ""))
                         if mk
                         else ""
                     )
-                    row += f"{g:<4} "
+                    row += f"{g:<6}"
                 lines.append(row)
         else:
             for sub in subjects:
