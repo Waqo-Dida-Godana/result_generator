@@ -103,13 +103,14 @@ GRADE_COLORS = {
     "BE": "#e67e22",
     "IE": "#e74c3c",
 }
-GRADE_LABELS = {
+DEFAULT_GRADE_LABELS = {
     "EE": "Exceeding Expectations",
     "ME": "Meeting Expectations",
     "AE": "Approaching Expectations",
     "BE": "Below Expectations",
     "IE": "Inadequate",
 }
+GRADE_LABELS = DEFAULT_GRADE_LABELS.copy()
 
 SUBJECT_PALETTE = [
     "#2E7D32",
@@ -178,16 +179,254 @@ TOPBAR_YR_BG = OLIVE_MID
 # Kenyan Competency Based Curriculum (CBC) Structure
 
 # Education Levels
-LEVELS = [
+DEFAULT_LEVELS = [
     "Pre-Primary (PP1-PP2)",
     "Lower Primary (Grade 1-3)",
     "Upper Primary (Grade 4-6)",
     "Junior School (Grade 7-9)",
 ]
+LEVELS = []
 ALL_SCHOOL_LEVEL = "All School (All Levels)"
 
+# ====================== RUNTIME-LOADED CONFIG FROM DATABASE =====================
+# These globals are populated by refresh_dynamic_school_config() at startup
+EXAM_TYPES = []
+CBC_GRADE_LEVELS = {}
+LEVEL_ORDER = []
+SUBJECT_SHORT_NAMES = {}
+
+# ====================== DEFAULT SEED DATA =====================
+# Fallback defaults used only if database is empty; serve as seed on first run
+DEFAULT_EXAM_TYPES = ["Opener", "Mid-Term", "End-Term"]
+
+DEFAULT_CBC_GRADE_LEVELS = {
+    "EE1": {"min": 90, "max": 100},
+    "EE2": {"min": 75, "max": 89},
+    "ME1": {"min": 60, "max": 74},
+    "ME2": {"min": 50, "max": 59},
+    "AE1": {"min": 35, "max": 49},
+    "AE2": {"min": 25, "max": 34},
+    "BE1": {"min": 12, "max": 24},
+    "BE2": {"min": 0, "max": 11},
+}
+
+DEFAULT_LEVEL_ORDER = [
+    "Pre-Primary (PP1-PP2)",
+    "Lower Primary (Grade 1-3)",
+    "Upper Primary (Grade 4-6)",
+    "Junior School (Grade 7-9)",
+]
+
+DEFAULT_SUBJECT_SHORT_NAMES = {
+    "Kiswahili / Kenyan Sign Language": "Kiswahili /\\nKSL",
+    "Integrated Science": "Integrated\\nScience",
+    "Health Education": "Health\\nEducation",
+    "Pre-Technical Studies": "Pre-Technical\\nStudies",
+    "Social Studies": "Social\\nStudies",
+    "Religious Education (CRE/IRE/HRE)": "Religious\\nEducation",
+    "Sports & Physical Education": "Sports &\\nPHE",
+    "Life Skills Education": "Life Skills\\nEducation",
+    "Visual Arts": "Visual\\nArts",
+    "Performing Arts": "Performing\\nArts",
+    "Foreign Languages (French, German, Arabic)": "Foreign\\nLanguages",
+    "Science & Technology": "Science &\\nTechnology",
+    "Christian Religious Education (CRE)": "CRE",
+    "Islamic Religious Education (IRE)": "IRE",
+    "Hindu Religious Education (HRE)": "HRE",
+    "English": "English",
+    "Kiswahili / KSL": "Kiswahili",
+    "Mathematics": "Math",
+    "Agriculture": "Agriculture",
+    "Computer Science": "Computer\\nScience",
+    "French": "French",
+    "German": "German",
+    "Arabic": "Arabic",
+    "Kenyan Sign Language": "KSL",
+}
+
+# Dynamic database-backed helpers
+
+def _load_grade_labels_from_db():
+    labels = {}
+    for row in db.get_grading_scales():
+        code = str(row.get("grade_code") or "").strip().upper()
+        name = str(row.get("grade_name") or "").strip()
+        if code and name:
+            labels.setdefault(code, name)
+    for code, label in DEFAULT_GRADE_LABELS.items():
+        labels.setdefault(code, label)
+    return labels
+
+
+def _load_exam_types_from_db():
+    """Load exam types from database. Fall back to defaults if not configured."""
+    exam_types_json = db.get_setting("exam_types", "")
+    if exam_types_json:
+        try:
+            return json.loads(exam_types_json)
+        except (json.JSONDecodeError, ValueError):
+            pass
+    return DEFAULT_EXAM_TYPES[:]
+
+
+def _load_cbc_grade_levels_from_db():
+    """Load CBC grade level ranges from database. Fall back to defaults if not configured."""
+    cbc_levels_json = db.get_setting("cbc_grade_levels", "")
+    if cbc_levels_json:
+        try:
+            return json.loads(cbc_levels_json)
+        except (json.JSONDecodeError, ValueError):
+            pass
+    return DEFAULT_CBC_GRADE_LEVELS.copy()
+
+
+def _load_level_order_from_db():
+    """Load the order of levels from database. Fall back to defaults if not configured."""
+    level_order_json = db.get_setting("level_order", "")
+    if level_order_json:
+        try:
+            return json.loads(level_order_json)
+        except (json.JSONDecodeError, ValueError):
+            pass
+    return DEFAULT_LEVEL_ORDER[:]
+
+
+def _load_subject_short_names_from_db():
+    """Load subject short/display names from database. Fall back to defaults if not configured."""
+    subject_names_json = db.get_setting("subject_short_names", "")
+    names = DEFAULT_SUBJECT_SHORT_NAMES.copy()
+    if subject_names_json:
+        try:
+            db_names = json.loads(subject_names_json)
+            names.update(db_names)
+        except (json.JSONDecodeError, ValueError):
+            pass
+    return names
+
+
+def _seed_school_config_to_db():
+    """Seed default school configuration to database if not already set.
+    Called during app initialization to populate defaults.
+    """
+    # Seed exam types if not already configured
+    if not db.get_setting("exam_types", ""):
+        db.set_setting("exam_types", json.dumps(DEFAULT_EXAM_TYPES))
+    
+    # Seed CBC grade levels if not already configured
+    if not db.get_setting("cbc_grade_levels", ""):
+        db.set_setting("cbc_grade_levels", json.dumps(DEFAULT_CBC_GRADE_LEVELS))
+    
+    # Seed level order if not already configured
+    if not db.get_setting("level_order", ""):
+        db.set_setting("level_order", json.dumps(DEFAULT_LEVEL_ORDER))
+    
+    # Seed subject short names if not already configured
+    if not db.get_setting("subject_short_names", ""):
+        db.set_setting("subject_short_names", json.dumps(DEFAULT_SUBJECT_SHORT_NAMES))
+
+
+def _sort_class_name(name):
+    match = re.search(r"(\d+)", str(name or ""))
+    return (int(match.group(1)) if match else 999, str(name or ""))
+
+
+def _build_subject_catalog_from_db():
+    rows = db.get_subjects_by_level()
+    if not rows:
+        return DEFAULT_SUBJECT_CATALOG
+
+    catalog = {}
+    for row in rows:
+        level = str(row.get("level") or "").strip()
+        if not level:
+            continue
+        entry = (
+            str(row.get("code") or "").strip(),
+            str(row.get("name") or "").strip(),
+            str(row.get("category") or "Core").strip(),
+            bool(int(row.get("is_optional") or 0)),
+        )
+        level_entries = catalog.setdefault(level, [])
+        level_entries.append(entry)
+
+    normalized = {}
+    for level, entries in catalog.items():
+        core = [entry for entry in entries if not entry[3] and entry[2].strip().lower() != "optional"]
+        optional = [entry for entry in entries if entry[3] or entry[2].strip().lower() == "optional"]
+        normalized[level] = {"core": core, "optional": optional} if optional else core
+    return normalized
+
+
+def _build_subjects_by_level_from_db(subject_catalog):
+    subjects_by_level = {}
+    for level, entries in subject_catalog.items():
+        if isinstance(entries, dict):
+            subjects_by_level[level] = [
+                name for _, name, _, _ in entries.get("core", [])
+            ] + [name for _, name, _, _ in entries.get("optional", [])]
+        else:
+            subjects_by_level[level] = [name for _, name, _, _ in entries]
+    return subjects_by_level
+
+
+def _load_levels_from_db():
+    levels = []
+    for row in db.get_all_classes():
+        level = str(row.get("level") or "").strip()
+        if level and level not in levels:
+            levels.append(level)
+    for row in db.get_subjects_by_level():
+        level = str(row.get("level") or "").strip()
+        if level and level not in levels:
+            levels.append(level)
+    if not levels:
+        return DEFAULT_LEVELS
+
+    ordered = [level for level in LEVEL_ORDER if level in levels]
+    ordered += [level for level in levels if level not in ordered]
+    return ordered
+
+
+def _load_classes_by_level_from_db():
+    rows = db.get_all_classes()
+    if not rows:
+        return DEFAULT_CLASSES_BY_LEVEL
+
+    classes_by_level = {}
+    for row in rows:
+        level = str(row.get("level") or "").strip()
+        name = str(row.get("name") or "").strip()
+        if not level or not name:
+            continue
+        classes_by_level.setdefault(level, []).append(name)
+
+    for level, names in classes_by_level.items():
+        classes_by_level[level] = sorted(set(names), key=_sort_class_name)
+    return classes_by_level
+
+
+def refresh_dynamic_school_config():
+    global LEVELS, LEVEL_ORDER, SUBJECT_CATALOG, SUBJECTS_BY_LEVEL, CLASSES_BY_LEVEL, ALL_CLASSES, GRADE_LABELS
+    global EXAM_TYPES, CBC_GRADE_LEVELS, SUBJECT_SHORT_NAMES
+
+    LEVELS = _load_levels_from_db()
+    LEVEL_ORDER = _load_level_order_from_db()
+    CLASSES_BY_LEVEL = _load_classes_by_level_from_db()
+    ALL_CLASSES = [
+        class_name
+        for level_classes in CLASSES_BY_LEVEL.values()
+        for class_name in level_classes
+    ]
+    SUBJECT_CATALOG = _build_subject_catalog_from_db()
+    SUBJECTS_BY_LEVEL = _build_subjects_by_level_from_db(SUBJECT_CATALOG)
+    GRADE_LABELS = _load_grade_labels_from_db()
+    EXAM_TYPES = _load_exam_types_from_db()
+    CBC_GRADE_LEVELS = _load_cbc_grade_levels_from_db()
+    SUBJECT_SHORT_NAMES = _load_subject_short_names_from_db()
+
+
 # Subjects by Level
-SUBJECT_CATALOG = {
+DEFAULT_SUBJECT_CATALOG = {
     "Pre-Primary (PP1-PP2)": [
         ("LANG", "Language Activities", "Core", False),
         ("MATH", "Mathematical Activities", "Core", False),
@@ -248,42 +487,20 @@ SUBJECT_CATALOG = {
     },
 }
 
-SUBJECTS_BY_LEVEL = {
-    "Pre-Primary (PP1-PP2)": [
-        name for _, name, _, _ in SUBJECT_CATALOG["Pre-Primary (PP1-PP2)"]
-    ],
-    "Lower Primary (Grade 1-3)": [
-        name for _, name, _, _ in SUBJECT_CATALOG["Lower Primary (Grade 1-3)"]
-    ],
-    "Upper Primary (Grade 4-6)": [
-        name for _, name, _, _ in SUBJECT_CATALOG["Upper Primary (Grade 4-6)"]
-    ],
-    "Junior School (Grade 7-9)": {
-        "core": [
-            name
-            for _, name, _, _ in SUBJECT_CATALOG["Junior School (Grade 7-9)"]["core"]
-        ],
-        "optional": [
-            name
-            for _, name, _, _ in SUBJECT_CATALOG["Junior School (Grade 7-9)"][
-                "optional"
-            ]
-        ],
-    },
-}
+# Seed import-time globals from defaults; refresh_dynamic_school_config()
+# replaces these with database-backed values once module setup is complete.
+SUBJECT_CATALOG = DEFAULT_SUBJECT_CATALOG
+SUBJECTS_BY_LEVEL = _build_subjects_by_level_from_db(SUBJECT_CATALOG)
 
 # Classes by Level
-CLASSES_BY_LEVEL = {
+DEFAULT_CLASSES_BY_LEVEL = {
     "Pre-Primary (PP1-PP2)": ["PP1", "PP2"],
     "Lower Primary (Grade 1-3)": ["Grade 1", "Grade 2", "Grade 3"],
     "Upper Primary (Grade 4-6)": ["Grade 4", "Grade 5", "Grade 6"],
     "Junior School (Grade 7-9)": ["Grade 7", "Grade 8", "Grade 9"],
 }
-ALL_CLASSES = [
-    class_name
-    for level_classes in CLASSES_BY_LEVEL.values()
-    for class_name in level_classes
-]
+CLASSES_BY_LEVEL = {}
+ALL_CLASSES = []
 
 # ====================== LEVEL DISPLAY CONFIG =======================
 LEVEL_ORDER = [
@@ -292,6 +509,10 @@ LEVEL_ORDER = [
     "Upper Primary (Grade 4-6)",
     "Junior School (Grade 7-9)",
 ]
+
+# Load any configured school structure from the database immediately on import.
+# This keeps module-level globals in sync with persisted class/subject/grade data.
+refresh_dynamic_school_config()
 
 LEVEL_DISPLAY = {
     "Pre-Primary (PP1-PP2)": {
@@ -434,7 +655,7 @@ CLASSES = list(ALL_CLASSES)
 
 # ====================== CONSTANTS ==========================
 TERMS = ["One", "Two", "Three"]
-EXAM_TYPES = ["Opener", "Mid-Term", "End-Term"]
+# EXAM_TYPES is now loaded dynamically from the database via refresh_dynamic_school_config()
 DEFAULT_EXAM_TYPE = "End-Term"
 EMAIL_SETTING_KEYS = [
     "smtp_host",
@@ -459,26 +680,24 @@ COLORS = {
 
 # ====================== CBC GRADE SUB-LEVELS ===============
 def get_cbc_grade_sublevel(mark):
-    """Return the CBC grade sub-level string (EE1, EE2, ME1, ME2, AE1, AE2, BE1, BE2)."""
+    """Return the CBC grade sub-level string (EE1, EE2, ME1, ME2, AE1, AE2, BE1, BE2).
+    Uses database-backed CBC_GRADE_LEVELS if available, falls back to defaults.
+    """
     try:
         mark = int(mark)
     except (TypeError, ValueError):
         return ""
-    if mark >= 90:
-        return "EE1"
-    if mark >= 75:
-        return "EE2"
-    if mark >= 60:
-        return "ME1"
-    if mark >= 50:
-        return "ME2"
-    if mark >= 35:
-        return "AE1"
-    if mark >= 25:
-        return "AE2"
-    if mark >= 12:
-        return "BE1"
-    return "BE2"
+    
+    # Use the dynamic CBC_GRADE_LEVELS configuration
+    levels = CBC_GRADE_LEVELS if CBC_GRADE_LEVELS else DEFAULT_CBC_GRADE_LEVELS
+    
+    for grade_code in ["EE1", "EE2", "ME1", "ME2", "AE1", "AE2", "BE1", "BE2"]:
+        if grade_code in levels:
+            level_range = levels[grade_code]
+            if level_range["min"] <= mark <= level_range["max"]:
+                return grade_code
+    
+    return ""
 
 
 def get_grade_code(mark):
@@ -804,31 +1023,14 @@ def _install_canvas_mousewheel(canvas, horizontal=False):
 
 
 def short_subject_name(subject):
-    """Compact subject labels for dense table headers."""
+    """Compact subject labels for dense table headers.
+    Uses database-backed SUBJECT_SHORT_NAMES if available, falls back to defaults.
+    """
     subject = str(subject or "").strip()
-    short_map = {
-        "Kiswahili / Kenyan Sign Language": "Kiswahili /\nKSL",
-        "Integrated Science": "Integrated\nScience",
-        "Health Education": "Health\nEducation",
-        "Pre-Technical Studies": "Pre-Technical\nStudies",
-        "Social Studies": "Social\nStudies",
-        "Religious Education (CRE/IRE/HRE)": "Religious\nEducation",
-        "Sports & Physical Education": "Sports &\nPHE",
-        "Life Skills Education": "Life Skills\nEducation",
-        "Visual Arts": "Visual\nArts",
-        "Performing Arts": "Performing\nArts",
-        "Foreign Languages (French, German, Arabic)": "Foreign\nLanguages",
-        "Science & Technology": "Science &\nTechnology",
-        "Christian Religious Education (CRE)": "CRE",
-        "Islamic Religious Education (IRE)": "IRE",
-        "Hindu Religious Education (HRE)": "HRE",
-        "English Language Activities": "English\nActivities",
-        "Kiswahili Language Activities": "Kiswahili\nActivities",
-        "Mathematical Activities": "Math\nActivities",
-        "Environmental Activities": "Environmental\nActivities",
-        "Religious Education Activities": "Religious\nActivities",
-        "Movement & Creative Activities": "Movement &\nCreative",
-    }
+    
+    # Use the dynamic SUBJECT_SHORT_NAMES configuration
+    short_map = SUBJECT_SHORT_NAMES if SUBJECT_SHORT_NAMES else DEFAULT_SUBJECT_SHORT_NAMES
+    
     return short_map.get(subject, subject)
 
 
@@ -1276,6 +1478,18 @@ class SchoolReportApp:
         self._pending_login_notice_after = None
         self._active_notice = None
         self._active_notice_after = None
+        self._is_shutting_down = False
+        self._report_email_settings_host = None
+        self._report_email_settings_panel = None
+        self._report_email_settings_status = None
+        self._report_email_settings_entries = {}
+        self._report_email_settings_tls_var = None
+        self._failed_email_logs_host = None
+        self._failed_email_logs_panel = None
+        self._failed_email_logs_tree = None
+        self._failed_email_logs_rows = []
+        self._failed_email_logs_status = None
+        self._failed_email_logs_title = None
         self.logo_img = self.load_logo()
 
         # Load logo image for use in dashboard
@@ -1290,6 +1504,11 @@ class SchoolReportApp:
             self.logo_image = ImageTk.PhotoImage(img)
         except Exception as e:
             print(f"Could not load logo image: {e}")
+
+        try:
+            self.root.protocol("WM_DELETE_WINDOW", self.shutdown)
+        except Exception:
+            pass
 
         # ── Window / taskbar icon (Windows-compatible .ico) ──────────────────
         try:
@@ -1311,6 +1530,7 @@ class SchoolReportApp:
         self._ensure_default_class_catalog()
         self._ensure_default_subject_catalog()
         self._ensure_default_grading_scales()
+        refresh_dynamic_school_config()
         self.set_level(self.current_level)
         setup_treeview_style()
         self.show_login()
@@ -1350,7 +1570,7 @@ class SchoolReportApp:
             db.set_setting(seed_key, "1")
             return
 
-        for level, classes in CLASSES_BY_LEVEL.items():
+        for level, classes in DEFAULT_CLASSES_BY_LEVEL.items():
             for class_name in classes:
                 if not db.get_class_by_name(class_name):
                     db.add_class(
@@ -1371,7 +1591,7 @@ class SchoolReportApp:
             return
 
         for level in LEVELS:
-            level_subjects = SUBJECT_CATALOG.get(level, [])
+            level_subjects = DEFAULT_SUBJECT_CATALOG.get(level, [])
             if isinstance(level_subjects, dict):
                 catalog = list(level_subjects.get("core", [])) + list(
                     level_subjects.get("optional", [])
@@ -1395,7 +1615,7 @@ class SchoolReportApp:
     def _replace_subject_catalog_with_defaults(self):
         subject_rows = []
         for level in LEVELS:
-            level_subjects = SUBJECT_CATALOG.get(level, [])
+            level_subjects = DEFAULT_SUBJECT_CATALOG.get(level, [])
             if isinstance(level_subjects, dict):
                 catalog = list(level_subjects.get("core", [])) + list(
                     level_subjects.get("optional", [])
@@ -1413,6 +1633,7 @@ class SchoolReportApp:
                     }
                 )
         db.replace_subject_catalog(subject_rows)
+        refresh_dynamic_school_config()
 
     def _ensure_default_grading_scales(self):
         default_scale = [
@@ -3151,6 +3372,15 @@ class SchoolReportApp:
             pass
         self._active_notice_after = None
 
+    def _cancel_topbar_clock_timer(self):
+        if self._topbar_clock_job is None:
+            return
+        try:
+            self.root.after_cancel(self._topbar_clock_job)
+        except Exception:
+            pass
+        self._topbar_clock_job = None
+
     def _show_pending_login_notice(self):
         self._pending_login_notice_after = None
         if not self._pending_login_notice:
@@ -3427,8 +3657,8 @@ class SchoolReportApp:
             return None
 
     def _clear(self):
+        self._cancel_topbar_clock_timer()
         self._topbar_clock_generation += 1
-        self._topbar_clock_job = None
         self._topbar_clock_label = None
         self._topbar_bar = None
         self._topbar_clock_visible = True
@@ -3447,6 +3677,25 @@ class SchoolReportApp:
 
     def clear_root(self):
         self._clear()
+
+    def shutdown(self):
+        if self._is_shutting_down:
+            return
+        self._is_shutting_down = True
+        try:
+            self._clear()
+        except Exception:
+            pass
+        try:
+            if self.root.winfo_exists():
+                self.root.quit()
+        except Exception:
+            pass
+        try:
+            if self.root.winfo_exists():
+                self.root.destroy()
+        except Exception:
+            pass
 
     def _get_active_db_display(self):
         db_path = str(getattr(db, "db_name", "") or "").strip()
@@ -5939,6 +6188,7 @@ class SchoolReportApp:
             else:
                 success, msg = db.add_class(name, level, stream or None, abbreviation)
             if success:
+                refresh_dynamic_school_config()
                 dialog.destroy()
                 if callable(on_save):
                     on_save()
@@ -5990,6 +6240,7 @@ class SchoolReportApp:
         class_id = selected[0]
 
         if db.delete_class(class_id):
+            refresh_dynamic_school_config()
             self._show_delete_result_notice("class", 1, 0)
             self._load_classes(tree)
         else:
@@ -6413,6 +6664,7 @@ class SchoolReportApp:
                 ),
             )
             ensure_not_cancelled()
+            refresh_dynamic_school_config()
 
             try:
                 progress_dialog.destroy()
@@ -7664,6 +7916,7 @@ class SchoolReportApp:
                     name, level, category, optional_var.get(), abbreviation, code
                 )
             if success:
+                refresh_dynamic_school_config()
                 dialog.destroy()
                 self.show_settings()
             else:
@@ -7717,6 +7970,7 @@ class SchoolReportApp:
         for subject_id in selected:
             if not db.delete_subject(subject_id):
                 failures += 1
+        refresh_dynamic_school_config()
         self._load_subjects(tree)
         self._show_delete_result_notice(
             "subject", len(selected) - failures, failures, duration_ms=4200
@@ -7729,6 +7983,7 @@ class SchoolReportApp:
         ):
             return
         self._replace_subject_catalog_with_defaults()
+        refresh_dynamic_school_config()
         self._load_subjects(tree)
         messagebox.showinfo(
             "Subjects Updated",
@@ -13386,7 +13641,6 @@ class SchoolReportApp:
             "View all students with class/stream filters. Print lists with header/footer.",
         )
         self.students_tab = StudentsTab(self.content_frame, self)
-        self.students_tab.build_ui()
 
     def _student_dialog(
         self,
@@ -14560,6 +14814,7 @@ class SchoolReportApp:
                 ),
             )
             ensure_not_cancelled()
+            refresh_dynamic_school_config()
             self.students_tab.refresh_students()
             progress_dialog.destroy()
             scope_note = (
@@ -16369,6 +16624,7 @@ class SchoolReportApp:
                     ),
                 )
                 ensure_not_cancelled()
+                refresh_dynamic_school_config()
                 if (
                     getattr(self, "marks_class_cb", None)
                     and self.marks_class_cb.winfo_exists()
@@ -19514,84 +19770,332 @@ class SchoolReportApp:
         settings["smtp_use_tls"] = settings.get("smtp_use_tls", "0") or "0"
         return settings
 
-    def _open_email_settings_dialog(self):
-        settings = self._get_email_settings()
-        dlg = tk.Toplevel(self.root)
-        dlg.title("Email Settings")
-        dlg.geometry("460x420")
-        dlg.configure(bg=CONTENT_BG)
-        dlg.transient(self.root)
-        dlg.grab_set()
-        dlg.resizable(False, False)
+    def _set_report_email_placeholder(self, entry, placeholder, show=None):
+        entry.delete(0, "end")
+        entry.insert(0, placeholder)
+        entry.configure(fg="#8a9270", show="")
+        entry._placeholder_active = True
+        entry._placeholder_text = placeholder
+        entry._actual_show = show or ""
+
+    def _clear_report_email_placeholder(self, entry):
+        if not getattr(entry, "_placeholder_active", False):
+            return
+        entry.delete(0, "end")
+        entry.configure(fg=TEXT_PRIMARY, show=getattr(entry, "_actual_show", ""))
+        entry._placeholder_active = False
+
+    def _get_report_email_entry_value(self, entry):
+        if getattr(entry, "_placeholder_active", False):
+            return ""
+        return entry.get().strip()
+
+    def _set_report_email_settings_status(self, message="", tone="info"):
+        label = getattr(self, "_report_email_settings_status", None)
+        if not label or not label.winfo_exists():
+            return
+        palette = {
+            "info": ("#eef7c7", "#55603A"),
+            "success": ("#e8f7ee", "#1f6f43"),
+            "warning": ("#fff4d6", "#9a6700"),
+            "error": ("#fde8e8", "#b42318"),
+        }
+        bg, fg = palette.get(tone, palette["info"])
+        text = str(message or "").strip()
+        if text:
+            label.config(text=text, bg=bg, fg=fg)
+            label.pack(fill="x", pady=(0, 12))
+        else:
+            label.config(text="")
+            label.pack_forget()
+
+    def _populate_report_email_settings_form(self, settings=None):
+        if settings is None:
+            settings = self._get_email_settings()
+        if not self._report_email_settings_entries:
+            return
+
+        defaults = {
+            "smtp_host": ("e.g. smtp.gmail.com", None),
+            "smtp_port": ("e.g. 465 for SSL or 587 for STARTTLS", None),
+            "smtp_username": ("e.g. schoolresults@example.com", None),
+            "smtp_password": ("Paste the email password or app password here", "*"),
+            "smtp_sender_name": ("e.g. MT. Olives Adventist School", None),
+        }
+        for key, entry in self._report_email_settings_entries.items():
+            placeholder, mask = defaults.get(key, ("", None))
+            value = str(settings.get(key, "") or "").strip()
+            if value:
+                entry.delete(0, "end")
+                entry.insert(0, value)
+                entry.configure(fg=TEXT_PRIMARY, show=mask or "")
+                entry._placeholder_active = False
+                entry._placeholder_text = placeholder
+                entry._actual_show = mask or ""
+            else:
+                self._set_report_email_placeholder(entry, placeholder, show=mask)
+
+        if self._report_email_settings_tls_var is not None:
+            self._report_email_settings_tls_var.set(
+                settings.get("smtp_use_tls", "0") == "1"
+            )
+
+    def _save_report_email_settings_inline(self):
+        if not self._report_email_settings_entries:
+            return
+
+        host = self._get_report_email_entry_value(
+            self._report_email_settings_entries["smtp_host"]
+        )
+        port = self._get_report_email_entry_value(
+            self._report_email_settings_entries["smtp_port"]
+        )
+        username = self._get_report_email_entry_value(
+            self._report_email_settings_entries["smtp_username"]
+        )
+        password = self._get_report_email_entry_value(
+            self._report_email_settings_entries["smtp_password"]
+        )
+        sender_name = self._get_report_email_entry_value(
+            self._report_email_settings_entries["smtp_sender_name"]
+        ) or "School Results"
+
+        if not host or not port or not username or not password:
+            self._set_report_email_settings_status(
+                "Please fill SMTP host, port, username, and password before saving.",
+                tone="warning",
+            )
+            return
+
+        db.set_setting("smtp_host", host)
+        db.set_setting("smtp_port", port)
+        db.set_setting("smtp_username", username)
+        db.set_setting("smtp_password", password)
+        db.set_setting("smtp_sender_name", sender_name)
+        db.set_setting(
+            "smtp_use_tls",
+            "1" if self._report_email_settings_tls_var and self._report_email_settings_tls_var.get() else "0",
+        )
+        self._set_report_email_settings_status(
+            "Email settings saved. You can now send result emails from this page.",
+            tone="success",
+        )
+
+    def _hide_report_email_settings_panel(self):
+        panel = getattr(self, "_report_email_settings_panel", None)
+        if panel and panel.winfo_exists():
+            panel.pack_forget()
+
+    def _show_report_email_settings_panel(self, message="", tone="info"):
+        panel = getattr(self, "_report_email_settings_panel", None)
+        host = getattr(self, "_report_email_settings_host", None)
+        if not host or not host.winfo_exists() or not panel or not panel.winfo_exists():
+            return False
+        if not panel.winfo_manager():
+            panel.pack(fill="x")
+        self._populate_report_email_settings_form()
+        self._set_report_email_settings_status(message, tone=tone)
+        try:
+            panel.update_idletasks()
+        except Exception:
+            pass
+        return True
+
+    def _toggle_report_email_settings_panel(self):
+        panel = getattr(self, "_report_email_settings_panel", None)
+        host = getattr(self, "_report_email_settings_host", None)
+        if not host or not host.winfo_exists() or not panel or not panel.winfo_exists():
+            return
+        if panel.winfo_manager():
+            self._hide_report_email_settings_panel()
+            return
+        self._show_report_email_settings_panel()
+
+    def _build_report_email_settings_panel(self):
+        host = getattr(self, "_report_email_settings_host", None)
+        if not host or not host.winfo_exists():
+            return
+
+        for child in host.winfo_children():
+            child.destroy()
+
+        self._report_email_settings_entries = {}
+        self._report_email_settings_tls_var = tk.BooleanVar(value=False)
 
         em_bo, em_bi = _card_colors("peach")
-        outer = tk.Frame(dlg, bg=em_bo)
-        outer.place(relx=0.5, rely=0.5, anchor="center")
-        card = tk.Frame(outer, bg=em_bi, padx=26, pady=24)
-        card.pack(padx=1, pady=1)
+        outer = tk.Frame(host, bg=em_bo)
+        card = tk.Frame(outer, bg=em_bi, padx=22, pady=20)
+        card.pack(fill="both", expand=True, padx=1, pady=1)
+
+        header = tk.Frame(card, bg=em_bi)
+        header.pack(fill="x", pady=(0, 8))
 
         tk.Label(
-            card,
+            header,
             text="Result Email Settings",
             bg=em_bi,
             fg=TEXT_PRIMARY,
             font=(FF, 14, "bold"),
-        ).pack(anchor="w", pady=(0, 16))
+        ).pack(side="left")
 
-        def entry_field(label, default="", show=None):
-            tk.Label(
-                card, text=label, bg=em_bi, fg=TEXT_SECONDARY, font=(FF, 10, "bold")
-            ).pack(anchor="w", pady=(0, 4))
-            ent = ttk.Entry(card, style="App.TEntry", show=show)
-            ent.insert(0, default)
-            ent.pack(fill="x", ipady=4, pady=(0, 10))
-            return ent
+        tk.Button(
+            header,
+            text="Hide",
+            bg=LEMON_SOFT,
+            fg=TEXT_PRIMARY,
+            font=(FF, 9, "bold"),
+            padx=12,
+            pady=6,
+            relief="flat",
+            cursor="hand2",
+            command=self._hide_report_email_settings_panel,
+        ).pack(side="right")
 
-        host_e = entry_field("SMTP Host", settings.get("smtp_host", ""))
-        port_e = entry_field("SMTP Port", settings.get("smtp_port", "465"))
-        user_e = entry_field("SMTP Username", settings.get("smtp_username", ""))
-        pass_e = entry_field(
-            "SMTP Password / App Password", settings.get("smtp_password", ""), show="*"
-        )
-        sender_e = entry_field(
-            "Sender Name", settings.get("smtp_sender_name", "School Results")
-        )
-
-        tls_var = tk.BooleanVar(value=settings.get("smtp_use_tls", "0") == "1")
-        tk.Checkbutton(
+        tk.Label(
             card,
+            text="Set up the sender account once here, then use Email Result or Email All without leaving the page.",
+            bg=em_bi,
+            fg=TEXT_SECONDARY,
+            font=(FF, 9),
+            justify="left",
+            wraplength=860,
+        ).pack(anchor="w", pady=(0, 12))
+
+        status = tk.Label(
+            card,
+            text="",
+            bg=em_bi,
+            fg=TEXT_SECONDARY,
+            font=(FF, 9),
+            anchor="w",
+            justify="left",
+            padx=10,
+            pady=8,
+        )
+        self._report_email_settings_status = status
+
+        form = tk.Frame(card, bg=em_bi)
+        form.pack(fill="x")
+
+        def entry_field(parent, key, label, placeholder="", show=None):
+            field = tk.Frame(parent, bg=em_bi)
+            tk.Label(
+                field, text=label, bg=em_bi, fg=TEXT_SECONDARY, font=(FF, 10, "bold")
+            ).pack(anchor="w", pady=(0, 5))
+            ent = tk.Entry(
+                field,
+                relief="solid",
+                bd=1,
+                bg="#fffdf8",
+                fg=TEXT_PRIMARY,
+                insertbackground=TEXT_PRIMARY,
+                highlightthickness=1,
+                highlightbackground="#b8c48f",
+                highlightcolor=OLIVE_MID,
+                font=(FF, 10),
+            )
+            ent.pack(fill="x", ipady=7)
+            self._set_report_email_placeholder(ent, placeholder, show=show)
+            ent.bind(
+                "<FocusIn>",
+                lambda _e, widget=ent: self._clear_report_email_placeholder(widget),
+            )
+            ent.bind(
+                "<FocusOut>",
+                lambda _e, widget=ent, ph=placeholder, mask=show: (
+                    self._set_report_email_placeholder(widget, ph, show=mask)
+                    if not widget.get().strip()
+                    else widget.configure(
+                        fg=TEXT_PRIMARY, show=getattr(widget, "_actual_show", "")
+                    )
+                ),
+            )
+            self._report_email_settings_entries[key] = ent
+            return field
+
+        top_row = tk.Frame(form, bg=em_bi)
+        top_row.pack(fill="x", pady=(0, 12))
+        top_row.grid_columnconfigure(0, weight=1)
+        top_row.grid_columnconfigure(1, weight=1)
+
+        entry_field(
+            top_row,
+            "smtp_host",
+            "SMTP Host",
+            placeholder="e.g. smtp.gmail.com",
+        ).grid(row=0, column=0, sticky="ew", padx=(0, 10))
+        entry_field(
+            top_row,
+            "smtp_port",
+            "SMTP Port",
+            placeholder="e.g. 465 for SSL or 587 for STARTTLS",
+        ).grid(row=0, column=1, sticky="ew")
+
+        mid_row = tk.Frame(form, bg=em_bi)
+        mid_row.pack(fill="x", pady=(0, 12))
+        mid_row.grid_columnconfigure(0, weight=1)
+        mid_row.grid_columnconfigure(1, weight=1)
+
+        entry_field(
+            mid_row,
+            "smtp_username",
+            "SMTP Username",
+            placeholder="e.g. schoolresults@example.com",
+        ).grid(row=0, column=0, sticky="ew", padx=(0, 10))
+        entry_field(
+            mid_row,
+            "smtp_password",
+            "SMTP Password / App Password",
+            placeholder="Paste the email password or app password here",
+            show="*",
+        ).grid(row=0, column=1, sticky="ew")
+
+        bottom_row = tk.Frame(form, bg=em_bi)
+        bottom_row.pack(fill="x", pady=(0, 10))
+        bottom_row.grid_columnconfigure(0, weight=1)
+
+        entry_field(
+            bottom_row,
+            "smtp_sender_name",
+            "Sender Name",
+            placeholder="e.g. MT. Olives Adventist School",
+        ).grid(row=0, column=0, sticky="ew")
+
+        tls_box = tk.Frame(card, bg=em_bi)
+        tls_box.pack(fill="x", pady=(4, 10))
+        tk.Checkbutton(
+            tls_box,
             text="Use STARTTLS instead of SSL",
-            variable=tls_var,
+            variable=self._report_email_settings_tls_var,
             bg=em_bi,
             fg=TEXT_PRIMARY,
             activebackground=em_bi,
             selectcolor=em_bi,
             font=(FF, 9),
-        ).pack(anchor="w", pady=(0, 12))
+        ).pack(anchor="w")
+        tk.Label(
+            tls_box,
+            text="Tip: Gmail commonly uses smtp.gmail.com with port 465 and an app password.",
+            bg=em_bi,
+            fg=TEXT_SECONDARY,
+            font=(FF, 8),
+            justify="left",
+            wraplength=860,
+        ).pack(anchor="w", pady=(6, 0))
 
         btn_row = tk.Frame(card, bg=em_bi)
-        btn_row.pack(fill="x")
-
-        def save():
-            db.set_setting("smtp_host", host_e.get().strip())
-            db.set_setting("smtp_port", port_e.get().strip())
-            db.set_setting("smtp_username", user_e.get().strip())
-            db.set_setting("smtp_password", pass_e.get().strip())
-            db.set_setting("smtp_sender_name", sender_e.get().strip())
-            db.set_setting("smtp_use_tls", "1" if tls_var.get() else "0")
-            messagebox.showinfo("Saved", "Email settings saved.")
-            dlg.destroy()
-
+        btn_row.pack(fill="x", pady=(8, 0))
         tk.Button(
             btn_row,
-            text="Cancel",
+            text="Close",
             bg=LEMON_SOFT,
             fg=TEXT_PRIMARY,
             font=(FF, 10, "bold"),
             padx=18,
             pady=8,
-            command=dlg.destroy,
-        ).pack(side="left", padx=(0, 8))
+            command=self._hide_report_email_settings_panel,
+            cursor="hand2",
+        ).pack(side="right", padx=(10, 0))
         tk.Button(
             btn_row,
             text="Save Settings",
@@ -19600,8 +20104,286 @@ class SchoolReportApp:
             font=(FF, 10, "bold"),
             padx=18,
             pady=8,
-            command=save,
+            command=self._save_report_email_settings_inline,
+            cursor="hand2",
+        ).pack(side="right")
+
+        self._report_email_settings_panel = outer
+        self._populate_report_email_settings_form()
+        outer.pack_forget()
+
+    def _set_failed_email_logs_status(self, message="", tone="info"):
+        label = getattr(self, "_failed_email_logs_status", None)
+        if not label or not label.winfo_exists():
+            return
+        palette = {
+            "info": ("#eef2ff", "#334155"),
+            "success": ("#e8f7ee", "#1f6f43"),
+            "warning": ("#fff4d6", "#9a6700"),
+            "error": ("#fde8e8", "#b42318"),
+        }
+        bg, fg = palette.get(tone, palette["info"])
+        text = str(message or "").strip()
+        if text:
+            label.config(text=text, bg=bg, fg=fg)
+            label.pack(fill="x", pady=(0, 10))
+        else:
+            label.config(text="")
+            label.pack_forget()
+
+    def _hide_failed_email_logs_panel(self):
+        panel = getattr(self, "_failed_email_logs_panel", None)
+        if panel and panel.winfo_exists():
+            panel.pack_forget()
+
+    def _show_failed_email_logs_panel(self, message="", tone="info"):
+        panel = getattr(self, "_failed_email_logs_panel", None)
+        host = getattr(self, "_failed_email_logs_host", None)
+        if not host or not host.winfo_exists() or not panel or not panel.winfo_exists():
+            return False
+        self._refresh_failed_email_logs_panel(show_panel=False)
+        if not panel.winfo_manager():
+            panel.pack(fill="x")
+        self._set_failed_email_logs_status(message, tone=tone)
+        try:
+            panel.update_idletasks()
+        except Exception:
+            pass
+        return True
+
+    def _retry_selected_failed_email_logs_inline(self):
+        tree = getattr(self, "_failed_email_logs_tree", None)
+        if not tree or not tree.winfo_exists():
+            return
+        selected = set(tree.selection())
+        picked = [log for log in self._failed_email_logs_rows if str(log.get("id")) in selected]
+        if not picked:
+            self._set_failed_email_logs_status(
+                "Select one or more failed email rows to retry.",
+                tone="warning",
+            )
+            return
+        self._retry_failed_email_logs(picked)
+
+    def _retry_all_failed_email_logs_inline(self):
+        if not self._failed_email_logs_rows:
+            self._set_failed_email_logs_status(
+                "There are no failed email records to retry.",
+                tone="info",
+            )
+            return
+        self._retry_failed_email_logs(list(self._failed_email_logs_rows))
+
+    def _refresh_failed_email_logs_panel(self, show_panel=True):
+        tree = getattr(self, "_failed_email_logs_tree", None)
+        title = getattr(self, "_failed_email_logs_title", None)
+        panel = getattr(self, "_failed_email_logs_panel", None)
+        host = getattr(self, "_failed_email_logs_host", None)
+        if (
+            not host
+            or not host.winfo_exists()
+            or not panel
+            or not panel.winfo_exists()
+            or not tree
+            or not tree.winfo_exists()
+            or not title
+            or not title.winfo_exists()
+        ):
+            return
+
+        cls = self.rc_cls_cb.get()
+        term = self.rc_term_cb.get()
+        exam_type = self.rc_exam_cb.get() or DEFAULT_EXAM_TYPE
+        stream = self._get_selected_report_stream()
+        logs = db.get_email_logs(cls, term, exam_type, stream, "failed")
+        self._failed_email_logs_rows = list(logs)
+
+        stream_suffix = f" / {stream}" if stream else ""
+        title.config(
+            text=f"Failed Email Logs - {cls}{stream_suffix} / Term {term} / {exam_type}"
+        )
+
+        for item in tree.get_children():
+            tree.delete(item)
+
+        for log in logs:
+            tree.insert(
+                "",
+                "end",
+                iid=str(log["id"]),
+                values=(
+                    log.get("student_name", ""),
+                    log.get("recipient_email", ""),
+                    log.get("error_message", ""),
+                    log.get("sent_at", ""),
+                ),
+            )
+
+        if show_panel and not panel.winfo_manager():
+            panel.pack(fill="x")
+
+        if logs:
+            self._set_failed_email_logs_status(
+                f"{len(logs)} failed email record(s) loaded for the current report-card selection.",
+                tone="info",
+            )
+        else:
+            self._set_failed_email_logs_status(
+                "No failed email logs found for the current class, stream, term, and exam.",
+                tone="info",
+            )
+
+    def _build_failed_email_logs_panel(self):
+        host = getattr(self, "_failed_email_logs_host", None)
+        if not host or not host.winfo_exists():
+            return
+
+        for child in host.winfo_children():
+            child.destroy()
+
+        fl_bo, fl_bi = _card_colors("blossom")
+        outer = tk.Frame(host, bg=fl_bo)
+        card = tk.Frame(outer, bg=fl_bi, padx=18, pady=16)
+        card.pack(fill="both", expand=True, padx=1, pady=1)
+
+        top = tk.Frame(card, bg=fl_bi)
+        top.pack(fill="x", pady=(0, 8))
+
+        title = tk.Label(
+            top,
+            text="Failed Email Logs",
+            bg=fl_bi,
+            fg=TEXT_PRIMARY,
+            font=(FF, 13, "bold"),
+        )
+        title.pack(side="left")
+        self._failed_email_logs_title = title
+
+        tk.Button(
+            top,
+            text="Hide",
+            bg=LEMON_SOFT,
+            fg=TEXT_PRIMARY,
+            font=(FF, 9, "bold"),
+            padx=12,
+            pady=6,
+            relief="flat",
+            cursor="hand2",
+            command=self._hide_failed_email_logs_panel,
+        ).pack(side="right")
+
+        tk.Label(
+            card,
+            text="Review failed result emails here, then retry selected rows or export the log as CSV.",
+            bg=fl_bi,
+            fg=TEXT_SECONDARY,
+            font=(FF, 9),
+            justify="left",
+            wraplength=860,
+        ).pack(anchor="w", pady=(0, 10))
+
+        status = tk.Label(
+            card,
+            text="",
+            bg=fl_bi,
+            fg=TEXT_SECONDARY,
+            font=(FF, 9),
+            anchor="w",
+            justify="left",
+            padx=10,
+            pady=8,
+        )
+        self._failed_email_logs_status = status
+
+        table_wrap = tk.Frame(card, bg=fl_bi)
+        table_wrap.pack(fill="both", expand=True)
+
+        cols = ("student", "email", "error", "sent_at")
+        tree = ttk.Treeview(
+            table_wrap,
+            columns=cols,
+            show="headings",
+            style="App.Treeview",
+            height=9,
+        )
+        tree.heading("student", text="Student")
+        tree.heading("email", text="Recipient Email")
+        tree.heading("error", text="Error")
+        tree.heading("sent_at", text="Time")
+        tree.column("student", width=180, anchor="w")
+        tree.column("email", width=220, anchor="w")
+        tree.column("error", width=360, anchor="w")
+        tree.column("sent_at", width=170, anchor="center")
+
+        ysb = ttk.Scrollbar(table_wrap, orient="vertical", command=tree.yview)
+        xsb = ttk.Scrollbar(table_wrap, orient="horizontal", command=tree.xview)
+        tree.configure(yscrollcommand=ysb.set, xscrollcommand=xsb.set)
+
+        tree.grid(row=0, column=0, sticky="nsew")
+        ysb.grid(row=0, column=1, sticky="ns")
+        xsb.grid(row=1, column=0, sticky="ew")
+        table_wrap.grid_rowconfigure(0, weight=1)
+        table_wrap.grid_columnconfigure(0, weight=1)
+
+        self._failed_email_logs_tree = tree
+        self._failed_email_logs_rows = []
+
+        btn_row = tk.Frame(card, bg=fl_bi)
+        btn_row.pack(fill="x", pady=(12, 0))
+
+        tk.Button(
+            btn_row,
+            text="Retry Selected",
+            bg=BLUE,
+            fg="white",
+            font=(FF, 10, "bold"),
+            padx=16,
+            pady=8,
+            command=self._retry_selected_failed_email_logs_inline,
+            cursor="hand2",
+        ).pack(side="left", padx=(0, 8))
+        tk.Button(
+            btn_row,
+            text="Retry All",
+            bg=GREEN,
+            fg="white",
+            font=(FF, 10, "bold"),
+            padx=16,
+            pady=8,
+            command=self._retry_all_failed_email_logs_inline,
+            cursor="hand2",
+        ).pack(side="left", padx=(0, 8))
+        tk.Button(
+            btn_row,
+            text="Export Failed CSV",
+            bg=PURPLE,
+            fg="white",
+            font=(FF, 10, "bold"),
+            padx=16,
+            pady=8,
+            command=self._export_failed_email_logs,
+            cursor="hand2",
+        ).pack(side="left", padx=(0, 8))
+        tk.Button(
+            btn_row,
+            text="Refresh",
+            bg="#475569",
+            fg="white",
+            font=(FF, 10, "bold"),
+            padx=16,
+            pady=8,
+            command=self._refresh_failed_email_logs_panel,
+            cursor="hand2",
         ).pack(side="left")
+
+        self._failed_email_logs_panel = outer
+        outer.pack_forget()
+
+    def _open_email_settings_dialog(self):
+        if self._show_report_email_settings_panel():
+            return
+        self.show_report_cards()
+        self._show_report_email_settings_panel()
 
     def _validate_email_setup(self):
         settings = self._get_email_settings()
@@ -19611,7 +20393,10 @@ class SchoolReportApp:
             if not settings.get(key)
         ]
         if missing:
-            self._open_email_settings_dialog()
+            self._show_report_email_settings_panel(
+                "Please complete the email settings below before sending result emails.",
+                tone="warning",
+            ) or self._open_email_settings_dialog()
             return None
         return settings
 
@@ -19822,8 +20607,15 @@ class SchoolReportApp:
             self.root.after(0, progress_dialog.destroy)
             self.root.after(
                 0,
-                lambda: messagebox.showinfo(
-                    "Retry Complete", f"Sent: {sent}\nFailed: {failed}"
+                lambda: (
+                    self._refresh_failed_email_logs_panel(show_panel=False),
+                    self._set_failed_email_logs_status(
+                        f"Retry complete. Sent: {sent} | Failed: {failed}",
+                        tone="success" if failed == 0 else "warning",
+                    ),
+                    messagebox.showinfo(
+                        "Retry Complete", f"Sent: {sent}\nFailed: {failed}"
+                    ),
                 ),
             )
 
@@ -19880,118 +20672,10 @@ class SchoolReportApp:
         messagebox.showinfo("Exported", f"Failed email log exported to {file_path}")
 
     def _show_failed_email_logs(self):
-        cls = self.rc_cls_cb.get()
-        term = self.rc_term_cb.get()
-        exam_type = self.rc_exam_cb.get() or DEFAULT_EXAM_TYPE
-        stream = self._get_selected_report_stream()
-        logs = db.get_email_logs(cls, term, exam_type, stream, "failed")
-
-        dlg = tk.Toplevel(self.root)
-        dlg.title("Failed Email Logs")
-        dlg.geometry("860x420")
-        dlg.configure(bg=CONTENT_BG)
-        dlg.transient(self.root)
-        dlg.grab_set()
-
-        fl_bo, fl_bi = _card_colors("blossom")
-        outer = tk.Frame(dlg, bg=fl_bo)
-        outer.pack(fill="both", expand=True, padx=14, pady=14)
-        card = tk.Frame(outer, bg=fl_bi)
-        card.pack(fill="both", expand=True, padx=1, pady=1)
-
-        top = tk.Frame(card, bg=fl_bi, padx=16, pady=14)
-        top.pack(fill="x")
-        stream_suffix = f" / {stream}" if stream else ""
-        tk.Label(
-            top,
-            text=f"Failed Email Logs - {cls}{stream_suffix} / Term {term} / {exam_type}",
-            bg=fl_bi,
-            fg=TEXT_PRIMARY,
-            font=(FF, 13, "bold"),
-        ).pack(side="left")
-
-        cols = ("student", "email", "error", "sent_at")
-        tree = ttk.Treeview(card, columns=cols, show="headings", style="App.Treeview")
-        tree.heading("student", text="Student")
-        tree.heading("email", text="Recipient Email")
-        tree.heading("error", text="Error")
-        tree.heading("sent_at", text="Time")
-        tree.column("student", width=180)
-        tree.column("email", width=180)
-        tree.column("error", width=320)
-        tree.column("sent_at", width=150)
-        for log in logs:
-            tree.insert(
-                "",
-                "end",
-                iid=log["id"],
-                values=(
-                    log.get("student_name", ""),
-                    log.get("recipient_email", ""),
-                    log.get("error_message", ""),
-                    log.get("sent_at", ""),
-                ),
-            )
-        tree.pack(fill="both", expand=True, padx=16, pady=(0, 12))
-
-        btn_row = tk.Frame(card, bg=fl_bi, padx=16, pady=12)
-        btn_row.pack(fill="x")
-
-        def retry_selected():
-            selected = tree.selection()
-            picked = [log for log in logs if log["id"] in selected]
-            if not picked:
-                messagebox.showwarning(
-                    "Select", "Select one or more failed emails to retry.", parent=dlg
-                )
-                return
-            dlg.destroy()
-            self._retry_failed_email_logs(picked)
-
-        def retry_all():
-            dlg.destroy()
-            self._retry_failed_email_logs(logs)
-
-        tk.Button(
-            btn_row,
-            text="Retry Selected",
-            bg=BLUE,
-            fg="white",
-            font=(FF, 10, "bold"),
-            padx=16,
-            pady=8,
-            command=retry_selected,
-        ).pack(side="left", padx=(0, 8))
-        tk.Button(
-            btn_row,
-            text="Retry All",
-            bg=GREEN,
-            fg="white",
-            font=(FF, 10, "bold"),
-            padx=16,
-            pady=8,
-            command=retry_all,
-        ).pack(side="left", padx=(0, 8))
-        tk.Button(
-            btn_row,
-            text="Export Failed CSV",
-            bg=PURPLE,
-            fg="white",
-            font=(FF, 10, "bold"),
-            padx=16,
-            pady=8,
-            command=self._export_failed_email_logs,
-        ).pack(side="left", padx=(0, 8))
-        tk.Button(
-            btn_row,
-            text="Close",
-            bg=LEMON_SOFT,
-            fg=TEXT_PRIMARY,
-            font=(FF, 10, "bold"),
-            padx=16,
-            pady=8,
-            command=dlg.destroy,
-        ).pack(side="right")
+        if self._show_failed_email_logs_panel():
+            return
+        self.show_report_cards()
+        self._show_failed_email_logs_panel()
 
     def _send_result_email(self):
         name = self.rc_stu_cb.get()
@@ -20589,6 +21273,14 @@ class SchoolReportApp:
             side="left", padx=4
         )
 
+        self._report_email_settings_host = tk.Frame(self.content_frame, bg=CONTENT_BG)
+        self._report_email_settings_host.pack(fill="x", pady=(0, 10))
+        self._build_report_email_settings_panel()
+
+        self._failed_email_logs_host = tk.Frame(self.content_frame, bg=CONTENT_BG)
+        self._failed_email_logs_host.pack(fill="x", pady=(0, 10))
+        self._build_failed_email_logs_panel()
+
         # Scrollable paper-like preview
         paper_bg = tk.Frame(self.content_frame, bg="#d8dce5")
         paper_bg.pack(fill="both", expand=True, pady=4)
@@ -20615,6 +21307,9 @@ class SchoolReportApp:
             self.rc_stu_cb.set("")
             for w in self._rc_paper.winfo_children():
                 w.destroy()
+        panel = getattr(self, "_failed_email_logs_panel", None)
+        if panel and panel.winfo_exists() and panel.winfo_manager():
+            self._refresh_failed_email_logs_panel(show_panel=False)
 
     def _display_rc(self):
         name = self.rc_stu_cb.get()
@@ -23175,6 +23870,10 @@ class SchoolReportApp:
 
 # ====================== ENTRY POINT ========================
 def main():
+    # Initialize school configuration from database (or seed defaults if empty)
+    _seed_school_config_to_db()
+    refresh_dynamic_school_config()
+    
     root = tk.Tk()
 
     # Get the directory where the script is located
@@ -23201,7 +23900,7 @@ def main():
         # Cleanup code - ensure proper shutdown
         print("Cleanup complete. Goodbye!")
         try:
-            root.destroy()
+            app.shutdown()
         except Exception:
             pass
         sys.exit(0)
