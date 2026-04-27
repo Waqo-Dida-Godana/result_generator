@@ -10246,14 +10246,23 @@ class SchoolReportApp:
 
         # Top title and breadcrumb row
         top_row = tk.Frame(self.content_frame, bg=CONTENT_BG)
-        top_row.pack(fill="x", pady=(2, 10))
+        top_row.pack(fill="x", pady=(2, 12))
+        title_block = tk.Frame(top_row, bg=CONTENT_BG)
+        title_block.pack(side="left")
         tk.Label(
-            top_row,
+            title_block,
             text="Dashboard",
             bg=CONTENT_BG,
             fg=TEXT_PRIMARY,
             font=(FF, 22, "bold"),
-        ).pack(side="left")
+        ).pack(anchor="w")
+        tk.Label(
+            title_block,
+            text="Live academic pulse across learners, performance, and enrollment.",
+            bg=CONTENT_BG,
+            fg=TEXT_SECONDARY,
+            font=(FF, 10),
+        ).pack(anchor="w", pady=(2, 0))
         crumb = tk.Frame(top_row, bg="#ecefe6", padx=10, pady=6)
         crumb.pack(side="right")
         tk.Label(
@@ -10631,14 +10640,23 @@ class SchoolReportApp:
 
         # ── Top title and breadcrumb ──────────────────────────────────────
         top_row = tk.Frame(self.content_frame, bg=CONTENT_BG)
-        top_row.pack(fill="x", pady=(2, 10))
+        top_row.pack(fill="x", pady=(2, 12))
+        title_block = tk.Frame(top_row, bg=CONTENT_BG)
+        title_block.pack(side="left")
         tk.Label(
-            top_row,
+            title_block,
             text="Dashboard",
             bg=CONTENT_BG,
             fg=TEXT_PRIMARY,
             font=(FF, 22, "bold"),
-        ).pack(side="left")
+        ).pack(anchor="w")
+        tk.Label(
+            title_block,
+            text="Live academic pulse across learners, performance, and enrollment.",
+            bg=CONTENT_BG,
+            fg=TEXT_SECONDARY,
+            font=(FF, 10),
+        ).pack(anchor="w", pady=(2, 0))
         crumb = tk.Frame(top_row, bg="#ecefe6", padx=10, pady=6)
         crumb.pack(side="right")
         tk.Label(
@@ -10652,6 +10670,26 @@ class SchoolReportApp:
         ).pack(side="left")
 
         # ── KPI CARDS ROW ───────────────────────────────────────────────────
+        def add_section_label(text, subtext=""):
+            row = tk.Frame(self.content_frame, bg=CONTENT_BG)
+            row.pack(fill="x", pady=(0, 6))
+            tk.Label(
+                row,
+                text=text,
+                bg=CONTENT_BG,
+                fg=TEXT_PRIMARY,
+                font=(FF, 11, "bold"),
+            ).pack(side="left")
+            if subtext:
+                tk.Label(
+                    row,
+                    text=subtext,
+                    bg=CONTENT_BG,
+                    fg=TEXT_SECONDARY,
+                    font=(FF, 8),
+                ).pack(side="left", padx=(8, 0))
+
+        add_section_label("Snapshot Metrics", "Current learner, teacher, and performance totals")
         kpi_row = tk.Frame(self.content_frame, bg=CONTENT_BG)
         kpi_row.pack(fill="x", pady=(0, 8))
         for i in range(6):
@@ -10757,7 +10795,7 @@ class SchoolReportApp:
         for idx, (title, value, note, soft, strong, icon) in enumerate(kpi_cards):
             outer = tk.Frame(kpi_row, bg=strong)
             outer.grid(row=0, column=idx, padx=4, sticky="nsew")
-            card = tk.Frame(outer, bg=soft, padx=12, pady=10)
+            card = tk.Frame(outer, bg=soft, padx=12, pady=12)
             card.pack(fill="both", expand=True, padx=1, pady=1)
 
             head = tk.Frame(card, bg=soft)
@@ -10771,24 +10809,51 @@ class SchoolReportApp:
                 padx=6,
                 pady=2,
             ).pack(side="left")
-            tk.Label(head, text=title, bg=soft, fg="white", font=(FF, 10, "bold")).pack(
-                side="left", padx=6
-            )
+            tk.Label(
+                head,
+                text=title.upper(),
+                bg=soft,
+                fg="#f7fbf8",
+                font=(FF, 8, "bold"),
+            ).pack(side="left", padx=6)
 
-            tk.Label(card, text=value, bg=soft, fg="white", font=(FF, 18, "bold")).pack(
-                anchor="w", pady=(6, 2)
+            tk.Label(
+                card, text=value, bg=soft, fg="white", font=(FF, 19, "bold")
+            ).pack(
+                anchor="w", pady=(8, 2)
             )
-            tk.Label(card, text=note, bg=soft, fg="#f8fdf9", font=(FF, 8)).pack(
-                anchor="w"
-            )
-
-            prog = tk.Canvas(card, bg=soft, height=6, highlightthickness=0)
-            prog.pack(fill="x", pady=(6, 0))
+            tk.Label(
+                card,
+                text=note,
+                bg=soft,
+                fg="#f8fdf9",
+                font=(FF, 8),
+                wraplength=150,
+                justify="left",
+            ).pack(anchor="w")
+            tk.Label(
+                card,
+                text="Updated from current school records",
+                bg=soft,
+                fg=_mix_hex("#ffffff", strong, 0.35),
+                font=(FF, 7),
+            ).pack(anchor="w", pady=(5, 0))
+            prog = tk.Canvas(card, bg=soft, height=10, highlightthickness=0)
+            prog.pack(fill="x", pady=(8, 0))
             prog.create_line(
-                2, 3, 160, 3, fill=_mix_hex(strong, "#0f172a", 0.45), width=2
+                4, 5, 168, 5, fill=_mix_hex(strong, "#0f172a", 0.48), width=3
+            )
+            prog.create_line(
+                4,
+                5,
+                min(168, 58 + (idx * 19)),
+                5,
+                fill="#ffffff",
+                width=3,
             )
 
         # ── SHORTCUT NAVIGATION CARD ROW ────────────────────────────────────
+        add_section_label("Quick Actions", "Jump straight into the core school workflows")
         shortcuts_row = tk.Frame(self.content_frame, bg=CONTENT_BG)
         shortcuts_row.pack(fill="x", pady=(0, 8))
         for i in range(5):
@@ -10802,56 +10867,133 @@ class SchoolReportApp:
             ("Grade Facilitators", "🎓", self.show_teachers, "#1abc9c"),
         ]
 
+        shortcut_notes = {
+            "Teachers": "Staff roster and assignments",
+            "Classes": "Levels, classes, and structure",
+            "Students": "Admissions and learner records",
+            "Streams": "Class stream configuration",
+            "Grade Facilitators": "Leadership and academic oversight",
+        }
+
         for idx, (label, icon, command, color) in enumerate(shortcuts):
             outer = tk.Frame(shortcuts_row, bg=color, padx=4, pady=4)
             outer.grid(row=0, column=idx, padx=4, sticky="nsew")
-            btn = tk.Button(
-                outer,
-                text=f"  {icon}  {label}",
+            shell = tk.Frame(outer, bg=_mix_hex(color, "#ffffff", 0.18), padx=10, pady=10)
+            shell.pack(fill="both", expand=True, padx=1, pady=1)
+            icon_row = tk.Frame(shell, bg=shell.cget("bg"))
+            icon_row.pack(fill="x")
+            tk.Label(
+                icon_row,
+                text=icon,
                 bg=color,
+                fg="white",
+                font=(FF, 10, "bold"),
+                padx=8,
+                pady=3,
+            ).pack(side="left")
+            tk.Label(
+                icon_row,
+                text="OPEN",
+                bg=shell.cget("bg"),
+                fg="#f7fbf8",
+                font=(FF, 8, "bold"),
+            ).pack(side="right")
+            btn = tk.Button(
+                shell,
+                text=label,
+                bg=shell.cget("bg"),
                 fg="white",
                 activebackground=_mix_hex(color, "#000000", 0.15),
                 activeforeground="white",
                 font=(FF, 10, "bold"),
                 relief="flat",
+                anchor="w",
                 cursor="hand2",
                 command=command,
             )
-            btn.pack(fill="both", expand=True)
+            btn.pack(fill="x", pady=(10, 2))
+            tk.Label(
+                shell,
+                text=shortcut_notes.get(label, "Quick access"),
+                bg=shell.cget("bg"),
+                fg=_mix_hex("#ffffff", color, 0.38),
+                font=(FF, 8),
+                anchor="w",
+            ).pack(fill="x")
 
         # ── MAIN ANALYTICS PANELS ────────────────────────────────────────────
+        add_section_label("Academic Signals", "Trend cards built from live exam and enrollment data")
         charts_row = tk.Frame(self.content_frame, bg=CONTENT_BG)
         charts_row.pack(fill="both", expand=True, pady=(2, 4))
-        charts_row.columnconfigure(0, weight=2)
-        charts_row.columnconfigure(1, weight=1)
+        charts_row.columnconfigure(0, weight=3)
+        charts_row.columnconfigure(1, weight=2)
         charts_row.rowconfigure(0, weight=1)
 
         def make_chart_panel(parent, title, theme="sky"):
             bo, bi = _card_colors(theme)
-            outer = tk.Frame(parent, bg=bo)
-            body = tk.Frame(outer, bg=bi, padx=12, pady=12)
+            outer = tk.Frame(parent, bg=bo, highlightthickness=1, highlightbackground=bo)
+            body = tk.Frame(outer, bg=bi, padx=14, pady=14)
             body.pack(fill="both", expand=True, padx=1, pady=1)
             hdr = tk.Frame(body, bg=bi)
-            hdr.pack(fill="x", pady=(0, 6))
+            hdr.pack(fill="x", pady=(0, 8))
+            theme_labels = {
+                "azure": "Performance",
+                "mint": "Breakdown",
+                "sky": "Admissions",
+                "peach": "Demographics",
+            }
             tk.Label(
                 hdr, text=title, bg=bi, fg=TEXT_PRIMARY, font=(FF, 12, "bold")
             ).pack(side="left")
-            plot_holder = tk.Frame(body, bg=bi)
-            plot_holder.pack(fill="both", expand=True, pady=4)
-            return outer, plot_holder, bi
+            tk.Label(
+                hdr,
+                text=theme_labels.get(theme, "Live"),
+                bg=_mix_hex(bo, "#ffffff", 0.2),
+                fg=TEXT_SECONDARY,
+                font=(FF, 8, "bold"),
+                padx=8,
+                pady=2,
+            ).pack(side="right")
+            meta_var = tk.StringVar(value="")
+            tk.Label(
+                body,
+                textvariable=meta_var,
+                bg=bi,
+                fg=TEXT_SECONDARY,
+                font=(FF, 8),
+                anchor="w",
+                justify="left",
+                wraplength=460,
+            ).pack(fill="x", pady=(0, 8))
+            plot_holder = tk.Frame(body, bg=bi, height=250)
+            plot_holder.pack(fill="both", expand=True)
+            plot_holder.pack_propagate(False)
+            return outer, plot_holder, bi, meta_var
+
+        def style_chart_axis(ax, panel_bg, rotation=0):
+            ax.set_facecolor(_mix_hex(panel_bg, "#ffffff", 0.56))
+            ax.grid(axis="y", color=_mix_hex(panel_bg, "#8b95a7", 0.78), linewidth=0.7)
+            ax.spines["top"].set_visible(False)
+            ax.spines["right"].set_visible(False)
+            ax.spines["left"].set_color(_mix_hex(panel_bg, "#5b6472", 0.5))
+            ax.spines["bottom"].set_color(_mix_hex(panel_bg, "#5b6472", 0.5))
+            ax.tick_params(axis="x", labelsize=8, colors=TEXT_SECONDARY, rotation=rotation)
+            ax.tick_params(axis="y", labelsize=8, colors=TEXT_SECONDARY)
+            ax.margins(x=0.05)
 
         # LEFT PANEL: Performance trend + grade distribution
         left_panel = tk.Frame(charts_row, bg=CONTENT_BG)
         left_panel.grid(row=0, column=0, sticky="nsew", padx=(0, 4))
+        left_panel.columnconfigure(0, weight=1)
         left_panel.rowconfigure(0, weight=1)
         left_panel.rowconfigure(1, weight=1)
 
-        trend_panel, trend_holder, trend_bg = make_chart_panel(
+        trend_panel, trend_holder, trend_bg, trend_meta_var = make_chart_panel(
             left_panel, "Score Trend by Exam Session", "azure"
         )
         trend_panel.grid(row=0, column=0, sticky="nsew", pady=(0, 4))
 
-        grade_panel, grade_holder, grade_bg = make_chart_panel(
+        grade_panel, grade_holder, grade_bg, grade_meta_var = make_chart_panel(
             left_panel, "Grade Distribution (Latest Exam)", "mint"
         )
         grade_panel.grid(row=1, column=0, sticky="nsew")
@@ -10859,15 +11001,16 @@ class SchoolReportApp:
         # RIGHT PANEL: Enrollment + demographics
         right_panel = tk.Frame(charts_row, bg=CONTENT_BG)
         right_panel.grid(row=0, column=1, sticky="nsew", padx=(4, 0))
-        right_panel.rowconfigure(0, weight=1)
+        right_panel.columnconfigure(0, weight=1)
+        right_panel.rowconfigure(0, weight=3)
         right_panel.rowconfigure(1, weight=2)
 
-        enroll_panel, enroll_holder, enroll_bg = make_chart_panel(
+        enroll_panel, enroll_holder, enroll_bg, enroll_meta_var = make_chart_panel(
             right_panel, "Enrollment Movement", "sky"
         )
         enroll_panel.grid(row=0, column=0, sticky="nsew", pady=(0, 4))
 
-        gender_panel, gender_holder, gender_bg = make_chart_panel(
+        gender_panel, gender_holder, gender_bg, gender_meta_var = make_chart_panel(
             right_panel, "Student Gender Distribution", "peach"
         )
         gender_panel.grid(row=1, column=0, sticky="nsew")
@@ -10944,10 +11087,12 @@ class SchoolReportApp:
             trend_window = f"{ordered_points[0][1].strftime('%b %Y')} - {ordered_points[-1][1].strftime('%b %Y')}"
         else:
             trend_window = "No dated sessions"
+        trend_meta_var.set(
+            f"Scope: {len(dashboard_classes)} classes   |   Window: {trend_window}"
+        )
 
-        fig1, ax1 = plt.subplots(figsize=(5.8, 2.8))
+        fig1, ax1 = plt.subplots(figsize=(6.4, 3.2))
         fig1.patch.set_facecolor(trend_bg)
-        ax1.set_facecolor(_mix_hex(trend_bg, "#ffffff", 0.45))
         ax1.plot(
             labels1,
             y1,
@@ -10966,23 +11111,11 @@ class SchoolReportApp:
             markersize=4,
             label="Previous",
         )
-        ax1.grid(axis="y", color="#e0e0e0", linewidth=0.7)
-        ax1.spines["top"].set_visible(False)
-        ax1.spines["right"].set_visible(False)
-        ax1.tick_params(axis="x", labelsize=8, colors=TEXT_SECONDARY)
-        ax1.tick_params(axis="y", labelsize=8, colors=TEXT_SECONDARY)
+        style_chart_axis(ax1, trend_bg, rotation=0 if len(labels1) <= 4 else 18)
         ax1.set_ylim(0, 100)
-        ax1.set_title("Average Score Trend", fontsize=11, color=TEXT_PRIMARY, pad=8)
-        ax1.text(
-            0.01,
-            1.01,
-            f"Scope: {len(dashboard_classes)} classes | {trend_window}",
-            transform=ax1.transAxes,
-            fontsize=7,
-            color=TEXT_SECONDARY,
-        )
-        ax1.legend(loc="upper left", fontsize=8, frameon=False)
-        fig1.subplots_adjust(top=0.82, left=0.08, right=0.98, bottom=0.15)
+        ax1.set_ylabel("Average (%)", fontsize=9, color=TEXT_SECONDARY)
+        ax1.legend(loc="upper left", fontsize=8, frameon=False, ncol=2, handlelength=1.8)
+        fig1.subplots_adjust(top=0.9, left=0.1, right=0.98, bottom=0.22)
         self.dashboard_chart_1 = FigureCanvasTkAgg(fig1, master=trend_holder)
         self.dashboard_chart_1.draw()
         self.dashboard_chart_1.get_tk_widget().pack(fill="both", expand=True)
@@ -10993,10 +11126,12 @@ class SchoolReportApp:
         grades_order = ["EE", "ME", "AE", "BE", "IE"]
         grade_counts = [grade_dist["distribution"].get(g, 0) for g in grades_order]
         grade_colors = [GRADE_COLORS[g] for g in grades_order]
+        grade_meta_var.set(
+            f"Showing {grade_dist['term']} / {grade_dist['exam_type']}   |   Total learners: {sum(grade_counts)}"
+        )
 
-        fig2, ax2 = plt.subplots(figsize=(4.8, 2.6))
+        fig2, ax2 = plt.subplots(figsize=(6.1, 2.9))
         fig2.patch.set_facecolor(grade_bg)
-        ax2.set_facecolor(_mix_hex(grade_bg, "#ffffff", 0.45))
         bars = ax2.bar(
             grades_order,
             grade_counts,
@@ -11004,6 +11139,16 @@ class SchoolReportApp:
             edgecolor=grade_bg,
             linewidth=1.5,
         )
+        for bar, count in zip(bars, grade_counts):
+            ax2.text(
+                bar.get_x() + bar.get_width() / 2,
+                bar.get_height() + 0.3,
+                str(count),
+                ha="center",
+                va="bottom",
+                fontsize=8,
+                color=TEXT_SECONDARY,
+            )
         ax2.set_xlabel("Grade", fontsize=9, color=TEXT_SECONDARY)
         ax2.set_ylabel("Students", fontsize=9, color=TEXT_SECONDARY)
         ax2.set_title(
@@ -11012,11 +11157,9 @@ class SchoolReportApp:
             color=TEXT_PRIMARY,
             pad=6,
         )
-        ax2.spines["top"].set_visible(False)
-        ax2.spines["right"].set_visible(False)
-        ax2.tick_params(axis="x", labelsize=9, colors=TEXT_SECONDARY)
-        ax2.tick_params(axis="y", labelsize=8, colors=TEXT_SECONDARY)
-        fig2.subplots_adjust(top=0.84, left=0.12, right=0.98, bottom=0.14)
+        style_chart_axis(ax2, grade_bg)
+        ax2.set_ylim(0, max(grade_counts + [1]) + 2)
+        fig2.subplots_adjust(top=0.9, left=0.1, right=0.98, bottom=0.18)
         self.dashboard_chart_2 = FigureCanvasTkAgg(fig2, master=grade_holder)
         self.dashboard_chart_2.draw()
         self.dashboard_chart_2.get_tk_widget().pack(fill="both", expand=True)
@@ -11071,32 +11214,22 @@ class SchoolReportApp:
                 cumulative += val
                 y_cum.append(cumulative)
             window_label = "Class distribution fallback"
+        enroll_meta_var.set(
+            f"Scope: {len(all_students)} students   |   Window: {window_label}"
+        )
 
-        fig3, ax3 = plt.subplots(figsize=(4.8, 2.6))
+        fig3, ax3 = plt.subplots(figsize=(5.8, 3.2))
         fig3.patch.set_facecolor(enroll_bg)
-        ax3.set_facecolor(_mix_hex(enroll_bg, "#ffffff", 0.45))
         ax3.plot(labels3, y_new, color="#2ecc71", linewidth=2.2, label="New")
         ax3.fill_between(labels3, y_new, color="#2ecc71", alpha=0.2)
         ax3.plot(labels3, y_cum, color="#7f8c8d", linewidth=2.2, label="Total")
         ax3.fill_between(labels3, y_cum, color="#7f8c8d", alpha=0.12)
-        ax3.grid(axis="y", color="#e0e0e0", linewidth=0.7)
-        ax3.spines["top"].set_visible(False)
-        ax3.spines["right"].set_visible(False)
-        ax3.tick_params(axis="x", labelsize=8, colors=TEXT_SECONDARY)
-        ax3.tick_params(axis="y", labelsize=8, colors=TEXT_SECONDARY)
+        style_chart_axis(ax3, enroll_bg)
         upper = max(y_new + y_cum + [5]) + 5
         ax3.set_ylim(0, upper)
-        ax3.set_title("Enrollment Trend", fontsize=11, color=TEXT_PRIMARY, pad=6)
-        ax3.text(
-            0.01,
-            1.01,
-            f"Scope: {len(all_students)} students | {window_label}",
-            transform=ax3.transAxes,
-            fontsize=7,
-            color=TEXT_SECONDARY,
-        )
-        ax3.legend(loc="upper left", fontsize=8, frameon=False)
-        fig3.subplots_adjust(top=0.82, left=0.08, right=0.98, bottom=0.16)
+        ax3.set_ylabel("Students", fontsize=9, color=TEXT_SECONDARY)
+        ax3.legend(loc="upper left", fontsize=8, frameon=False, ncol=2, handlelength=1.8)
+        fig3.subplots_adjust(top=0.9, left=0.1, right=0.98, bottom=0.18)
         self.dashboard_chart_3 = FigureCanvasTkAgg(fig3, master=enroll_holder)
         self.dashboard_chart_3.draw()
         self.dashboard_chart_3.get_tk_widget().pack(fill="both", expand=True)
@@ -11104,7 +11237,10 @@ class SchoolReportApp:
 
         # ── CHART 4: Gender pie chart ─────────────────────────────────────────
         if demo_stats["total"] > 0:
-            gender_fig, gender_ax = plt.subplots(figsize=(4.2, 2.4))
+            gender_meta_var.set(
+                f"Male: {demo_stats['male']}   |   Female: {demo_stats['female']}   |   Total: {demo_stats['total']}"
+            )
+            gender_fig, gender_ax = plt.subplots(figsize=(5.0, 2.7))
             gender_fig.patch.set_facecolor(gender_bg)
             labels_gender = ["Male", "Female"]
             sizes = [demo_stats["male"], demo_stats["female"]]
@@ -11118,13 +11254,14 @@ class SchoolReportApp:
                 textprops={"fontsize": 8, "color": TEXT_PRIMARY},
                 wedgeprops={"linewidth": 1, "edgecolor": "white"},
             )
-            gender_ax.set_title("Gender Split", fontsize=11, color=TEXT_PRIMARY, pad=6)
-            gender_fig.subplots_adjust(top=0.78, left=0.03, right=0.97, bottom=0.08)
+            gender_ax.axis("equal")
+            gender_fig.subplots_adjust(top=0.94, left=0.02, right=0.98, bottom=0.08)
             self.dashboard_chart_4 = FigureCanvasTkAgg(gender_fig, master=gender_holder)
             self.dashboard_chart_4.draw()
             self.dashboard_chart_4.get_tk_widget().pack(fill="both", expand=True)
             plt.close(gender_fig)
         else:
+            gender_meta_var.set("No student data available for gender split.")
             empty_label = tk.Label(
                 gender_holder,
                 text="No student data available",
@@ -11148,17 +11285,10 @@ class SchoolReportApp:
                 f"Smallest: {smallest_class['name']} ({smallest_class['student_count']})  |  "
                 f"Largest: {largest_class['name']} ({largest_class['student_count']})"
             )
-            summary_frame = tk.Frame(gender_holder, bg=gender_bg)
-            summary_frame.pack(fill="x", pady=(6, 0), side="bottom")
-            tk.Label(
-                summary_frame,
-                text=stats_text,
-                bg=gender_bg,
-                fg=TEXT_PRIMARY,
-                font=(FF, 8),
-                wraplength=280,
-                justify="center",
-            ).pack(fill="x")
+            current_meta = str(gender_meta_var.get() or "").strip()
+            gender_meta_var.set(
+                f"{current_meta}\n{stats_text}" if current_meta else stats_text
+            )
 
     # ==================== QUICK NAVIGATION SHORTCUTS =======================
 

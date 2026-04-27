@@ -1,0 +1,14 @@
+{
+  "venvPath": ".",
+  "venv": ".venv",
+  "pythonVersion": "3.14",
+  "extraPaths": [
+    ".venv/Lib/site-packages"
+  ],
+  "include": [
+    "main.py",
+    "database.py",
+    "exam_analytics.py",
+    "students_tab.py"
+  ]
+}
