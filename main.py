@@ -2142,9 +2142,15 @@ class SchoolReportApp:
         return self._determine_class_level(class_name)
 
     def _get_subjects_for_class(
-        self, class_name, term="One", exam_type=DEFAULT_EXAM_TYPE, for_reporting=False
+        self,
+        class_name,
+        term="One",
+        exam_type=DEFAULT_EXAM_TYPE,
+        for_reporting=False,
+        academic_year=None,
     ):
         """Return ordered class subject list, honoring class-specific 'subjects done' settings."""
+        academic_year = str(academic_year or datetime.now().year)
         subjects = self._get_subject_pool_for_class(class_name)
 
         mapping = self._get_class_subjects_done_map()
@@ -2161,7 +2167,7 @@ class SchoolReportApp:
 
             if for_reporting:
                 done_subjects = self._get_done_subjects_from_marks(
-                    class_name, term, exam_type
+                    class_name, term, exam_type, academic_year
                 )
                 if done_subjects:
                     filtered = []
@@ -2181,26 +2187,32 @@ class SchoolReportApp:
         if for_reporting:
             # Automatic report mode: show only subjects already entered for this class/term/exam.
             done_subjects = self._get_done_subjects_from_marks(
-                class_name, term, exam_type
+                class_name, term, exam_type, academic_year
             )
             return done_subjects
 
         return subjects
 
     def _get_subjects_for_scope(
-        self, class_name, term="One", exam_type=DEFAULT_EXAM_TYPE, results=None
+        self,
+        class_name,
+        term="One",
+        exam_type=DEFAULT_EXAM_TYPE,
+        results=None,
+        academic_year=None,
     ):
         """Return ordered subject columns for a report scope."""
+        academic_year = str(academic_year or datetime.now().year)
         if class_name != "All":
             return self._get_subjects_for_class(
-                class_name, term, exam_type, for_reporting=True
+                class_name, term, exam_type, for_reporting=True, academic_year=academic_year
             )
 
         subjects = []
         subject_set = set()
         rows = results or []
         if not rows:
-            rows = self._get_ranked_results(class_name, term, exam_type)
+            rows = self._get_ranked_results(class_name, term, exam_type, academic_year)
         for result in rows:
             for subject in result.get("subjects", []):
                 if subject not in subject_set:
@@ -2209,15 +2221,20 @@ class SchoolReportApp:
         return subjects
 
     def _get_subject_mode_badge(
-        self, class_name, term="One", exam_type=DEFAULT_EXAM_TYPE
+        self,
+        class_name,
+        term="One",
+        exam_type=DEFAULT_EXAM_TYPE,
+        academic_year=None,
     ):
         """Return (label, bg, fg) for report subject mode badge."""
+        academic_year = str(academic_year or datetime.now().year)
         mapping = self._get_class_subjects_done_map()
         if class_name and class_name != "All":
             if mapping.get(class_name):
                 return ("Mode: Manual Subjects", "#14532d", "white")
             auto_subjects = self._get_done_subjects_from_marks(
-                class_name, term, exam_type
+                class_name, term, exam_type, academic_year
             )
             if auto_subjects:
                 return ("Mode: Automatic (From Marks)", "#1d4ed8", "white")
@@ -2237,8 +2254,15 @@ class SchoolReportApp:
             return ("Mode: Manual Subjects (All Classes)", "#14532d", "white")
         return ("Mode: Automatic (All Classes)", "#1d4ed8", "white")
 
-    def _get_ranked_results(self, class_name, term="One", exam_type=DEFAULT_EXAM_TYPE):
+    def _get_ranked_results(
+        self,
+        class_name,
+        term="One",
+        exam_type=DEFAULT_EXAM_TYPE,
+        academic_year=None,
+    ):
         """Build whole-class ranked results with subject marks and summary fields."""
+        academic_year = str(academic_year or datetime.now().year)
         if class_name == "All":
             allowed_classes = set(self.get_current_classes())
             students = [
@@ -2256,11 +2280,15 @@ class SchoolReportApp:
             student_class = student.get("class", "")
             if student_class not in class_subjects:
                 class_subjects[student_class] = self._get_subjects_for_class(
-                    student_class, term, exam_type, for_reporting=True
+                    student_class,
+                    term,
+                    exam_type,
+                    for_reporting=True,
+                    academic_year=academic_year,
                 )
 
             subjects = class_subjects.get(student_class, [])
-            marks = db.get_student_marks(student["id"], term, exam_type)
+            marks = db.get_student_marks(student["id"], term, exam_type, academic_year)
             total = sum(int(marks.get(subject, 0) or 0) for subject in subjects)
             average = round(total / len(subjects), 1) if subjects else 0
             grade = self._get_grade_code_for_class(average, student_class)
@@ -2270,6 +2298,7 @@ class SchoolReportApp:
                 {
                     "student": student,
                     "marks": marks,
+                    "academic_year": academic_year,
                     "subjects": subjects,
                     "exam_type": exam_type,
                     "subject_count": len(subjects),
@@ -2441,8 +2470,23 @@ class SchoolReportApp:
             subtitle += f" (Stream {stream})"
         self.page_sub_lbl.config(text=subtitle)
 
-    def _get_results_page_results(self, class_name, term, exam_type):
-        results = self._get_ranked_results(class_name, term, exam_type)
+    def _get_year_options(self):
+        try:
+            years = db.get_academic_years()
+        except Exception:
+            years = []
+        current_year = str(datetime.now().year)
+        if current_year not in years:
+            years.insert(0, current_year)
+        for offset in range(1, 6):
+            year = str(datetime.now().year - offset)
+            if year not in years:
+                years.append(year)
+        return years
+
+    def _get_results_page_results(self, class_name, term, exam_type, academic_year=None):
+        academic_year = str(academic_year or datetime.now().year)
+        results = self._get_ranked_results(class_name, term, exam_type, academic_year)
         selected_stream = self._get_selected_results_stream()
         if selected_stream and class_name not in ("All", ALL_SCHOOL_LEVEL):
             results = [
@@ -2459,6 +2503,7 @@ class SchoolReportApp:
             return
         cls = self.rep_cls_cb.get() if hasattr(self, "rep_cls_cb") else ""
         stream = self._get_selected_results_stream()
+        year = self.rep_year_cb.get() if hasattr(self, "rep_year_cb") else ""
         class_text = "All Classes" if cls == "All" else cls
         title = f"Results - {class_text}"
         if stream:
@@ -2470,13 +2515,21 @@ class SchoolReportApp:
             subtitle = "View student performance and rankings across all classes"
         else:
             subtitle = f"View student performance and rankings for {class_text}"
+        if year:
+            subtitle = f"{subtitle} in {year}"
         self.page_sub_lbl.config(text=subtitle)
 
     def _get_report_card_results(self):
+        academic_year = (
+            self.rc_year_cb.get()
+            if hasattr(self, "rc_year_cb")
+            else str(datetime.now().year)
+        )
         results = self._get_ranked_results(
             self.rc_cls_cb.get(),
             self.rc_term_cb.get(),
             self.rc_exam_cb.get() or DEFAULT_EXAM_TYPE,
+            academic_year,
         )
         selected_stream = self._get_selected_report_stream()
         if selected_stream:
@@ -4472,7 +4525,7 @@ class SchoolReportApp:
             fill="both",
             expand=True,
             padx=(4, 2) if self.sidebar_collapsed else (8, 4),
-            pady=(0, 6),
+            pady=(0, 4),
         )
 
         nav_canvas = tk.Canvas(nav_wrap, bg=SIDEBAR_BG, highlightthickness=0, bd=0)
@@ -4496,12 +4549,12 @@ class SchoolReportApp:
 
         nav_canvas.bind("<Configure>", _resize_sidebar_nav)
         nav_canvas.bind("<MouseWheel>", _scroll_sidebar_nav)
+        nav_canvas.bind("<Enter>", lambda e: nav_canvas.focus_set())
         nav_box.bind("<MouseWheel>", _scroll_sidebar_nav)
 
-        nav_canvas.configure(yscrollcommand=nav_scroll.set)
+        nav_canvas.configure(yscrollcommand=nav_scroll.set, yscrollincrement=20)
         nav_canvas.pack(side="left", fill="both", expand=True)
-        if not self.sidebar_collapsed:
-            nav_scroll.pack(side="right", fill="y")
+        nav_scroll.pack(side="right", fill="y")
         self.nav_frames = {}
 
         for item in nav_cfg:
@@ -4621,7 +4674,7 @@ class SchoolReportApp:
     def _nav_section(self, parent, title: str):
         if self.sidebar_collapsed:
             tk.Frame(parent, bg="#2E7D32", height=1).pack(
-                fill="x", padx=10, pady=(6, 4)
+                fill="x", padx=10, pady=(4, 3)
             )
             return
         tk.Label(
@@ -4632,15 +4685,15 @@ class SchoolReportApp:
             font=(FF, 8, "bold"),
             anchor="w",
             padx=10,
-            pady=6,
-        ).pack(fill="x", pady=(5, 1))
+            pady=4,
+        ).pack(fill="x", pady=(4, 1))
 
     def _nav_item(self, parent, icon: str, label: str, cmd):
         frame = tk.Frame(parent, bg=SIDEBAR_BG, cursor="hand2")
         frame.pack(fill="x", pady=1)
 
         row = tk.Frame(
-            frame, bg=SIDEBAR_BG, padx=6 if self.sidebar_collapsed else 10, pady=6
+            frame, bg=SIDEBAR_BG, padx=6 if self.sidebar_collapsed else 10, pady=4
         )
         row.pack(fill="x")
 
@@ -7564,11 +7617,14 @@ class SchoolReportApp:
         return subjects
 
     def _get_done_subjects_from_marks(
-        self, class_name, term="One", exam_type=DEFAULT_EXAM_TYPE
+        self, class_name, term="One", exam_type=DEFAULT_EXAM_TYPE, academic_year=None
     ):
+        academic_year = str(academic_year or datetime.now().year)
         present = set()
         for student in db.get_students_by_class(class_name):
-            for subject in db.get_student_marks(student["id"], term, exam_type).keys():
+            for subject in db.get_student_marks(
+                student["id"], term, exam_type, academic_year
+            ).keys():
                 present.add(subject)
 
         if not present:
@@ -10425,8 +10481,9 @@ class SchoolReportApp:
             for row in history_rows:
                 term = str(row.get("term", "") or "")
                 exam_type = str(row.get("exam_type", "") or DEFAULT_EXAM_TYPE)
+                academic_year = str(row.get("academic_year", "") or datetime.now().year)
                 created_at = str(row.get("created_at", "") or "").strip()
-                point_key = (term, exam_type)
+                point_key = (academic_year, term, exam_type)
                 key_dt = datetime.min
                 if created_at:
                     try:
@@ -10435,10 +10492,10 @@ class SchoolReportApp:
                         ).replace(tzinfo=None)
                     except Exception:
                         pass
-                cache_key = (class_name, term, exam_type)
+                cache_key = (class_name, academic_year, term, exam_type)
                 if cache_key not in results_cache:
                     class_results = self._get_ranked_results(
-                        class_name, term, exam_type
+                        class_name, term, exam_type, academic_year
                     )
                     class_avg = (
                         round(
@@ -10471,7 +10528,7 @@ class SchoolReportApp:
 
         if ordered_points:
             labels = [
-                f"T{item[0][0]}-{str(item[0][1]).split('-')[0][:3].upper()}"
+                f"{item[0][0]} T{self._format_term_number(item[0][1])}-{str(item[0][2]).split('-')[0][:3].upper()}"
                 for item in ordered_points
             ]
             y1 = [item[2] for item in ordered_points]
@@ -11023,8 +11080,9 @@ class SchoolReportApp:
             for row in history_rows:
                 term = str(row.get("term", "") or "")
                 exam_type = str(row.get("exam_type", "") or DEFAULT_EXAM_TYPE)
+                academic_year = str(row.get("academic_year", "") or datetime.now().year)
                 created_at = str(row.get("created_at", "") or "").strip()
-                point_key = (term, exam_type)
+                point_key = (academic_year, term, exam_type)
                 key_dt = datetime.min
                 if created_at:
                     try:
@@ -11033,10 +11091,10 @@ class SchoolReportApp:
                         ).replace(tzinfo=None)
                     except Exception:
                         pass
-                cache_key = (class_name, term, exam_type)
+                cache_key = (class_name, academic_year, term, exam_type)
                 if cache_key not in results_cache:
                     class_results = self._get_ranked_results(
-                        class_name, term, exam_type
+                        class_name, term, exam_type, academic_year
                     )
                     class_avg = (
                         round(
@@ -11069,7 +11127,7 @@ class SchoolReportApp:
 
         if ordered_points:
             labels1 = [
-                f"T{item[0][0]}-{str(item[0][1]).split('-')[0][:3].upper()}"
+                f"{item[0][0]} T{self._format_term_number(item[0][1])}-{str(item[0][2]).split('-')[0][:3].upper()}"
                 for item in ordered_points
             ]
             y1 = [item[2] for item in ordered_points]
@@ -11828,19 +11886,22 @@ class SchoolReportApp:
         term = self.marks_term_cb.get()
         exam_type = self.marks_exam_cb.get()
 
+        year = self.marks_year_cb.get() if hasattr(self, "marks_year_cb") else str(datetime.now().year)
         if not term or not exam_type:
-            messagebox.showwarning("Select Values", "Please select Term and Exam Type")
+            messagebox.showwarning("Select Values", "Please select Year, Term and Exam Type")
             return
 
         if not self._confirm_delete_action(
             "mark record",
             1,
             scope="all",
-            details=f"Term: {term}\nExam Type: {exam_type}",
+            details=f"Year: {year}\nTerm: {term}\nExam Type: {exam_type}",
         ):
             return
 
-        success, message = db.clear_all_marks(term, exam_type)
+        success, message = db.clear_all_marks(
+            term, exam_type, academic_year=year
+        )
         if success:
             self._show_notice(
                 "Marks Deleted", message, kind="success", duration_ms=4200
@@ -12192,6 +12253,20 @@ class SchoolReportApp:
         )
         term_cb.pack(side="left", padx=5)
 
+        tk.Label(
+            ctrl, text="Year:", bg=CONTENT_BG, fg=TEXT_SECONDARY, font=(FF, 10)
+        ).pack(side="left", padx=15)
+        year_var = tk.StringVar(value=str(datetime.now().year))
+        year_cb = ttk.Combobox(
+            ctrl,
+            textvariable=year_var,
+            values=self._get_year_options(),
+            state="readonly",
+            font=(FF, 10),
+            width=10,
+        )
+        year_cb.pack(side="left", padx=5)
+
         tk.Button(
             ctrl,
             text="Load Students",
@@ -12199,7 +12274,7 @@ class SchoolReportApp:
             fg="white",
             font=(FF, 10),
             command=lambda: self._load_students_for_comments(
-                class_var.get(), term_var.get()
+                class_var.get(), term_var.get(), year_var.get()
             ),
         ).pack(side="left", padx=15)
 
@@ -12230,14 +12305,16 @@ class SchoolReportApp:
         self.comments_tree = self.comments_table.tree
         self.comments_class_var = class_var
         self.comments_term_var = term_var
+        self.comments_year_var = year_var
 
-    def _load_students_for_comments(self, class_name, term):
+    def _load_students_for_comments(self, class_name, term, academic_year=None):
         """Load students for adding comments"""
+        academic_year = str(academic_year or datetime.now().year)
         rows = []
         students = db.get_students_by_class(class_name)
         for s in students:
             # Get existing comment
-            comment_data = db.get_student_comment(s["id"], term)
+            comment_data = db.get_student_comment(s["id"], term, academic_year)
             comment = comment_data.get("comment_text", "") if comment_data else ""
 
             values = (s.get("admission_no", ""), s.get("name", ""), comment)
@@ -12260,11 +12337,14 @@ class SchoolReportApp:
         # Add double-click to edit
         self.comments_tree.bind(
             "<Double-1>",
-            lambda e: self._edit_comment(self.comments_tree, class_name, term),
+            lambda e: self._edit_comment(
+                self.comments_tree, class_name, term, academic_year
+            ),
         )
 
-    def _edit_comment(self, tree, class_name, term):
+    def _edit_comment(self, tree, class_name, term, academic_year=None):
         """Edit comment for selected student"""
+        academic_year = str(academic_year or datetime.now().year)
         selected = tree.selection()
         if not selected:
             return
@@ -12288,10 +12368,12 @@ class SchoolReportApp:
 
         def save():
             text = comment_text.get("1.0", "end").strip()
-            if db.save_comment(student_id, self.current_user["id"], term, text):
+            if db.save_comment(
+                student_id, self.current_user["id"], term, text, academic_year
+            ):
                 messagebox.showinfo("Success", "Comment saved!")
                 dialog.destroy()
-                self._load_students_for_comments(class_name, term)
+                self._load_students_for_comments(class_name, term, academic_year)
             else:
                 messagebox.showerror("Error", "Failed to save comment")
 
@@ -15405,7 +15487,7 @@ class SchoolReportApp:
 
                     tk.Label(
                         streams_frame,
-                        text="Streams:",
+                        text="Select Stream",
                         bg=card_bg,
                         fg=TEXT_SECONDARY,
                         font=(FF, 10, "bold"),
@@ -15413,23 +15495,7 @@ class SchoolReportApp:
 
                     # Create buttons for each stream
                     buttons_frame = tk.Frame(streams_frame, bg=card_bg)
-                    buttons_frame.pack(fill="x")
-                    stream_chips = []
-
-                    def _reflow_stream_buttons(
-                        event=None, frame=buttons_frame, chips=stream_chips
-                    ):
-                        width = frame.winfo_width()
-                        cols = 1 if width and width < 360 else 2
-                        for c in range(4):
-                            frame.grid_columnconfigure(c, weight=0)
-                        for c in range(cols):
-                            frame.grid_columnconfigure(c, weight=1)
-                        for i, chip in enumerate(chips):
-                            chip.grid_forget()
-                            row = i // cols
-                            col = i % cols
-                            chip.grid(row=row, column=col, padx=5, pady=4, sticky="ew")
+                    buttons_frame.pack(fill="x", pady=(0, 4))
 
                     visible_idx = 0
                     for stream in streams:
@@ -15451,26 +15517,26 @@ class SchoolReportApp:
                             )
 
                             stream_chip = tk.Frame(
-                                buttons_frame, bg=stream_border, padx=1, pady=1
+                                buttons_frame, bg=stream_border, padx=0, pady=0
                             )
-                            stream_chips.append(stream_chip)
+                            stream_chip.pack(fill="x", pady=4)
 
                             btn = tk.Button(
                                 stream_chip,
-                                text=f"{stream_name} ({stream_count})",
+                                text=f"Stream {stream_name} — {stream_count} students",
                                 bg=stream_bg,
                                 fg=stream_fg,
                                 font=(FF, 10, "bold"),
                                 relief="flat",
                                 bd=0,
-                                padx=15,
-                                pady=8,
+                                padx=10,
+                                pady=10,
                                 cursor="hand2",
                                 command=lambda c=class_name, s=stream_name: (
                                     self._show_marks_entry_form(c, s)
                                 ),
                             )
-                            btn.pack(fill="x")
+                            btn.pack(fill="x", expand=True)
 
                             # Hover effects
                             def on_enter(e, b=btn, c=stream_hover_bg):
@@ -15482,9 +15548,6 @@ class SchoolReportApp:
                             btn.bind("<Enter>", on_enter)
                             btn.bind("<Leave>", on_leave)
                             visible_idx += 1
-
-                    buttons_frame.bind("<Configure>", _reflow_stream_buttons)
-                    _reflow_stream_buttons()
                 else:
                     # No streams - show button for entire class
                     btn_frame = tk.Frame(card, bg=card_bg)
@@ -15576,6 +15639,20 @@ class SchoolReportApp:
         )
         self.marks_stream_cb.pack(side="left", ipady=4)
 
+        lbl("Year:")
+        year_options = [
+            str(datetime.now().year - i) for i in range(0, 6)
+        ]
+        self.marks_year_cb = ttk.Combobox(
+            ctrl,
+            values=year_options,
+            state="readonly",
+            style="App.TCombobox",
+            width=10,
+        )
+        self.marks_year_cb.set(str(datetime.now().year))
+        self.marks_year_cb.pack(side="left", ipady=4)
+
         # Store the selected stream
         self._selected_marks_stream = stream
         self._refresh_marks_streams(reload_results=False)
@@ -15599,6 +15676,9 @@ class SchoolReportApp:
             lambda e: self._refresh_marks_streams(reload_results=True),
         )
         self.marks_stream_cb.bind(
+            "<<ComboboxSelected>>", lambda e: self._load_marks_table()
+        )
+        self.marks_year_cb.bind(
             "<<ComboboxSelected>>", lambda e: self._load_marks_table()
         )
         self.marks_term_cb.bind(
@@ -15795,6 +15875,7 @@ class SchoolReportApp:
         self.student_widgets.clear()
 
         cls = self.marks_class_cb.get()
+        year = self.marks_year_cb.get() or str(datetime.now().year)
         term = self.marks_term_cb.get()
         exam_type = self.marks_exam_cb.get() or DEFAULT_EXAM_TYPE
 
@@ -15843,7 +15924,7 @@ class SchoolReportApp:
         summary.pack(fill="x", pady=(0, 10))
         tk.Label(
             summary,
-            text=f"{self._get_class_label(cls)}  •  Term {term}",
+            text=f"{self._get_class_label(cls)}  •  Term {term}  •  Year {year}",
             bg="#edf7ee",
             fg=SIDEBAR_BG,
             font=(FF, 11, "bold"),
@@ -15946,7 +16027,7 @@ class SchoolReportApp:
 
             # mark entries
             self.marks_entries[sid] = {}
-            m = db.get_student_marks(sid, term, exam_type)
+            m = db.get_student_marks(sid, term, exam_type, year)
             for sub in subjects:
                 e_frame = tk.Frame(
                     row_frame, bg=row_bg, width=subject_col_width, height=44
@@ -15991,9 +16072,10 @@ class SchoolReportApp:
 
         students = db.get_students_by_class(self.marks_class_cb.get())
         name = next((s["name"] for s in students if s["id"] == sid), "Unknown")
+        year = self.marks_year_cb.get() or str(datetime.now().year)
         term = self.marks_term_cb.get()
         exam_type = self.marks_exam_cb.get() or DEFAULT_EXAM_TYPE
-        cur = db.get_student_marks(sid, term, exam_type)
+        cur = db.get_student_marks(sid, term, exam_type, year)
         subjects = self._get_subjects_for_selected_class(
             self.marks_class_cb.get(), term, exam_type
         )
@@ -16066,7 +16148,7 @@ class SchoolReportApp:
                         marks[sub] = min(100, max(0, int(val)))
                     except ValueError:
                         pass
-            db.save_student_marks(sid, marks, term, exam_type)
+            db.save_student_marks(sid, marks, term, exam_type, year)
             self._load_marks_table()
             dlg.destroy()
 
@@ -16085,6 +16167,7 @@ class SchoolReportApp:
 
     def save_marks(self):
         cls = self.marks_class_cb.get()
+        year = self.marks_year_cb.get() or str(datetime.now().year)
         term = self.marks_term_cb.get()
         exam_type = self.marks_exam_cb.get() or DEFAULT_EXAM_TYPE
 
@@ -16101,7 +16184,7 @@ class SchoolReportApp:
                     except ValueError:
                         pass
             if marks:
-                db.save_student_marks(sid, marks, term, exam_type)
+                db.save_student_marks(sid, marks, term, exam_type, year)
 
         messagebox.showinfo(
             "Success",
@@ -16118,11 +16201,12 @@ class SchoolReportApp:
         subjects = self._get_subjects_for_selected_class(cls, term, exam_type)
         students = db.get_students_by_class(cls)
 
+        year = self.marks_year_cb.get() if hasattr(self, "marks_year_cb") else str(datetime.now().year)
         file_path = filedialog.asksaveasfilename(
             title="Save Marks Template",
             defaultextension=".xlsx",
             filetypes=[("Excel files", "*.xlsx")],
-            initialfile=f"marks_template_{cls.replace(' ', '_')}_T{term}_{exam_type.replace('-', '_')}.xlsx",
+            initialfile=f"marks_template_{cls.replace(' ', '_')}_{year}_T{term}_{exam_type.replace('-', '_')}.xlsx",
         )
         if not file_path:
             return
@@ -16159,7 +16243,7 @@ class SchoolReportApp:
             meta = ws.cell(
                 row=1,
                 column=1,
-                value=f"{cls} | Term {term} | {exam_type} | Fill marks 0-100 (blanks are allowed)",
+                value=f"{cls} | Year {year} | Term {term} | {exam_type} | Fill marks 0-100 (blanks are allowed)",
             )
             meta.fill = meta_fill
             meta.font = Font(bold=True, color="2F3B1A", name="Calibri", size=10)
@@ -16206,7 +16290,7 @@ class SchoolReportApp:
             start_row = 3
             for row_offset, student in enumerate(students):
                 ri = start_row + row_offset
-                existing = db.get_student_marks(student["id"], term, exam_type)
+                existing = db.get_student_marks(student["id"], term, exam_type, year)
                 row_fill = zebra_fill if row_offset % 2 else data_fill
 
                 adm = (student.get("admission_no") or "").strip()
@@ -16527,6 +16611,7 @@ class SchoolReportApp:
 
         term_var = tk.StringVar(value=TERMS[0])
         exam_var = tk.StringVar(value=DEFAULT_EXAM_TYPE)
+        year_var = tk.StringVar(value=str(datetime.now().year))
 
         row = tk.Frame(card, bg=card_bi)
         row.pack(fill="x", pady=(0, 10))
@@ -16540,7 +16625,7 @@ class SchoolReportApp:
             state="readonly",
             width=12,
             style="App.TCombobox",
-        ).pack(side="left", padx=(8, 18), ipady=3)
+        ).pack(side="left", padx=(8, 14), ipady=3)
         tk.Label(row, text="Exam:", bg=card_bi, fg=TEXT_SECONDARY, font=(FF, 10)).pack(
             side="left"
         )
@@ -16550,6 +16635,17 @@ class SchoolReportApp:
             values=EXAM_TYPES,
             state="readonly",
             width=12,
+            style="App.TCombobox",
+        ).pack(side="left", padx=(8, 14), ipady=3)
+        tk.Label(row, text="Year:", bg=card_bi, fg=TEXT_SECONDARY, font=(FF, 10)).pack(
+            side="left"
+        )
+        ttk.Combobox(
+            row,
+            textvariable=year_var,
+            values=[str(datetime.now().year - i) for i in range(0, 6)],
+            state="readonly",
+            width=10,
             style="App.TCombobox",
         ).pack(side="left", padx=(8, 0), ipady=3)
 
@@ -16564,7 +16660,10 @@ class SchoolReportApp:
             if not file_path:
                 return
             result["ok"] = self._import_marks_workbook(
-                file_path, term_var.get(), exam_var.get()
+                file_path,
+                term_var.get(),
+                exam_var.get(),
+                academic_year=year_var.get() or str(datetime.now().year),
             )
 
         btn_row = tk.Frame(card, bg=card_bi)
@@ -16596,8 +16695,16 @@ class SchoolReportApp:
         if result["ok"]:
             self.show_marks_entry()
 
-    def _import_marks_workbook(self, file_path, term, exam_type, class_name=""):
+    def _import_marks_workbook(
+        self,
+        file_path,
+        term,
+        exam_type,
+        class_name="",
+        academic_year: str = None,
+    ):
         """Import marks from either a class workbook or a whole-school workbook."""
+        academic_year = academic_year or str(datetime.now().year)
         progress_dialog = None
         try:
             import openpyxl
@@ -16791,11 +16898,11 @@ class SchoolReportApp:
                             class_import_summary[sheet_class]["created"] += 1
 
                         current_marks = db.get_student_marks(
-                            student["id"], term, exam_type
+                            student["id"], term, exam_type, academic_year
                         )
                         current_marks.update(item["marks"])
                         db.save_student_marks(
-                            student["id"], current_marks, term, exam_type
+                            student["id"], current_marks, term, exam_type, academic_year
                         )
                         total_updated += 1
                         class_import_summary[sheet_class]["updated"] += 1
@@ -17015,7 +17122,9 @@ class SchoolReportApp:
                             pass
 
                 if marks:
-                    db.save_student_marks(sid, marks, term, exam_type)
+                    db.save_student_marks(
+                        sid, marks, term, exam_type, academic_year
+                    )
                     updated += 1
                 else:
                     skipped += 1
@@ -17098,7 +17207,10 @@ class SchoolReportApp:
         if not file_path:
             return
 
-        self._import_marks_workbook(file_path, term, exam_type, cls)
+        year = self.marks_year_cb.get() or str(datetime.now().year)
+        self._import_marks_workbook(
+            file_path, term, exam_type, cls, academic_year=year
+        )
         return
 
         try:
@@ -17336,7 +17448,7 @@ class SchoolReportApp:
                             pass
 
                 if marks:
-                    db.save_student_marks(sid, marks, term, exam_type)
+                    db.save_student_marks(sid, marks, term, exam_type, academic_year)
                     updated += 1
                 else:
                     skipped += 1
@@ -17415,6 +17527,17 @@ class SchoolReportApp:
         )
         self.rep_stream_cb.pack(side="left", ipady=4)
 
+        lbl("Year:")
+        self.rep_year_cb = ttk.Combobox(
+            ctrl,
+            values=self._get_year_options(),
+            state="readonly",
+            style="App.TCombobox",
+            width=10,
+        )
+        self.rep_year_cb.set(str(datetime.now().year))
+        self.rep_year_cb.pack(side="left", ipady=4)
+
         lbl("Term:")
         self.rep_term_cb = ttk.Combobox(
             ctrl, values=TERMS, state="readonly", style="App.TCombobox", width=10
@@ -17433,6 +17556,7 @@ class SchoolReportApp:
             "<<ComboboxSelected>>", lambda e: self._refresh_results_streams()
         )
         self.rep_stream_cb.bind("<<ComboboxSelected>>", lambda e: self.load_reports())
+        self.rep_year_cb.bind("<<ComboboxSelected>>", lambda e: self.load_reports())
         self.rep_term_cb.bind("<<ComboboxSelected>>", lambda e: self.load_reports())
         self.rep_exam_cb.bind("<<ComboboxSelected>>", lambda e: self.load_reports())
 
@@ -17495,16 +17619,19 @@ class SchoolReportApp:
 
         cls = self.rep_cls_cb.get()
         selected_stream = self._get_selected_results_stream()
+        academic_year = self.rep_year_cb.get() or str(datetime.now().year)
         term = self.rep_term_cb.get()
         exam_type = self.rep_exam_cb.get() or DEFAULT_EXAM_TYPE
         self._update_results_page_header()
         if hasattr(self, "rep_mode_badge"):
             badge_text, badge_bg, badge_fg = self._get_subject_mode_badge(
-                cls, term, exam_type
+                cls, term, exam_type, academic_year
             )
             self.rep_mode_badge.config(text=badge_text, bg=badge_bg, fg=badge_fg)
-        results = self._get_results_page_results(cls, term, exam_type)
-        subjects = self._get_subjects_for_scope(cls, term, exam_type, results)
+        results = self._get_results_page_results(cls, term, exam_type, academic_year)
+        subjects = self._get_subjects_for_scope(
+            cls, term, exam_type, results, academic_year
+        )
         show_class_column = cls == "All"
 
         table_signature = (show_class_column, tuple(subjects))
@@ -17633,10 +17760,13 @@ class SchoolReportApp:
     def export_csv(self):
         cls = self.rep_cls_cb.get()
         selected_stream = self._get_selected_results_stream()
+        academic_year = self.rep_year_cb.get() or str(datetime.now().year)
         term = self.rep_term_cb.get()
         exam_type = self.rep_exam_cb.get() or DEFAULT_EXAM_TYPE
-        results = self._get_results_page_results(cls, term, exam_type)
-        subjects = self._get_subjects_for_scope(cls, term, exam_type, results)
+        results = self._get_results_page_results(cls, term, exam_type, academic_year)
+        subjects = self._get_subjects_for_scope(
+            cls, term, exam_type, results, academic_year
+        )
         subject_headers = [
             self._get_subject_label(s, cls if cls != "All" else "") for s in subjects
         ]
@@ -17646,7 +17776,7 @@ class SchoolReportApp:
             else "_all_streams"
         )
         fn = (
-            f"report_{cls.replace(' ', '_')}{stream_part}_term_{term}_"
+            f"report_{cls.replace(' ', '_')}{stream_part}_{academic_year}_term_{term}_"
             f"{exam_type.replace('-', '_')}.csv"
         )
         file_path = filedialog.asksaveasfilename(
@@ -17682,10 +17812,11 @@ class SchoolReportApp:
     def print_results_pdf(self):
         cls = self.rep_cls_cb.get()
         selected_stream = self._get_selected_results_stream()
+        academic_year = self.rep_year_cb.get() or str(datetime.now().year)
         term = self.rep_term_cb.get()
         exam_type = self.rep_exam_cb.get() or DEFAULT_EXAM_TYPE
 
-        results = self._get_results_page_results(cls, term, exam_type)
+        results = self._get_results_page_results(cls, term, exam_type, academic_year)
         if not results:
             messagebox.showwarning(
                 "No Data",
@@ -17693,7 +17824,7 @@ class SchoolReportApp:
             )
             return
 
-        year_text = str(datetime.now().year)
+        year_text = academic_year
         base_name = (
             f"results_{self._slugify_report_part(cls)}_"
             f"{self._slugify_report_part(selected_stream or 'all_streams')}_"
@@ -17716,6 +17847,7 @@ class SchoolReportApp:
             file_path,
             results=results,
             stream_name=selected_stream,
+            academic_year=academic_year,
         ):
             messagebox.showinfo("Done", f"Results PDF saved to {file_path}")
 
@@ -17728,14 +17860,20 @@ class SchoolReportApp:
         results=None,
         include_averages=True,
         stream_name="",
+        academic_year=None,
     ):
         """Generate a printable class/all-results PDF with report-style letterhead."""
         try:
-            rows = list(results or self._get_ranked_results(cls, term, exam_type))
+            academic_year = str(academic_year or datetime.now().year)
+            rows = list(
+                results or self._get_ranked_results(cls, term, exam_type, academic_year)
+            )
             if not rows:
                 return False
 
-            subjects = self._get_subjects_for_scope(cls, term, exam_type, rows)
+            subjects = self._get_subjects_for_scope(
+                cls, term, exam_type, rows, academic_year
+            )
             show_class_column = cls == "All"
             class_level = (
                 self._get_level_for_class(cls)
@@ -17922,7 +18060,7 @@ class SchoolReportApp:
             elements.append(Spacer(1, 4))
 
             title_text = self._format_results_heading(
-                cls, term, exam_type, stream_name=stream_name
+                cls, term, exam_type, year=academic_year, stream_name=stream_name
             )
             elements.append(Paragraph(title_text, styles["ResultsTitle"]))
 
@@ -17937,7 +18075,7 @@ class SchoolReportApp:
             ]
             if stream_name:
                 info_items.append(("Stream", stream_name))
-            info_items.append(("Year", str(datetime.now().year)))
+            info_items.append(("Year", academic_year))
 
             info_rows = [
                 [
@@ -19009,7 +19147,7 @@ class SchoolReportApp:
 
     def _do_spotlight_export(self, cls, term, exam_type, stream, assess, year):
         """Generate the Western Spotlight Excel workbook and save it."""
-        results = self._get_ranked_results(cls, term, exam_type)
+        results = self._get_ranked_results(cls, term, exam_type, year)
         if not results:
             messagebox.showwarning(
                 "No Data",
@@ -19052,7 +19190,9 @@ class SchoolReportApp:
             _thin = Side(style="thin", color="000000")
             BORDER = Border(left=_thin, right=_thin, top=_thin, bottom=_thin)
 
-            subjects = self._get_subjects_for_scope(cls, term, exam_type, results)
+            subjects = self._get_subjects_for_scope(
+                cls, term, exam_type, results, year
+            )
             n_subj = len(subjects)
             total_max = n_subj * 100
 
@@ -19392,19 +19532,22 @@ class SchoolReportApp:
         cls = "Grade 7"
         term = "One"
         exam_type = DEFAULT_EXAM_TYPE
+        academic_year = str(datetime.now().year)
         if hasattr(self, "rc_exam_cb"):
             exam_type = self.rc_exam_cb.get() or DEFAULT_EXAM_TYPE
+            academic_year = self.rc_year_cb.get() or academic_year
         elif hasattr(self, "marks_exam_cb"):
             exam_type = self.marks_exam_cb.get() or DEFAULT_EXAM_TYPE
+            academic_year = self.marks_year_cb.get() or academic_year
 
-        results = self._get_ranked_results(cls, term, exam_type)
+        results = self._get_ranked_results(cls, term, exam_type, academic_year)
         result = next((r for r in results if r["student"]["id"] == student_id), None)
 
         if not result:
             for c in self.get_current_classes():
                 if c == cls:
                     continue
-                results = self._get_ranked_results(c, term, exam_type)
+                results = self._get_ranked_results(c, term, exam_type, academic_year)
                 result = next(
                     (r for r in results if r["student"]["id"] == student_id), None
                 )
@@ -19547,7 +19690,9 @@ class SchoolReportApp:
             footer_path = letterhead_assets["footer_path"]
             header_lines = letterhead_assets["header_lines"]
             footer_lines = letterhead_assets["footer_lines"]
-            term_marks = self._get_student_term_marks(s["id"], term)
+            term_marks = self._get_student_term_marks(
+                s["id"], term, context.get("year")
+            )
             matrix_spec = self._get_report_assessment_matrix_spec(
                 context,
                 assessment_types=term_marks.keys(),
@@ -20419,15 +20564,16 @@ class SchoolReportApp:
             return
 
         cls = self.rc_cls_cb.get()
+        academic_year = self.rc_year_cb.get() or str(datetime.now().year)
         term = self.rc_term_cb.get()
         exam_type = self.rc_exam_cb.get() or DEFAULT_EXAM_TYPE
         stream = self._get_selected_report_stream()
-        logs = db.get_email_logs(cls, term, exam_type, stream, "failed")
+        logs = db.get_email_logs(cls, term, exam_type, stream, "failed", academic_year)
         self._failed_email_logs_rows = list(logs)
 
         stream_suffix = f" / {stream}" if stream else ""
         title.config(
-            text=f"Failed Email Logs - {cls}{stream_suffix} / Term {term} / {exam_type}"
+            text=f"Failed Email Logs - {cls}{stream_suffix} / {academic_year} / Term {term} / {exam_type}"
         )
 
         for item in tree.get_children():
@@ -20630,7 +20776,10 @@ class SchoolReportApp:
     def _is_valid_email(self, email):
         return bool(re.match(r"[^@]+@[^@]+\.[^@]+", str(email or "").strip()))
 
-    def _create_result_email_html(self, student, term, exam_type, settings):
+    def _create_result_email_html(
+        self, student, term, exam_type, settings, academic_year=None
+    ):
+        academic_year = str(academic_year or datetime.now().year)
         profile = get_school_profile()
         school_name = profile.get("school_app_title", profile.get("school_name", ""))
         school_location = profile.get(
@@ -20656,6 +20805,7 @@ class SchoolReportApp:
                 <table style="border-collapse: collapse; margin: 16px 0;">
                     <tr><td style="padding: 6px 12px 6px 0;"><b>Class</b></td><td>{student.get("class", "")}</td></tr>
                     {stream_html}
+                    <tr><td style="padding: 6px 12px 6px 0;"><b>Year</b></td><td>{academic_year}</td></tr>
                     <tr><td style="padding: 6px 12px 6px 0;"><b>Term</b></td><td>{term}</td></tr>
                     <tr><td style="padding: 6px 12px 6px 0;"><b>Exam</b></td><td>{exam_type}</td></tr>
                     <tr><td style="padding: 6px 12px 6px 0;"><b>Admission No</b></td><td>{student.get("admission_no", "")}</td></tr>
@@ -20727,8 +20877,10 @@ class SchoolReportApp:
         )
         return pdf_path if ok else None
 
-    def _get_result_for_student(self, student_id, class_name, term, exam_type):
-        results = self._get_ranked_results(class_name, term, exam_type)
+    def _get_result_for_student(
+        self, student_id, class_name, term, exam_type, academic_year=None
+    ):
+        results = self._get_ranked_results(class_name, term, exam_type, academic_year)
         return next(
             (r for r in results if r["student"]["id"] == student_id), None
         ), results
@@ -20764,6 +20916,7 @@ class SchoolReportApp:
                         log.get("class_name", ""),
                         log["term"],
                         log.get("exam_type", DEFAULT_EXAM_TYPE),
+                        log.get("academic_year"),
                     )
                     if not result:
                         failed += 1
@@ -20794,6 +20947,7 @@ class SchoolReportApp:
                         f"Dear {student.get('guardian_name', 'Parent/Guardian')},\n\n"
                         f"Please find attached the report card for {student['name']}.\n\n"
                         f"Class: {student['class']}\n"
+                        f"Year: {log.get('academic_year', datetime.now().year)}\n"
                         f"Term: {log['term']}\n"
                         f"Exam: {log.get('exam_type', DEFAULT_EXAM_TYPE)}\n\n"
                         f"Regards,\n{settings.get('smtp_sender_name', get_school_profile().get('school_name', DEFAULT_SCHOOL_PROFILE['school_name']))}"
@@ -20803,6 +20957,7 @@ class SchoolReportApp:
                         log["term"],
                         log.get("exam_type", DEFAULT_EXAM_TYPE),
                         settings,
+                        log.get("academic_year"),
                     )
                     self._send_email_with_attachment(
                         log["recipient_email"],
@@ -20818,6 +20973,8 @@ class SchoolReportApp:
                         log.get("exam_type", DEFAULT_EXAM_TYPE),
                         log["recipient_email"],
                         "sent",
+                        "",
+                        log.get("academic_year"),
                     )
                     sent += 1
                 except Exception as exc:
@@ -20828,6 +20985,7 @@ class SchoolReportApp:
                         log["recipient_email"],
                         "failed",
                         str(exc),
+                        log.get("academic_year"),
                     )
                     failed += 1
                 finally:
@@ -20856,10 +21014,11 @@ class SchoolReportApp:
 
     def _export_failed_email_logs(self):
         cls = self.rc_cls_cb.get()
+        academic_year = self.rc_year_cb.get() or str(datetime.now().year)
         term = self.rc_term_cb.get()
         exam_type = self.rc_exam_cb.get() or DEFAULT_EXAM_TYPE
         stream = self._get_selected_report_stream()
-        logs = db.get_email_logs(cls, term, exam_type, stream, "failed")
+        logs = db.get_email_logs(cls, term, exam_type, stream, "failed", academic_year)
         if not logs:
             messagebox.showinfo(
                 "No Failed Emails", "No failed email logs found for this selection."
@@ -20869,7 +21028,7 @@ class SchoolReportApp:
             title="Export Failed Emails",
             defaultextension=".csv",
             filetypes=[("CSV files", "*.csv")],
-            initialfile=f"failed_emails_{cls.replace(' ', '_')}_{(stream or 'all_streams').replace(' ', '_')}_{term}_{exam_type.replace('-', '_')}.csv",
+            initialfile=f"failed_emails_{cls.replace(' ', '_')}_{(stream or 'all_streams').replace(' ', '_')}_{academic_year}_{term}_{exam_type.replace('-', '_')}.csv",
         )
         if not file_path:
             return
@@ -20880,6 +21039,7 @@ class SchoolReportApp:
                     "Student",
                     "Admission No",
                     "Class",
+                    "Academic Year",
                     "Term",
                     "Exam Type",
                     "Recipient",
@@ -20894,6 +21054,7 @@ class SchoolReportApp:
                         log.get("student_name", ""),
                         log.get("admission_no", ""),
                         log.get("class_name", ""),
+                        log.get("academic_year", ""),
                         log.get("term", ""),
                         log.get("exam_type", ""),
                         log.get("recipient_email", ""),
@@ -20919,6 +21080,7 @@ class SchoolReportApp:
             return
         exam_type = self.rc_exam_cb.get() or DEFAULT_EXAM_TYPE
         term = self.rc_term_cb.get()
+        academic_year = self.rc_year_cb.get() or str(datetime.now().year)
         results = self._get_report_card_results()
         result = next((r for r in results if r["student"]["name"] == name), None)
         if not result:
@@ -20970,12 +21132,13 @@ class SchoolReportApp:
                     f"Please find attached the report card for {student['name']}.\n\n"
                     f"Class: {student['class']}\n"
                     f"{'Stream: ' + student.get('stream', '').strip() + chr(10) if student.get('stream', '').strip() else ''}"
+                    f"Year: {academic_year}\n"
                     f"Term: {term}\n"
                     f"Exam: {exam_type}\n\n"
                     f"Regards,\n{settings.get('smtp_sender_name', get_school_profile().get('school_name', DEFAULT_SCHOOL_PROFILE['school_name']))}"
                 )
                 html_body = self._create_result_email_html(
-                    student, term, exam_type, settings
+                    student, term, exam_type, settings, academic_year
                 )
                 self.root.after(
                     0,
@@ -20992,7 +21155,9 @@ class SchoolReportApp:
                 self._send_email_with_attachment(
                     recipient, subject, body, pdf_path, settings, html_body
                 )
-                db.log_email_delivery(student["id"], term, exam_type, recipient, "sent")
+                db.log_email_delivery(
+                    student["id"], term, exam_type, recipient, "sent", "", academic_year
+                )
                 self.root.after(
                     0,
                     lambda: self._update_progress_dialog(
@@ -21014,7 +21179,13 @@ class SchoolReportApp:
                 )
             except Exception as exc:
                 db.log_email_delivery(
-                    student["id"], term, exam_type, recipient, "failed", str(exc)
+                    student["id"],
+                    term,
+                    exam_type,
+                    recipient,
+                    "failed",
+                    str(exc),
+                    academic_year,
                 )
                 self.root.after(0, progress_dialog.destroy)
                 self.root.after(
@@ -21036,6 +21207,7 @@ class SchoolReportApp:
         cls = self.rc_cls_cb.get()
         term = self.rc_term_cb.get()
         exam_type = self.rc_exam_cb.get() or DEFAULT_EXAM_TYPE
+        academic_year = self.rc_year_cb.get() or str(datetime.now().year)
         selected_stream = self._get_selected_report_stream()
         results = self._get_report_card_results()
         if not results:
@@ -21081,6 +21253,7 @@ class SchoolReportApp:
                         recipient,
                         "failed",
                         "Invalid email format",
+                        academic_year,
                     )
                     self.root.after(
                         0,
@@ -21121,12 +21294,13 @@ class SchoolReportApp:
                         f"Please find attached the report card for {student['name']}.\n\n"
                         f"Class: {student['class']}\n"
                         f"{'Stream: ' + student.get('stream', '').strip() + chr(10) if student.get('stream', '').strip() else ''}"
+                        f"Year: {academic_year}\n"
                         f"Term: {term}\n"
                         f"Exam: {exam_type}\n\n"
                         f"Regards,\n{settings.get('smtp_sender_name', get_school_profile().get('school_name', DEFAULT_SCHOOL_PROFILE['school_name']))}"
                     )
                     html_body = self._create_result_email_html(
-                        student, term, exam_type, settings
+                        student, term, exam_type, settings, academic_year
                     )
                     self.root.after(
                         0,
@@ -21144,12 +21318,18 @@ class SchoolReportApp:
                         recipient, subject, body, pdf_path, settings, html_body
                     )
                     db.log_email_delivery(
-                        student["id"], term, exam_type, recipient, "sent"
+                        student["id"], term, exam_type, recipient, "sent", "", academic_year
                     )
                     sent += 1
                 except Exception as exc:
                     db.log_email_delivery(
-                        student["id"], term, exam_type, recipient, "failed", str(exc)
+                        student["id"],
+                        term,
+                        exam_type,
+                        recipient,
+                        "failed",
+                        str(exc),
+                        academic_year,
                     )
                     failed += 1
                 finally:
@@ -21210,6 +21390,16 @@ class SchoolReportApp:
         )
         self.ch_stream_cb.pack(side="left", ipady=4)
         self._refresh_chart_streams(reload_results=False)
+        lbl("Year:")
+        self.ch_year_cb = ttk.Combobox(
+            ctrl,
+            values=self._get_year_options(),
+            state="readonly",
+            style="App.TCombobox",
+            width=10,
+        )
+        self.ch_year_cb.set(str(datetime.now().year))
+        self.ch_year_cb.pack(side="left", ipady=4)
         lbl("Term:")
         self.ch_term_cb = ttk.Combobox(
             ctrl, values=TERMS, state="readonly", style="App.TCombobox", width=10
@@ -21226,6 +21416,7 @@ class SchoolReportApp:
             "<<ComboboxSelected>>", lambda e: self._refresh_chart_streams()
         )
         self.ch_stream_cb.bind("<<ComboboxSelected>>", lambda e: self.load_charts())
+        self.ch_year_cb.bind("<<ComboboxSelected>>", lambda e: self.load_charts())
         self.ch_term_cb.bind("<<ComboboxSelected>>", lambda e: self.load_charts())
         self.ch_exam_cb.bind("<<ComboboxSelected>>", lambda e: self.load_charts())
 
@@ -21246,17 +21437,20 @@ class SchoolReportApp:
 
     def load_charts(self):
         cls = self.ch_cls_cb.get()
+        academic_year = self.ch_year_cb.get() or str(datetime.now().year)
         term = self.ch_term_cb.get()
         exam_type = self.ch_exam_cb.get() or DEFAULT_EXAM_TYPE
         selected_stream = self._get_selected_chart_stream()
-        results = self._get_ranked_results(cls, term, exam_type)
+        results = self._get_ranked_results(cls, term, exam_type, academic_year)
         if selected_stream:
             results = [
                 r
                 for r in results
                 if r.get("student", {}).get("stream", "").strip() == selected_stream
             ]
-        subjects = self._get_subjects_for_scope(cls, term, exam_type, results)
+        subjects = self._get_subjects_for_scope(
+            cls, term, exam_type, results, academic_year
+        )
         plot_panel = _mix_hex(getattr(self, "_chart_card_bg", CARD_BG), "#ffffff", 0.5)
         for ax in self.axes.flat:
             ax.clear()
@@ -21378,7 +21572,7 @@ class SchoolReportApp:
         if cls == "All":
             cls_perf = {}
             for c in self.get_current_classes():
-                cr = self._get_ranked_results(c, term, exam_type)
+                cr = self._get_ranked_results(c, term, exam_type, academic_year)
                 if selected_stream:
                     cr = [
                         r
@@ -21461,6 +21655,16 @@ class SchoolReportApp:
             ctrl, state="readonly", style="App.TCombobox", width=14
         )
         self.rc_stream_cb.pack(side="left", ipady=4)
+        lbl("Year:")
+        self.rc_year_cb = ttk.Combobox(
+            ctrl,
+            values=self._get_year_options(),
+            state="readonly",
+            style="App.TCombobox",
+            width=10,
+        )
+        self.rc_year_cb.set(str(datetime.now().year))
+        self.rc_year_cb.pack(side="left", ipady=4)
         lbl("Term:")
         self.rc_term_cb = ttk.Combobox(
             ctrl, values=TERMS, state="readonly", style="App.TCombobox", width=10
@@ -21483,6 +21687,7 @@ class SchoolReportApp:
             "<<ComboboxSelected>>", lambda e: self._refresh_report_card_streams()
         )
         self.rc_stream_cb.bind("<<ComboboxSelected>>", lambda e: self._load_rc())
+        self.rc_year_cb.bind("<<ComboboxSelected>>", lambda e: self._load_rc())
         self.rc_term_cb.bind("<<ComboboxSelected>>", lambda e: self._load_rc())
         self.rc_exam_cb.bind("<<ComboboxSelected>>", lambda e: self._load_rc())
         self.rc_stu_cb.bind("<<ComboboxSelected>>", lambda e: self._display_rc())
@@ -21559,11 +21764,12 @@ class SchoolReportApp:
             self._rc_paper, result, len(results), self.rc_term_cb.get(), exam_type
         )
 
-    def _get_student_term_marks(self, student_id, term):
+    def _get_student_term_marks(self, student_id, term, academic_year=None):
         """Fetch marks for all exam types for a student in a specific term."""
+        academic_year = str(academic_year or datetime.now().year)
         term_marks = {}
         for et in EXAM_TYPES:
-            m = db.get_student_marks(student_id, term, et)
+            m = db.get_student_marks(student_id, term, et, academic_year)
             if m:
                 term_marks[et] = m
         return term_marks
@@ -21656,15 +21862,17 @@ class SchoolReportApp:
             return str(class_matches[0].get("full_name", "") or "").strip()
         return ""
 
-    def _get_report_comment_text(self, student_id, class_name, term):
-        comment_row = db.get_student_comment(student_id, term)
+    def _get_report_comment_text(self, student_id, class_name, term, academic_year=None):
+        academic_year = str(academic_year or datetime.now().year)
+        comment_row = db.get_student_comment(student_id, term, academic_year)
         if comment_row and str(comment_row.get("comment_text", "") or "").strip():
             return str(comment_row.get("comment_text", "") or "").strip()
-        class_comments = db.get_class_comments(class_name, term)
+        class_comments = db.get_class_comments(class_name, term, academic_year)
         return str(class_comments.get(student_id, "") or "").strip()
 
     def _get_report_card_context(self, result, term, exam_type=DEFAULT_EXAM_TYPE):
         student = result["student"]
+        academic_year = str(result.get("academic_year") or datetime.now().year)
         class_name = student.get("class", "")
         class_level = self._get_level_for_class(class_name)
         is_pp = self._is_pre_primary_level(class_level)
@@ -21733,9 +21941,9 @@ class SchoolReportApp:
                 class_name, student.get("stream", "")
             ),
             "comment_text": self._get_report_comment_text(
-                student.get("id"), class_name, term
+                student.get("id"), class_name, term, academic_year
             ),
-            "year": str(datetime.now().year),
+            "year": academic_year,
         }
 
     def _slugify_report_part(self, value):
@@ -22211,7 +22419,7 @@ class SchoolReportApp:
         grade_text = class_name
         teacher_name = context.get("class_teacher_name") or ""
         comment_text = context.get("comment_text") or " "
-        term_marks = self._get_student_term_marks(s["id"], term)
+        term_marks = self._get_student_term_marks(s["id"], term, context.get("year"))
         subjects = context.get("subjects", [])
         scales = context.get("grade_scales", [])
         scale_codes = context.get(
@@ -22526,7 +22734,7 @@ class SchoolReportApp:
         grade_text = class_name
         teacher_name = context.get("class_teacher_name") or ""
         comment_text = context.get("comment_text") or " "
-        term_marks = self._get_student_term_marks(s["id"], term)
+        term_marks = self._get_student_term_marks(s["id"], term, context.get("year"))
         subjects = context.get("subjects", [])
         year_text = context.get("year", str(datetime.now().year))
 
@@ -22816,7 +23024,7 @@ class SchoolReportApp:
         grade_text = class_name
         teacher_name = context.get("class_teacher_name") or ""
         comment_text = context.get("comment_text") or " "
-        term_marks = self._get_student_term_marks(s["id"], term)
+        term_marks = self._get_student_term_marks(s["id"], term, context.get("year"))
         subjects = context.get("subjects", [])
         scales = context.get("grade_scales", [])
         scale_codes = context.get("grade_codes", ["EE", "ME", "AE", "BE"])
@@ -23142,7 +23350,7 @@ class SchoolReportApp:
         accent_soft = theme.get("accent_soft", "#f7f7f7")
         open_date = ""
         close_date = ""
-        term_marks = self._get_student_term_marks(s["id"], term)
+        term_marks = self._get_student_term_marks(s["id"], term, context.get("year"))
 
         def line_field(parent_widget, label, value, width=None, show_line=True):
             wrap = tk.Frame(parent_widget, bg="white")
@@ -23729,7 +23937,9 @@ class SchoolReportApp:
         tbl.pack(fill="x", pady=(0, 12))
 
         if is_pp:
-            term_marks = self._get_student_term_marks(s["id"], term)
+            term_marks = self._get_student_term_marks(
+                s["id"], term, context.get("year")
+            )
             assess_types = [
                 spec["key"]
                 for spec in self._get_report_assessment_specs(
@@ -24077,6 +24287,7 @@ class SchoolReportApp:
         is_pp = context["is_pp"]
         subjects = context["subjects"]
         comment_text = context.get("comment_text") or ""
+        year_text = context.get("year", str(datetime.now().year))
 
         possible = result.get("possible_total", len(subjects) * 100)
         title = (
@@ -24085,7 +24296,9 @@ class SchoolReportApp:
             else "LEARNER ASSESSMENT REPORT CARD"
         )
         assessment_specs = self._get_report_assessment_specs(
-            assessment_types=self._get_student_term_marks(s["id"], term).keys(),
+            assessment_types=self._get_student_term_marks(
+                s["id"], term, context.get("year")
+            ).keys(),
             include_exam_type=exam_type,
         )
         assessment_order = [spec["key"] for spec in assessment_specs]
@@ -24101,12 +24314,12 @@ class SchoolReportApp:
         ]
         if is_pp:
             lines += [
-                f"  Year    : 2026                Term   : {term.upper()}",
+                f"  Year    : {year_text:<19} Term   : {term.upper()}",
                 f"  Gender  : {s['gender']:<20}",
             ]
         else:
             lines += [
-                f"  Stream  : {s['admission_no']:<20}  Year   : 2026",
+                f"  Stream  : {s['admission_no']:<20}  Year   : {year_text}",
                 f"  Term    : {f'{term} / {exam_type}':<20}  Gender : {s['gender']}",
             ]
 
@@ -24124,7 +24337,9 @@ class SchoolReportApp:
         lines.append("-" * 62)
 
         if is_pp:
-            term_marks = self._get_student_term_marks(s["id"], term)
+            term_marks = self._get_student_term_marks(
+                s["id"], term, context.get("year")
+            )
             for sub in subjects:
                 row = f"  {sub[:30]:<30} "
                 for et in assessment_order:

@@ -12,6 +12,8 @@ from datetime import datetime
 from typing import List, Dict, Optional, Tuple
 
 DEFAULT_EXAM_TYPE = "End-Term"
+DEFAULT_ACADEMIC_YEAR = datetime.now().strftime("%Y")
+VALID_TERMS = ("One", "Two", "Three")
 
 
 class Database:
@@ -35,6 +37,59 @@ class Database:
             "PRAGMA foreign_keys = ON"
         )  # Enable foreign key constraints for cascade deletes
         return conn
+
+    def _normalize_academic_year(self, academic_year: str = None) -> str:
+        value = str(academic_year or "").strip()
+        return value or DEFAULT_ACADEMIC_YEAR
+
+    def _normalize_term(self, term: str = None) -> str:
+        value = str(term or "").strip()
+        key = re.sub(r"[^a-z0-9]+", "", value.lower())
+        aliases = {
+            "1": "One",
+            "01": "One",
+            "one": "One",
+            "term1": "One",
+            "termone": "One",
+            "t1": "One",
+            "2": "Two",
+            "02": "Two",
+            "two": "Two",
+            "term2": "Two",
+            "termtwo": "Two",
+            "t2": "Two",
+            "3": "Three",
+            "03": "Three",
+            "three": "Three",
+            "term3": "Three",
+            "termthree": "Three",
+            "t3": "Three",
+        }
+        return aliases.get(key, value or VALID_TERMS[0])
+
+    def _normalize_exam_type(self, exam_type: str = None) -> str:
+        value = str(exam_type or "").strip()
+        return value or DEFAULT_EXAM_TYPE
+
+    def _ensure_academic_period(self, cursor, academic_year: str, term: str) -> str:
+        academic_year = self._normalize_academic_year(academic_year)
+        term = self._normalize_term(term)
+        cursor.execute(
+            "SELECT id FROM academic_periods WHERE academic_year = ? AND term = ?",
+            (academic_year, term),
+        )
+        row = cursor.fetchone()
+        if row:
+            return row["id"]
+        period_id = str(uuid.uuid4())
+        cursor.execute(
+            """
+            INSERT INTO academic_periods (id, academic_year, term, created_at)
+            VALUES (?, ?, ?, ?)
+            """,
+            (period_id, academic_year, term, datetime.now().isoformat()),
+        )
+        return period_id
 
     def init_database(self):
         """Initialize database tables"""
@@ -66,10 +121,11 @@ class Database:
         """)
 
         # Marks table
-        cursor.execute("""
+        cursor.execute(f"""
             CREATE TABLE IF NOT EXISTS marks (
                 id TEXT PRIMARY KEY,
                 student_id TEXT NOT NULL,
+                academic_year TEXT NOT NULL DEFAULT '{DEFAULT_ACADEMIC_YEAR}',
                 term TEXT NOT NULL,
                 exam_type TEXT NOT NULL DEFAULT 'End-Term',
                 subject TEXT NOT NULL,
@@ -77,19 +133,20 @@ class Database:
                 created_at TEXT NOT NULL,
                 updated_at TEXT NOT NULL,
                 FOREIGN KEY (student_id) REFERENCES students(id) ON DELETE CASCADE,
-                UNIQUE(student_id, term, exam_type, subject)
+                UNIQUE(student_id, academic_year, term, exam_type, subject)
             )
         """)
 
-        # Create indexes
-        cursor.execute(
-            "CREATE INDEX IF NOT EXISTS idx_students_class ON students(class)"
-        )
-        cursor.execute(
-            "CREATE INDEX IF NOT EXISTS idx_marks_student_id ON marks(student_id)"
-        )
-        cursor.execute("CREATE INDEX IF NOT EXISTS idx_marks_term ON marks(term)")
-
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS academic_periods (
+                id TEXT PRIMARY KEY,
+                academic_year TEXT NOT NULL,
+                term TEXT NOT NULL CHECK (term IN ('One', 'Two', 'Three')),
+                is_active INTEGER NOT NULL DEFAULT 0,
+                created_at TEXT NOT NULL,
+                UNIQUE(academic_year, term)
+            )
+        """)
         # Create default admin user if not exists
         cursor.execute("SELECT * FROM users WHERE username = ?", ("admin",))
         if not cursor.fetchone():
@@ -207,16 +264,17 @@ class Database:
         """)
 
         # Class-teacher comments per student per term
-        cursor.execute("""
+        cursor.execute(f"""
             CREATE TABLE IF NOT EXISTS student_comments (
                 id           TEXT PRIMARY KEY,
                 student_id   TEXT NOT NULL,
                 teacher_id   TEXT NOT NULL,
+                academic_year TEXT NOT NULL DEFAULT '{DEFAULT_ACADEMIC_YEAR}',
                 term         TEXT NOT NULL,
                 comment_text TEXT NOT NULL,
                 created_at   TEXT NOT NULL,
                 FOREIGN KEY (student_id) REFERENCES students(id) ON DELETE CASCADE,
-                UNIQUE(student_id, term)
+                UNIQUE(student_id, academic_year, term)
             )
         """)
 
@@ -240,10 +298,11 @@ class Database:
             )
         """)
 
-        cursor.execute("""
+        cursor.execute(f"""
             CREATE TABLE IF NOT EXISTS email_logs (
                 id TEXT PRIMARY KEY,
                 student_id TEXT NOT NULL,
+                academic_year TEXT NOT NULL DEFAULT '{DEFAULT_ACADEMIC_YEAR}',
                 term TEXT NOT NULL,
                 exam_type TEXT NOT NULL DEFAULT 'End-Term',
                 recipient_email TEXT NOT NULL,
@@ -304,6 +363,11 @@ class Database:
         """)
 
         self._migrate_marks_exam_type(cursor)
+        self._migrate_marks_academic_year(cursor)
+        self._ensure_marks_year_unique_constraint(cursor)
+        self._migrate_academic_periods(cursor)
+        self._migrate_student_comments_academic_year(cursor)
+        self._migrate_email_logs_academic_year(cursor)
 
         conn.commit()
         conn.close()
@@ -489,6 +553,240 @@ class Database:
         cursor.execute("CREATE INDEX IF NOT EXISTS idx_marks_term ON marks(term)")
         cursor.execute(
             "CREATE INDEX IF NOT EXISTS idx_marks_term_exam ON marks(term, exam_type)"
+        )
+
+    def _migrate_marks_academic_year(self, cursor):
+        """Add academic year support to existing marks records."""
+        cursor.execute("PRAGMA table_info(marks)")
+        columns = [row["name"] for row in cursor.fetchall()]
+        if not columns:
+            return
+
+        if "academic_year" in columns:
+            cursor.execute(
+                "CREATE INDEX IF NOT EXISTS idx_marks_year ON marks(academic_year)"
+            )
+            cursor.execute(
+                "CREATE INDEX IF NOT EXISTS idx_marks_year_term ON marks(academic_year, term)"
+            )
+            cursor.execute(
+                "CREATE INDEX IF NOT EXISTS idx_marks_year_term_exam ON marks(academic_year, term, exam_type)"
+            )
+            return
+
+        cursor.execute(
+            "ALTER TABLE marks ADD COLUMN academic_year TEXT NOT NULL DEFAULT ''"
+        )
+        cursor.execute(
+            "UPDATE marks SET academic_year = substr(created_at, 1, 4) WHERE academic_year = '' AND created_at LIKE '____-%'"
+        )
+        cursor.execute(
+            "UPDATE marks SET academic_year = ? WHERE academic_year = ''",
+            (DEFAULT_ACADEMIC_YEAR,),
+        )
+        cursor.execute(
+            "CREATE INDEX IF NOT EXISTS idx_marks_year ON marks(academic_year)"
+        )
+        cursor.execute(
+            "CREATE INDEX IF NOT EXISTS idx_marks_year_term ON marks(academic_year, term)"
+        )
+        cursor.execute(
+            "CREATE INDEX IF NOT EXISTS idx_marks_year_term_exam ON marks(academic_year, term, exam_type)"
+        )
+
+    def _ensure_marks_year_unique_constraint(self, cursor):
+        """Rebuild old marks tables whose UNIQUE constraint did not include year."""
+        cursor.execute("PRAGMA table_info(marks)")
+        columns = [row["name"] for row in cursor.fetchall()]
+        if "academic_year" not in columns:
+            return
+
+        cursor.execute("PRAGMA index_list(marks)")
+        unique_indexes = []
+        for row in cursor.fetchall():
+            if not bool(row[2]):
+                continue
+            index_name = row[1]
+            cursor.execute(f'PRAGMA index_info("{index_name}")')
+            unique_indexes.append([info[2] for info in cursor.fetchall()])
+
+        expected = ["student_id", "academic_year", "term", "exam_type", "subject"]
+        if expected in unique_indexes:
+            cursor.execute(
+                "CREATE INDEX IF NOT EXISTS idx_marks_result_lookup ON marks(academic_year, term, exam_type, student_id)"
+            )
+            return
+
+        cursor.execute("PRAGMA foreign_keys = OFF")
+        cursor.execute("DROP TABLE IF EXISTS marks_new")
+        cursor.execute(f"""
+            CREATE TABLE marks_new (
+                id TEXT PRIMARY KEY,
+                student_id TEXT NOT NULL,
+                academic_year TEXT NOT NULL DEFAULT '{DEFAULT_ACADEMIC_YEAR}',
+                term TEXT NOT NULL,
+                exam_type TEXT NOT NULL DEFAULT 'End-Term',
+                subject TEXT NOT NULL,
+                marks INTEGER NOT NULL CHECK (marks >= 0 AND marks <= 100),
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                FOREIGN KEY (student_id) REFERENCES students(id) ON DELETE CASCADE,
+                UNIQUE(student_id, academic_year, term, exam_type, subject)
+            )
+        """)
+        cursor.execute(
+            """
+            INSERT OR IGNORE INTO marks_new (
+                id, student_id, academic_year, term, exam_type, subject, marks, created_at, updated_at
+            )
+            SELECT
+                id,
+                student_id,
+                COALESCE(NULLIF(academic_year, ''), ?),
+                term,
+                COALESCE(NULLIF(exam_type, ''), ?),
+                subject,
+                marks,
+                created_at,
+                updated_at
+            FROM marks
+            """,
+            (DEFAULT_ACADEMIC_YEAR, DEFAULT_EXAM_TYPE),
+        )
+        cursor.execute("DROP TABLE marks")
+        cursor.execute("ALTER TABLE marks_new RENAME TO marks")
+        cursor.execute(
+            "CREATE INDEX IF NOT EXISTS idx_marks_student_id ON marks(student_id)"
+        )
+        cursor.execute("CREATE INDEX IF NOT EXISTS idx_marks_term ON marks(term)")
+        cursor.execute(
+            "CREATE INDEX IF NOT EXISTS idx_marks_term_exam ON marks(term, exam_type)"
+        )
+        cursor.execute(
+            "CREATE INDEX IF NOT EXISTS idx_marks_year ON marks(academic_year)"
+        )
+        cursor.execute(
+            "CREATE INDEX IF NOT EXISTS idx_marks_year_term ON marks(academic_year, term)"
+        )
+        cursor.execute(
+            "CREATE INDEX IF NOT EXISTS idx_marks_year_term_exam ON marks(academic_year, term, exam_type)"
+        )
+        cursor.execute(
+            "CREATE INDEX IF NOT EXISTS idx_marks_result_lookup ON marks(academic_year, term, exam_type, student_id)"
+        )
+        cursor.execute("PRAGMA foreign_keys = ON")
+
+    def _migrate_academic_periods(self, cursor):
+        """Create selectable academic periods from existing marks/comments/logs."""
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS academic_periods (
+                id TEXT PRIMARY KEY,
+                academic_year TEXT NOT NULL,
+                term TEXT NOT NULL CHECK (term IN ('One', 'Two', 'Three')),
+                is_active INTEGER NOT NULL DEFAULT 0,
+                created_at TEXT NOT NULL,
+                UNIQUE(academic_year, term)
+            )
+        """)
+
+        for term in VALID_TERMS:
+            self._ensure_academic_period(cursor, DEFAULT_ACADEMIC_YEAR, term)
+
+        sources = [
+            ("marks", "academic_year", "term"),
+            ("student_comments", "academic_year", "term"),
+            ("email_logs", "academic_year", "term"),
+        ]
+        for table, year_col, term_col in sources:
+            cursor.execute(
+                "SELECT name FROM sqlite_master WHERE type='table' AND name = ?",
+                (table,),
+            )
+            if not cursor.fetchone():
+                continue
+            cursor.execute(f"PRAGMA table_info({table})")
+            columns = [row["name"] for row in cursor.fetchall()]
+            if year_col not in columns or term_col not in columns:
+                continue
+            cursor.execute(
+                f"""
+                SELECT DISTINCT {year_col} AS academic_year, {term_col} AS term
+                FROM {table}
+                WHERE TRIM(COALESCE({year_col}, '')) != ''
+                  AND TRIM(COALESCE({term_col}, '')) != ''
+                """
+            )
+            for row in cursor.fetchall():
+                term = self._normalize_term(row["term"])
+                if term in VALID_TERMS:
+                    self._ensure_academic_period(cursor, row["academic_year"], term)
+
+        cursor.execute(
+            "CREATE INDEX IF NOT EXISTS idx_academic_periods_year ON academic_periods(academic_year)"
+        )
+
+    def _migrate_student_comments_academic_year(self, cursor):
+        """Add academic year support and composite index to student_comments records."""
+        cursor.execute("PRAGMA table_info(student_comments)")
+        columns = [row["name"] for row in cursor.fetchall()]
+        if not columns:
+            return
+
+        if "academic_year" in columns:
+            cursor.execute(
+                "CREATE INDEX IF NOT EXISTS idx_student_comments_year_term ON student_comments(academic_year, term)"
+            )
+            return
+
+        # SQLite doesn't support changing UNIQUE constraints via ALTER TABLE.
+        # We need to recreate the table if we want to change the UNIQUE constraint.
+        cursor.execute("ALTER TABLE student_comments RENAME TO student_comments_legacy")
+        cursor.execute(f"""
+            CREATE TABLE student_comments (
+                id           TEXT PRIMARY KEY,
+                student_id   TEXT NOT NULL,
+                teacher_id   TEXT NOT NULL,
+                academic_year TEXT NOT NULL DEFAULT '{DEFAULT_ACADEMIC_YEAR}',
+                term         TEXT NOT NULL,
+                comment_text TEXT NOT NULL,
+                created_at   TEXT NOT NULL,
+                FOREIGN KEY (student_id) REFERENCES students(id) ON DELETE CASCADE,
+                UNIQUE(student_id, academic_year, term)
+            )
+        """)
+        cursor.execute(f"""
+            INSERT INTO student_comments (id, student_id, teacher_id, academic_year, term, comment_text, created_at)
+            SELECT id, student_id, teacher_id, 
+                   COALESCE(NULLIF(substr(created_at, 1, 4), ''), '{DEFAULT_ACADEMIC_YEAR}'),
+                   term, comment_text, created_at
+            FROM student_comments_legacy
+        """)
+        cursor.execute("DROP TABLE student_comments_legacy")
+        cursor.execute(
+            "CREATE INDEX IF NOT EXISTS idx_student_comments_year_term ON student_comments(academic_year, term)"
+        )
+
+    def _migrate_email_logs_academic_year(self, cursor):
+        """Add academic year support and composite index to email_logs records."""
+        cursor.execute("PRAGMA table_info(email_logs)")
+        columns = [row["name"] for row in cursor.fetchall()]
+        if not columns:
+            return
+
+        if "academic_year" in columns:
+            cursor.execute(
+                "CREATE INDEX IF NOT EXISTS idx_email_logs_year_term ON email_logs(academic_year, term)"
+            )
+            return
+
+        cursor.execute(f"ALTER TABLE email_logs ADD COLUMN academic_year TEXT NOT NULL DEFAULT '{DEFAULT_ACADEMIC_YEAR}'")
+        cursor.execute(f"""
+            UPDATE email_logs SET academic_year = 
+            COALESCE(NULLIF(substr(sent_at, 1, 4), ''), '{DEFAULT_ACADEMIC_YEAR}')
+            WHERE academic_year = '{DEFAULT_ACADEMIC_YEAR}'
+        """)
+        cursor.execute(
+            "CREATE INDEX IF NOT EXISTS idx_email_logs_year_term ON email_logs(academic_year, term)"
         )
 
     # User operations
@@ -1271,42 +1569,72 @@ class Database:
 
     # ── Comments ─────────────────────────────────────────────────────────────
     def save_comment(
-        self, student_id: str, teacher_id: str, term: str, comment_text: str
+        self,
+        student_id: str,
+        teacher_id: str,
+        term: str,
+        comment_text: str,
+        academic_year: str = DEFAULT_ACADEMIC_YEAR,
     ) -> bool:
         conn = self.get_connection()
         cursor = conn.cursor()
         now = datetime.now().isoformat()
+        academic_year = self._normalize_academic_year(academic_year)
+        term = self._normalize_term(term)
+        self._ensure_academic_period(cursor, academic_year, term)
         cursor.execute(
-            "INSERT OR REPLACE INTO student_comments (id, student_id, teacher_id, term, comment_text, created_at) VALUES (?, ?, ?, ?, ?, ?)",
-            (str(uuid.uuid4()), student_id, teacher_id, term, comment_text, now),
+            "INSERT OR REPLACE INTO student_comments (id, student_id, teacher_id, academic_year, term, comment_text, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
+            (
+                str(uuid.uuid4()),
+                student_id,
+                teacher_id,
+                academic_year,
+                term,
+                comment_text,
+                now,
+            ),
         )
         conn.commit()
         conn.close()
         return True
 
-    def get_student_comment(self, student_id: str, term: str) -> Optional[Dict]:
+    def get_student_comment(
+        self,
+        student_id: str,
+        term: str,
+        academic_year: str = DEFAULT_ACADEMIC_YEAR,
+    ) -> Optional[Dict]:
         conn = self.get_connection()
         cursor = conn.cursor()
+        academic_year = self._normalize_academic_year(academic_year)
+        term = self._normalize_term(term)
         cursor.execute(
-            "SELECT sc.*, u.full_name FROM student_comments sc JOIN users u ON sc.teacher_id = u.id WHERE sc.student_id = ? AND sc.term = ?",
-            (student_id, term),
+            "SELECT sc.*, u.full_name FROM student_comments sc JOIN users u ON sc.teacher_id = u.id WHERE sc.student_id = ? AND sc.academic_year = ? AND sc.term = ?",
+            (student_id, academic_year, term),
         )
         row = cursor.fetchone()
         conn.close()
         return dict(row) if row else None
 
-    def get_class_comments(self, class_name: str, term: str) -> Dict[str, str]:
-        """Returns {student_id: comment_text} for a class/term."""
+    def get_class_comments(
+        self,
+        class_name: str,
+        term: str,
+        academic_year: str = DEFAULT_ACADEMIC_YEAR,
+    ) -> Dict[str, str]:
+        """Returns {student_id: comment_text} for a class/term/academic_year."""
         conn = self.get_connection()
         cursor = conn.cursor()
+        academic_year = self._normalize_academic_year(academic_year)
+        term = self._normalize_term(term)
         cursor.execute(
             """
             SELECT sc.student_id, sc.comment_text
             FROM student_comments sc
             JOIN students st ON sc.student_id = st.id
-            WHERE st.class = ? AND sc.term = ?
+            WHERE st.class = ? AND sc.academic_year = ? AND sc.term = ?
         """,
-            (class_name, term),
+            (class_name, academic_year, term),
         )
         rows = cursor.fetchall()
         conn.close()
@@ -1537,16 +1865,34 @@ class Database:
             return False
 
     def delete_student_marks(
-        self, student_id: str, term: str = None, exam_type: str = None
+        self,
+        student_id: str,
+        term: str = None,
+        exam_type: str = None,
+        academic_year: str = None,
     ) -> bool:
         """Delete marks for a student. If term/exam_type not specified, delete all marks for that student."""
         conn = self.get_connection()
         cursor = conn.cursor()
         try:
+            academic_year = self._normalize_academic_year(academic_year) if academic_year else None
+            term = self._normalize_term(term) if term else None
+            exam_type = self._normalize_exam_type(exam_type) if exam_type else None
             if term and exam_type:
+                if academic_year:
+                    cursor.execute(
+                        "DELETE FROM marks WHERE student_id = ? AND academic_year = ? AND term = ? AND exam_type = ?",
+                        (student_id, academic_year, term, exam_type),
+                    )
+                else:
+                    cursor.execute(
+                        "DELETE FROM marks WHERE student_id = ? AND term = ? AND exam_type = ?",
+                        (student_id, term, exam_type),
+                    )
+            elif academic_year:
                 cursor.execute(
-                    "DELETE FROM marks WHERE student_id = ? AND term = ? AND exam_type = ?",
-                    (student_id, term, exam_type),
+                    "DELETE FROM marks WHERE student_id = ? AND academic_year = ?",
+                    (student_id, academic_year),
                 )
             else:
                 cursor.execute("DELETE FROM marks WHERE student_id = ?", (student_id,))
@@ -1559,15 +1905,28 @@ class Database:
             return False
 
     def clear_all_marks(
-        self, term: str = "One", exam_type: str = DEFAULT_EXAM_TYPE
+        self,
+        term: str = "One",
+        exam_type: str = DEFAULT_EXAM_TYPE,
+        academic_year: str = None,
     ) -> bool:
-        """Clear ALL marks for a specific term and exam type (use with caution!)."""
+        """Clear ALL marks for a specific term, exam type and optional year."""
         conn = self.get_connection()
         cursor = conn.cursor()
         try:
-            cursor.execute(
-                "DELETE FROM marks WHERE term = ? AND exam_type = ?", (term, exam_type)
-            )
+            academic_year = self._normalize_academic_year(academic_year) if academic_year else None
+            term = self._normalize_term(term)
+            exam_type = self._normalize_exam_type(exam_type)
+            if academic_year:
+                cursor.execute(
+                    "DELETE FROM marks WHERE academic_year = ? AND term = ? AND exam_type = ?",
+                    (academic_year, term, exam_type),
+                )
+            else:
+                cursor.execute(
+                    "DELETE FROM marks WHERE term = ? AND exam_type = ?",
+                    (term, exam_type),
+                )
             affected = cursor.rowcount
             conn.commit()
             conn.close()
@@ -1791,13 +2150,23 @@ class Database:
 
     # Marks operations
     def get_marks(
-        self, term: str = "One", exam_type: str = DEFAULT_EXAM_TYPE
+        self,
+        term: str = "One",
+        exam_type: str = DEFAULT_EXAM_TYPE,
+        academic_year: str = None,
     ) -> List[Dict]:
         conn = self.get_connection()
         cursor = conn.cursor()
-        cursor.execute(
-            "SELECT * FROM marks WHERE term = ? AND exam_type = ?", (term, exam_type)
-        )
+        if academic_year:
+            cursor.execute(
+                "SELECT * FROM marks WHERE academic_year = ? AND term = ? AND exam_type = ?",
+                (academic_year, term, exam_type),
+            )
+        else:
+            cursor.execute(
+                "SELECT * FROM marks WHERE term = ? AND exam_type = ?",
+                (term, exam_type),
+            )
         rows = cursor.fetchall()
         conn.close()
         return [dict(row) for row in rows]
@@ -1834,18 +2203,24 @@ class Database:
         recipient_email: str,
         status: str,
         error_message: str = "",
+        academic_year: str = DEFAULT_ACADEMIC_YEAR,
     ) -> bool:
         conn = self.get_connection()
         cursor = conn.cursor()
+        academic_year = self._normalize_academic_year(academic_year)
+        term = self._normalize_term(term)
+        exam_type = self._normalize_exam_type(exam_type)
+        self._ensure_academic_period(cursor, academic_year, term)
         cursor.execute(
             """INSERT INTO email_logs
-               (id, student_id, term, exam_type, recipient_email, status, error_message, sent_at)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+               (id, student_id, academic_year, term, exam_type, recipient_email, status, error_message, sent_at)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             (
                 str(uuid.uuid4()),
                 student_id,
+                academic_year,
                 term,
-                exam_type or DEFAULT_EXAM_TYPE,
+                exam_type,
                 recipient_email.strip(),
                 status.strip(),
                 error_message.strip(),
@@ -1863,9 +2238,13 @@ class Database:
         exam_type: str = "",
         stream: str = "",
         status: str = "",
+        academic_year: str = DEFAULT_ACADEMIC_YEAR,
     ) -> List[Dict]:
         conn = self.get_connection()
         cursor = conn.cursor()
+        academic_year = self._normalize_academic_year(academic_year) if academic_year else ""
+        term = self._normalize_term(term) if term else ""
+        exam_type = self._normalize_exam_type(exam_type) if exam_type else ""
         query = """
             SELECT el.*, st.name AS student_name, st.class AS class_name, st.stream AS student_stream, st.admission_no
             FROM email_logs el
@@ -1876,6 +2255,9 @@ class Database:
         if class_name:
             query += " AND st.class = ?"
             params.append(class_name)
+        if academic_year:
+            query += " AND el.academic_year = ?"
+            params.append(academic_year)
         if term:
             query += " AND el.term = ?"
             params.append(term)
@@ -1903,13 +2285,20 @@ class Database:
         return dict(row) if row else None
 
     def get_student_marks(
-        self, student_id: str, term: str = "One", exam_type: str = DEFAULT_EXAM_TYPE
+        self,
+        student_id: str,
+        term: str = "One",
+        exam_type: str = DEFAULT_EXAM_TYPE,
+        academic_year: str = DEFAULT_ACADEMIC_YEAR,
     ) -> Dict[str, int]:
         conn = self.get_connection()
         cursor = conn.cursor()
+        academic_year = self._normalize_academic_year(academic_year)
+        term = self._normalize_term(term)
+        exam_type = self._normalize_exam_type(exam_type)
         cursor.execute(
-            "SELECT subject, marks FROM marks WHERE student_id = ? AND term = ? AND exam_type = ?",
-            (student_id, term, exam_type),
+            "SELECT subject, marks FROM marks WHERE student_id = ? AND academic_year = ? AND term = ? AND exam_type = ?",
+            (student_id, academic_year, term, exam_type),
         )
         rows = cursor.fetchall()
         conn.close()
@@ -1921,25 +2310,31 @@ class Database:
         marks: Dict[str, int],
         term: str = "One",
         exam_type: str = DEFAULT_EXAM_TYPE,
+        academic_year: str = DEFAULT_ACADEMIC_YEAR,
     ) -> bool:
         conn = self.get_connection()
         cursor = conn.cursor()
         now = datetime.now().isoformat()
+        academic_year = self._normalize_academic_year(academic_year)
+        term = self._normalize_term(term)
+        exam_type = self._normalize_exam_type(exam_type)
+        self._ensure_academic_period(cursor, academic_year, term)
 
-        # Delete existing marks for this student, term, and exam type only.
+        # Delete existing marks for this student, term, exam type and year.
         cursor.execute(
-            "DELETE FROM marks WHERE student_id = ? AND term = ? AND exam_type = ?",
-            (student_id, term, exam_type),
+            "DELETE FROM marks WHERE student_id = ? AND academic_year = ? AND term = ? AND exam_type = ?",
+            (student_id, academic_year, term, exam_type),
         )
 
         # Insert new marks
         for subject, value in marks.items():
             if value is not None and value != "":
                 cursor.execute(
-                    "INSERT INTO marks (id, student_id, term, exam_type, subject, marks, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                    "INSERT INTO marks (id, student_id, academic_year, term, exam_type, subject, marks, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
                     (
                         str(uuid.uuid4()),
                         student_id,
+                        academic_year,
                         term,
                         exam_type,
                         subject,
@@ -1958,14 +2353,18 @@ class Database:
         student_marks: Dict[str, Dict[str, int]],
         term: str = "One",
         exam_type: str = DEFAULT_EXAM_TYPE,
+        academic_year: str = DEFAULT_ACADEMIC_YEAR,
     ) -> bool:
         for student_id, marks in student_marks.items():
-            self.save_student_marks(student_id, marks, term, exam_type)
+            self.save_student_marks(student_id, marks, term, exam_type, academic_year)
         return True
 
     # Statistics
     def get_statistics(
-        self, term: str = "One", exam_type: str = DEFAULT_EXAM_TYPE
+        self,
+        term: str = "One",
+        exam_type: str = DEFAULT_EXAM_TYPE,
+        academic_year: str = DEFAULT_ACADEMIC_YEAR,
     ) -> Dict:
         conn = self.get_connection()
         cursor = conn.cursor()
@@ -1974,15 +2373,25 @@ class Database:
         cursor.execute("SELECT COUNT(*) as count FROM students")
         total_students = cursor.fetchone()["count"]
 
-        # Get all marks for the term
-        cursor.execute(
-            """
-            SELECT s.id, s.name, s.class, m.subject, m.marks 
-            FROM students s 
-            LEFT JOIN marks m ON s.id = m.student_id AND m.term = ? AND m.exam_type = ?
-        """,
-            (term, exam_type),
-        )
+        # Get all marks for the term and optional academic year
+        if academic_year:
+            cursor.execute(
+                """
+                SELECT s.id, s.name, s.class, m.subject, m.marks 
+                FROM students s 
+                LEFT JOIN marks m ON s.id = m.student_id AND m.academic_year = ? AND m.term = ? AND m.exam_type = ?
+            """,
+                (academic_year, term, exam_type),
+            )
+        else:
+            cursor.execute(
+                """
+                SELECT s.id, s.name, s.class, m.subject, m.marks 
+                FROM students s 
+                LEFT JOIN marks m ON s.id = m.student_id AND m.term = ? AND m.exam_type = ?
+            """,
+                (term, exam_type),
+            )
         rows = cursor.fetchall()
         conn.close()
 
@@ -2029,6 +2438,7 @@ class Database:
         class_filter: str = "All",
         term: str = "One",
         exam_type: str = DEFAULT_EXAM_TYPE,
+        academic_year: str = DEFAULT_ACADEMIC_YEAR,
     ) -> List[Dict]:
         subjects = [
             "Math",
@@ -2044,6 +2454,9 @@ class Database:
 
         conn = self.get_connection()
         cursor = conn.cursor()
+        academic_year = self._normalize_academic_year(academic_year)
+        term = self._normalize_term(term)
+        exam_type = self._normalize_exam_type(exam_type)
 
         if class_filter == "All":
             cursor.execute("SELECT * FROM students ORDER BY name")
@@ -2057,8 +2470,8 @@ class Database:
         results = []
         for student in students:
             cursor.execute(
-                "SELECT subject, marks FROM marks WHERE student_id = ? AND term = ? AND exam_type = ?",
-                (student["id"], term, exam_type),
+                "SELECT subject, marks FROM marks WHERE student_id = ? AND academic_year = ? AND term = ? AND exam_type = ?",
+                (student["id"], academic_year, term, exam_type),
             )
             marks_rows = cursor.fetchall()
             marks = {row["subject"]: row["marks"] for row in marks_rows}
@@ -2099,31 +2512,36 @@ class Database:
         return results
 
     # ── Class Exam History ─────────────────────────────────────────────────
-    def get_class_exam_history(self, class_name: str) -> List[Dict]:
-        """Get all exam sessions (term/exam_type combinations) for a specific class."""
+    def get_class_exam_history(self, class_name: str, academic_year: str = None) -> List[Dict]:
+        """Get all exam sessions (year/term/exam_type combinations) for a specific class."""
         conn = self.get_connection()
         cursor = conn.cursor()
+        academic_year = self._normalize_academic_year(academic_year) if academic_year else None
 
-        # Get distinct term/exam_type combinations where this class has marks
-        cursor.execute(
-            """
-            SELECT DISTINCT m.term, m.exam_type, m.created_at
+        # Get distinct academic_year/term/exam_type combinations where this class has marks
+        query = """
+            SELECT DISTINCT m.academic_year, m.term, m.exam_type, m.created_at
             FROM marks m
             JOIN students s ON m.student_id = s.id
             WHERE s.class = ?
-            ORDER BY m.created_at DESC, m.term, m.exam_type
-        """,
-            (class_name,),
-        )
+        """
+        params = [class_name]
+        if academic_year:
+            query += " AND m.academic_year = ?"
+            params.append(academic_year)
+        query += " ORDER BY m.academic_year DESC, m.created_at DESC, m.term, m.exam_type"
+
+        cursor.execute(query, params)
 
         rows = cursor.fetchall()
         conn.close()
         return [dict(r) for r in rows]
 
-    def get_all_classes_exam_history(self) -> List[Dict]:
+    def get_all_classes_exam_history(self, academic_year: str = None) -> List[Dict]:
         """Get exam history summary for all classes."""
         conn = self.get_connection()
         cursor = conn.cursor()
+        academic_year = self._normalize_academic_year(academic_year) if academic_year else None
 
         # Get all classes
         cursor.execute("SELECT * FROM school_classes ORDER BY name")
@@ -2134,16 +2552,19 @@ class Database:
             class_name = cls.get("name", "")
 
             # Get distinct exam sessions for this class
-            cursor.execute(
-                """
-                SELECT DISTINCT m.term, m.exam_type
+            query = """
+                SELECT DISTINCT m.academic_year, m.term, m.exam_type
                 FROM marks m
                 JOIN students s ON m.student_id = s.id
                 WHERE s.class = ?
-                ORDER BY m.term DESC, m.exam_type
-            """,
-                (class_name,),
-            )
+            """
+            params = [class_name]
+            if academic_year:
+                query += " AND m.academic_year = ?"
+                params.append(academic_year)
+            query += " ORDER BY m.academic_year DESC, m.term DESC, m.exam_type"
+
+            cursor.execute(query, params)
 
             exams = [dict(r) for r in cursor.fetchall()]
 
@@ -2162,9 +2583,14 @@ class Database:
                     SELECT AVG(m.marks) as avg
                     FROM marks m
                     JOIN students s ON m.student_id = s.id
-                    WHERE s.class = ? AND m.term = ? AND m.exam_type = ?
+                    WHERE s.class = ? AND m.academic_year = ? AND m.term = ? AND m.exam_type = ?
                 """,
-                    (class_name, latest.get("term"), latest.get("exam_type")),
+                    (
+                        class_name,
+                        latest.get("academic_year"),
+                        latest.get("term"),
+                        latest.get("exam_type"),
+                    ),
                 )
                 avg_row = cursor.fetchone()
                 avg_score = (
@@ -2188,21 +2614,38 @@ class Database:
         return result
 
     def get_class_exam_details(
-        self, class_name: str, term: str, exam_type: str
+        self,
+        class_name: str,
+        term: str,
+        exam_type: str,
+        academic_year: str = DEFAULT_ACADEMIC_YEAR,
     ) -> List[Dict]:
-        """Get detailed exam results for a specific class, term, and exam type."""
+        """Get detailed exam results for a specific class, term, exam type, and optional academic year."""
         conn = self.get_connection()
         cursor = conn.cursor()
+        academic_year = self._normalize_academic_year(academic_year) if academic_year else None
+        term = self._normalize_term(term)
+        exam_type = self._normalize_exam_type(exam_type)
 
         # Get distinct subjects for this exam (excluding 'TOTAL' which is a summary row)
-        cursor.execute(
-            """
-            SELECT DISTINCT m.subject FROM marks m
-            JOIN students s ON m.student_id = s.id
-            WHERE s.class = ? AND m.term = ? AND m.exam_type = ? AND s.name != 'TOTAL'
-        """,
-            (class_name, term, exam_type),
-        )
+        if academic_year:
+            cursor.execute(
+                """
+                SELECT DISTINCT m.subject FROM marks m
+                JOIN students s ON m.student_id = s.id
+                WHERE s.class = ? AND m.academic_year = ? AND m.term = ? AND m.exam_type = ? AND s.name != 'TOTAL'
+            """,
+                (class_name, academic_year, term, exam_type),
+            )
+        else:
+            cursor.execute(
+                """
+                SELECT DISTINCT m.subject FROM marks m
+                JOIN students s ON m.student_id = s.id
+                WHERE s.class = ? AND m.term = ? AND m.exam_type = ? AND s.name != 'TOTAL'
+            """,
+                (class_name, term, exam_type),
+            )
         subjects = [r["subject"] for r in cursor.fetchall()]
 
         # Get all students in the class
@@ -2214,13 +2657,22 @@ class Database:
         results = []
         for student in students:
             # Get marks for this student
-            cursor.execute(
-                """
-                SELECT subject, marks FROM marks 
-                WHERE student_id = ? AND term = ? AND exam_type = ?
-            """,
-                (student["id"], term, exam_type),
-            )
+            if academic_year:
+                cursor.execute(
+                    """
+                    SELECT subject, marks FROM marks 
+                    WHERE student_id = ? AND academic_year = ? AND term = ? AND exam_type = ?
+                """,
+                    (student["id"], academic_year, term, exam_type),
+                )
+            else:
+                cursor.execute(
+                    """
+                    SELECT subject, marks FROM marks 
+                    WHERE student_id = ? AND term = ? AND exam_type = ?
+                """,
+                    (student["id"], term, exam_type),
+                )
 
             marks_rows = cursor.fetchall()
             marks = {row["subject"]: row["marks"] for row in marks_rows}
@@ -2264,20 +2716,74 @@ class Database:
         conn.close()
         return results
 
-    def get_available_exam_sessions(self) -> List[Dict]:
+    def get_available_exam_sessions(
+        self, academic_year: str = None
+    ) -> List[Dict]:
         """Get all available exam sessions across all classes."""
         conn = self.get_connection()
         cursor = conn.cursor()
+        academic_year = self._normalize_academic_year(academic_year) if academic_year else None
 
-        cursor.execute("""
-            SELECT DISTINCT term, exam_type
-            FROM marks
-            ORDER BY term, exam_type
-        """)
+        if academic_year:
+            cursor.execute("""
+                SELECT DISTINCT academic_year, term, exam_type
+                FROM marks
+                WHERE academic_year = ?
+                ORDER BY term, exam_type
+            """, (academic_year,))
+        else:
+            cursor.execute("""
+                SELECT DISTINCT academic_year, term, exam_type
+                FROM marks
+                ORDER BY academic_year DESC, term, exam_type
+            """)
 
         rows = cursor.fetchall()
         conn.close()
         return [dict(r) for r in rows]
+
+    def get_academic_periods(self, academic_year: str = None) -> List[Dict]:
+        conn = self.get_connection()
+        cursor = conn.cursor()
+        academic_year = self._normalize_academic_year(academic_year) if academic_year else None
+        if academic_year:
+            cursor.execute(
+                """
+                SELECT * FROM academic_periods
+                WHERE academic_year = ?
+                ORDER BY academic_year DESC,
+                         CASE term WHEN 'One' THEN 1 WHEN 'Two' THEN 2 WHEN 'Three' THEN 3 ELSE 9 END
+                """,
+                (academic_year,),
+            )
+        else:
+            cursor.execute(
+                """
+                SELECT * FROM academic_periods
+                ORDER BY academic_year DESC,
+                         CASE term WHEN 'One' THEN 1 WHEN 'Two' THEN 2 WHEN 'Three' THEN 3 ELSE 9 END
+                """
+            )
+        rows = cursor.fetchall()
+        conn.close()
+        return [dict(r) for r in rows]
+
+    def get_academic_years(self) -> List[str]:
+        conn = self.get_connection()
+        cursor = conn.cursor()
+        cursor.execute(
+            """
+            SELECT academic_year FROM academic_periods
+            UNION
+            SELECT DISTINCT academic_year FROM marks WHERE TRIM(COALESCE(academic_year, '')) != ''
+            ORDER BY academic_year DESC
+            """
+        )
+        years = [str(row["academic_year"]) for row in cursor.fetchall()]
+        conn.close()
+        if DEFAULT_ACADEMIC_YEAR not in years:
+            years.insert(0, DEFAULT_ACADEMIC_YEAR)
+        return years
 
     # ── Promotion Management ────────────────────────────────────────────────
     def get_promotion_setting(self, key: str, default: str = "") -> str:
