@@ -2020,11 +2020,22 @@ class SchoolReportApp:
             return lookup[raw_key]
 
         alias_map = {
-            "eng": ["English", "English Activities", "English Language Activities"],
-            "english": ["English", "English Activities", "English Language Activities"],
+            "eng": [
+                "English",
+                "English Activities",
+                "English Language Activities",
+                "Literacy Activities",
+            ],
+            "english": [
+                "English",
+                "English Activities",
+                "English Language Activities",
+                "Literacy Activities",
+            ],
             "math": ["Mathematics", "Mathematical Activities"],
             "maths": ["Mathematics", "Mathematical Activities"],
             "mat": ["Mathematics", "Mathematical Activities"],
+            "mathematics": ["Mathematics", "Mathematical Activities"],
             "kis": [
                 "Kiswahili / KSL",
                 "Kiswahili / Kenyan Sign Language",
@@ -2378,13 +2389,36 @@ class SchoolReportApp:
             return
         current = (self.rep_stream_cb.get() or "").strip()
         selected_class = self.rep_cls_cb.get() if hasattr(self, "rep_cls_cb") else ""
+        stream_names = []
+
+        def add_stream_name(value):
+            name = str(value or "").strip()
+            if not name:
+                return
+            existing_keys = {self._normalize_key(item) for item in stream_names}
+            if self._normalize_key(name) not in existing_keys:
+                stream_names.append(name)
+
         if selected_class in ("All", ALL_SCHOOL_LEVEL, ""):
-            values = ["All Streams"]
+            for student in db.get_all_students():
+                add_stream_name(student.get("stream", ""))
         else:
-            values = ["All Streams"] + self._get_stream_names_for_class(selected_class)
+            for stream_name in self._get_stream_names_for_class(selected_class):
+                add_stream_name(stream_name)
+            for student in db.get_students_by_class(selected_class):
+                add_stream_name(student.get("stream", ""))
+
+        values = ["All Streams"] + sorted(
+            stream_names, key=lambda item: item.strip().lower()
+        )
         self.rep_stream_cb["values"] = values
-        if current and current in values:
-            self.rep_stream_cb.set(current)
+        current_key = self._normalize_key(current)
+        matched_current = next(
+            (value for value in values if self._normalize_key(value) == current_key),
+            "",
+        )
+        if matched_current:
+            self.rep_stream_cb.set(matched_current)
         else:
             self.rep_stream_cb.set(values[0] if values else "All Streams")
         self._update_results_page_header()
@@ -2488,12 +2522,15 @@ class SchoolReportApp:
         academic_year = str(academic_year or datetime.now().year)
         results = self._get_ranked_results(class_name, term, exam_type, academic_year)
         selected_stream = self._get_selected_results_stream()
-        if selected_stream and class_name not in ("All", ALL_SCHOOL_LEVEL):
+        if selected_stream:
+            selected_key = self._normalize_key(selected_stream)
             results = [
                 result
                 for result in results
-                if result.get("student", {}).get("stream", "").strip()
-                == selected_stream
+                if self._normalize_key(
+                    result.get("student", {}).get("stream", "")
+                )
+                == selected_key
             ]
             results = self._rerank_results(results)
         return results
@@ -2533,11 +2570,14 @@ class SchoolReportApp:
         )
         selected_stream = self._get_selected_report_stream()
         if selected_stream:
+            selected_key = self._normalize_key(selected_stream)
             results = [
                 result
                 for result in results
-                if result.get("student", {}).get("stream", "").strip()
-                == selected_stream
+                if self._normalize_key(
+                    result.get("student", {}).get("stream", "")
+                )
+                == selected_key
             ]
         return results
 
@@ -2545,12 +2585,35 @@ class SchoolReportApp:
         if not hasattr(self, "rc_stream_cb"):
             return
         current = (self.rc_stream_cb.get() or "").strip()
-        values = ["All Streams"] + self._get_stream_names_for_class(
-            self.rc_cls_cb.get()
+        selected_class = (
+            self.rc_cls_cb.get() if hasattr(self, "rc_cls_cb") else ""
+        )
+        stream_names = []
+
+        def add_stream_name(value):
+            name = str(value or "").strip()
+            if not name:
+                return
+            existing_keys = {self._normalize_key(item) for item in stream_names}
+            if self._normalize_key(name) not in existing_keys:
+                stream_names.append(name)
+
+        for stream_name in self._get_stream_names_for_class(selected_class):
+            add_stream_name(stream_name)
+        for student in db.get_students_by_class(selected_class):
+            add_stream_name(student.get("stream", ""))
+
+        values = ["All Streams"] + sorted(
+            stream_names, key=lambda item: item.strip().lower()
         )
         self.rc_stream_cb["values"] = values
-        if current and current in values:
-            self.rc_stream_cb.set(current)
+        current_key = self._normalize_key(current)
+        matched_current = next(
+            (value for value in values if self._normalize_key(value) == current_key),
+            "",
+        )
+        if matched_current:
+            self.rc_stream_cb.set(matched_current)
         else:
             self.rc_stream_cb.set(values[0] if values else "All Streams")
         if reload_results:
@@ -2558,6 +2621,7 @@ class SchoolReportApp:
 
     def _normalize_text(self, value):
         text = str(value or "").strip().lower()
+        text = re.sub(r"[_\-]+", " ", text)
         text = re.sub(r"\s+", " ", text)
         return text
 
@@ -2920,8 +2984,18 @@ class SchoolReportApp:
             return class_lookup[raw_key]
 
         alias_map = {
-            "eng": ["English", "English Activities", "English Language Activities"],
-            "english": ["English", "English Activities", "English Language Activities"],
+            "eng": [
+                "English",
+                "English Activities",
+                "English Language Activities",
+                "Literacy Activities",
+            ],
+            "english": [
+                "English",
+                "English Activities",
+                "English Language Activities",
+                "Literacy Activities",
+            ],
             "lang": [
                 "Language Activities",
                 "Literacy Activities",
@@ -2932,6 +3006,7 @@ class SchoolReportApp:
             "math": ["Mathematical Activities", "Mathematics"],
             "maths": ["Mathematical Activities", "Mathematics"],
             "mat": ["Mathematical Activities", "Mathematics"],
+            "mathematics": ["Mathematical Activities", "Mathematics"],
             "mathematicalactivities": ["Mathematical Activities", "Mathematics"],
             "kis": [
                 "Kiswahili Activities",
@@ -3018,7 +3093,7 @@ class SchoolReportApp:
             if raw_key and (raw_key in subject_key or subject_key in raw_key):
                 return subject
 
-        return ""
+        return raw
 
     def _find_assessment_header_row(self, worksheet, class_name=""):
         name_aliases = {
@@ -3085,6 +3160,10 @@ class SchoolReportApp:
                 continue
 
             has_id_col = any(value in id_aliases for value in values)
+            id_col_idx = next(
+                (idx + 1 for idx, value in enumerate(values) if value in id_aliases),
+                None,
+            )
             subject_hits = 0
             for col_idx, cell in enumerate(raw_values, start=1):
                 if col_idx == name_col_idx:
@@ -3106,18 +3185,94 @@ class SchoolReportApp:
                     best_match = {
                         "row": row_idx,
                         "name_col": name_col_idx,
+                        "id_col": id_col_idx,
                         "score": score,
                     }
 
         return best_match
 
-    def _parse_assessment_sheet(self, worksheet):
+    def _find_flat_marks_header_row(self, worksheet, class_name="", subjects=None):
+        """Find a plain marks-table header, including templates with meta rows above it."""
+        subjects = subjects or []
+        subject_keys = {
+            self._normalize_key(subject)
+            for subject in subjects
+            if str(subject or "").strip()
+        }
+        name_aliases = {
+            "learner",
+            "learner name",
+            "name",
+            "student",
+            "student name",
+            "pupil",
+            "pupil name",
+            "full name",
+            "full_name",
+        }
+        id_aliases = {
+            "adm",
+            "adm no",
+            "admission",
+            "admission no",
+            "admission_no",
+            "reg no",
+            "reg_no",
+            "regno",
+        }
+        excluded = name_aliases | id_aliases | {
+            "no",
+            "no.",
+            "total",
+            "average",
+            "avg",
+            "position",
+            "psn",
+        }
+
+        best_match = None
+        for row_idx in range(1, min(25, worksheet.max_row) + 1):
+            raw_values = list(
+                next(
+                    worksheet.iter_rows(
+                        min_row=row_idx, max_row=row_idx, values_only=True
+                    )
+                )
+            )
+            labels = [self._normalize_text(cell) for cell in raw_values]
+            has_name = any(label in name_aliases for label in labels)
+            has_id = any(label in id_aliases for label in labels)
+            if not has_name and not has_id:
+                continue
+
+            subject_hits = 0
+            data_columns = 0
+            for cell in raw_values:
+                label = self._normalize_text(cell)
+                if not label or label in excluded:
+                    continue
+                data_columns += 1
+                mapped = self._match_subject_from_candidates(
+                    cell, subjects, class_name
+                ) or self._map_sheet_subject(cell, class_name)
+                if mapped or self._normalize_key(cell) in subject_keys:
+                    subject_hits += 1
+
+            score = subject_hits * 3 + data_columns + (2 if has_id else 0)
+            if data_columns and (best_match is None or score > best_match["score"]):
+                best_match = {"row": row_idx, "score": score}
+
+        return best_match["row"] if best_match else 1
+
+    def _parse_assessment_sheet(self, worksheet, fallback_class_name=""):
         sheet_context = self._get_sheet_context(worksheet.title, worksheet)
         if sheet_context.get("is_summary"):
             return None
 
-        class_name = sheet_context.get("class_name") or self._sheet_title_to_class_name(
-            worksheet.title, worksheet
+        class_name = (
+            str(fallback_class_name or "").strip()
+            or sheet_context.get("class_name")
+            or self._sheet_title_to_class_name(worksheet.title, worksheet)
         )
         if not class_name:
             return None
@@ -3127,6 +3282,7 @@ class SchoolReportApp:
             return None
         header_row = header_info["row"]
         learner_col_idx = header_info["name_col"]
+        id_col_idx = header_info.get("id_col")
         stream_name = sheet_context.get("stream_name", "")
 
         excluded = {
@@ -3187,6 +3343,11 @@ class SchoolReportApp:
             )
             if not learner or self._is_summary_student_name(learner):
                 continue
+            admission_no = (
+                str(row[id_col_idx - 1] or "").strip()
+                if id_col_idx and len(row) >= id_col_idx
+                else ""
+            )
 
             marks = {}
             for col_idx, subject in subject_columns:
@@ -3199,7 +3360,9 @@ class SchoolReportApp:
                     continue
 
             if marks:
-                students.append({"name": learner, "marks": marks})
+                students.append(
+                    {"name": learner, "admission_no": admission_no, "marks": marks}
+                )
 
         if not students:
             return None
@@ -3875,6 +4038,8 @@ class SchoolReportApp:
             font=(FF, 10, "bold"),
             padx=14,
             pady=7,
+            bd=2,
+            relief="raised",
             cursor="hand2",
         )
         b.bind("<Button-1>", lambda e: command())
@@ -3886,6 +4051,28 @@ class SchoolReportApp:
         b.bind("<Enter>", lambda e: b.config(bg=hover_bg))
         b.bind("<Leave>", lambda e: b.config(bg=bg))
         return b
+
+    def _toolbar_panel(self, parent=None, pady=(0, 12), padx=10):
+        host = parent or self.content_frame
+        outer = tk.Frame(host, bg="#d5dcc4")
+        outer.pack(fill="x", padx=padx, pady=pady)
+        inner = tk.Frame(outer, bg=CONTENT_BG, padx=10, pady=10)
+        inner.pack(fill="x", padx=1, pady=1)
+        return inner
+
+    def _toolbar_row(self, parent, pady=(0, 8)):
+        row = tk.Frame(parent, bg=CONTENT_BG)
+        row.pack(fill="x", pady=pady)
+        return row
+
+    def _toolbar_label(self, parent, text, left=4):
+        tk.Label(
+            parent,
+            text=text,
+            bg=CONTENT_BG,
+            fg=TEXT_SECONDARY,
+            font=(FF, 10),
+        ).pack(side="left", padx=(left, 4))
 
     # ─────────────────────── Auth screen ───────────────────────────────────
     _AUTH_BG = CREAM_BG
@@ -4176,6 +4363,7 @@ class SchoolReportApp:
         self.content_frame = self.content
 
         self.show_dashboard()
+        self._maybe_prompt_setup_wizard()
         if self._pending_login_notice:
             self._cancel_pending_login_notice_timer()
             self._pending_login_notice_after = self.root.after(
@@ -4476,7 +4664,7 @@ class SchoolReportApp:
 
         # --- logo ---
         logo_row = tk.Frame(sb, bg=SIDEBAR_BG)
-        logo_row.pack(fill="x", padx=8 if self.sidebar_collapsed else 14, pady=(8, 8))
+        logo_row.pack(fill="x", padx=8 if self.sidebar_collapsed else 14, pady=(4, 4))
 
         if self.logo_img:
             tk.Label(logo_row, image=self.logo_img, bg=SIDEBAR_BG).pack(side="left")
@@ -4515,7 +4703,7 @@ class SchoolReportApp:
             ).pack(anchor="w")
 
         tk.Frame(sb, bg="#2E7D32", height=1).pack(
-            fill="x", padx=8 if self.sidebar_collapsed else 14, pady=8
+            fill="x", padx=8 if self.sidebar_collapsed else 14, pady=4
         )
 
         # --- nav items ---
@@ -4525,7 +4713,7 @@ class SchoolReportApp:
             fill="both",
             expand=True,
             padx=(4, 2) if self.sidebar_collapsed else (8, 4),
-            pady=(0, 4),
+            pady=0,
         )
 
         nav_canvas = tk.Canvas(nav_wrap, bg=SIDEBAR_BG, highlightthickness=0, bd=0)
@@ -4545,7 +4733,21 @@ class SchoolReportApp:
             nav_canvas.itemconfigure(nav_window, width=event.width)
 
         def _scroll_sidebar_nav(event):
-            nav_canvas.yview_scroll(int(-1 * (event.delta / 120)), "units")
+            if getattr(event, "num", None) == 4:
+                delta = -1
+            elif getattr(event, "num", None) == 5:
+                delta = 1
+            else:
+                delta = -1 if event.delta > 0 else 1
+            nav_canvas.yview_scroll(delta, "units")
+            return "break"
+
+        def _bind_sidebar_scroll(widget):
+            widget.bind("<MouseWheel>", _scroll_sidebar_nav, add="+")
+            widget.bind("<Button-4>", _scroll_sidebar_nav, add="+")
+            widget.bind("<Button-5>", _scroll_sidebar_nav, add="+")
+            for child in widget.winfo_children():
+                _bind_sidebar_scroll(child)
 
         nav_canvas.bind("<Configure>", _resize_sidebar_nav)
         nav_canvas.bind("<MouseWheel>", _scroll_sidebar_nav)
@@ -4564,63 +4766,9 @@ class SchoolReportApp:
                 icon, label, cmd = item
                 self._nav_item(nav_box, icon, label, cmd)
 
-        # --- bottom ---
-        bot = tk.Frame(sb, bg=SIDEBAR_BG)
-        bot.pack(
-            side="bottom", fill="x", padx=8 if self.sidebar_collapsed else 14, pady=12
-        )
-        tk.Frame(bot, bg="#2E7D32", height=1).pack(fill="x", pady=(0, 8))
-
-        uname = (
-            self.current_user.get("username", "admin") if self.current_user else "admin"
-        )
-        email = uname if "@" in uname else uname + "@school.ac"
-        if not self.sidebar_collapsed:
-            tk.Label(
-                bot,
-                text=email,
-                bg=SIDEBAR_BG,
-                fg=SIDEBAR_TEXT,
-                font=(FF, 9),
-                anchor="w",
-            ).pack(fill="x", pady=(0, 6))
-            tk.Label(
-                bot,
-                text=self._get_active_db_display(),
-                bg=SIDEBAR_BG,
-                fg="#d8ef9c",
-                font=(FF, 8, "bold"),
-                anchor="w",
-            ).pack(fill="x", pady=(0, 6))
-
-        so = tk.Frame(bot, bg=SIDEBAR_BG, cursor="hand2")
-        so.pack(fill="x")
-        sign_out_text = "\u2192" if self.sidebar_collapsed else "\u2192  Sign Out"
-        lbl_so = tk.Label(
-            so,
-            text=sign_out_text,
-            bg=SIDEBAR_BG,
-            fg=SIDEBAR_TEXT,
-            font=(FF, 10),
-            anchor="center" if self.sidebar_collapsed else "w",
-            padx=4,
-            pady=5,
-        )
-        lbl_so.pack(fill="x")
-
-        for w in (so, lbl_so):
-            w.bind("<Button-1>", lambda e: self.logout())
-            w.bind(
-                "<Enter>",
-                lambda e: [
-                    so.config(bg=SIDEBAR_HOVER),
-                    lbl_so.config(bg=SIDEBAR_HOVER),
-                ],
-            )
-            w.bind(
-                "<Leave>",
-                lambda e: [so.config(bg=SIDEBAR_BG), lbl_so.config(bg=SIDEBAR_BG)],
-            )
+        tk.Frame(nav_box, bg=SIDEBAR_BG, height=18).pack(fill="x")
+        _bind_sidebar_scroll(nav_box)
+        nav_canvas.configure(scrollregion=nav_canvas.bbox("all"))
 
     def _get_role_based_nav(self):
         """Get navigation items based on user role."""
@@ -4630,6 +4778,7 @@ class SchoolReportApp:
                 ("section", "Main", None),
                 ("🏠", "Dashboard", self.show_dashboard),
                 ("section", "Academics", None),
+                ("✨", "Setup Wizard", self.show_setup_wizard),
                 ("🏫", "Classes", self.show_settings_classes),
                 ("📚", "Subjects", self.show_settings_subjects),
                 ("👩‍🏫", "Teachers", self.show_settings_teachers),
@@ -4674,7 +4823,7 @@ class SchoolReportApp:
     def _nav_section(self, parent, title: str):
         if self.sidebar_collapsed:
             tk.Frame(parent, bg="#2E7D32", height=1).pack(
-                fill="x", padx=10, pady=(4, 3)
+                fill="x", padx=10, pady=(2, 2)
             )
             return
         tk.Label(
@@ -4682,18 +4831,18 @@ class SchoolReportApp:
             text=title.upper(),
             bg=SIDEBAR_BG,
             fg="#c8d6a2",
-            font=(FF, 8, "bold"),
+            font=(FF, 7, "bold"),
             anchor="w",
             padx=10,
-            pady=4,
-        ).pack(fill="x", pady=(4, 1))
+            pady=2,
+        ).pack(fill="x", pady=(3, 0))
 
     def _nav_item(self, parent, icon: str, label: str, cmd):
         frame = tk.Frame(parent, bg=SIDEBAR_BG, cursor="hand2")
-        frame.pack(fill="x", pady=1)
+        frame.pack(fill="x", pady=0)
 
         row = tk.Frame(
-            frame, bg=SIDEBAR_BG, padx=6 if self.sidebar_collapsed else 10, pady=4
+            frame, bg=SIDEBAR_BG, padx=6 if self.sidebar_collapsed else 10, pady=2
         )
         row.pack(fill="x")
 
@@ -4702,7 +4851,7 @@ class SchoolReportApp:
             text=icon,
             bg=SIDEBAR_BG,
             fg=SIDEBAR_TEXT,
-            font=(FF, 12),
+            font=(FF, 11),
             width=2,
             anchor="center",
         )
@@ -4712,11 +4861,11 @@ class SchoolReportApp:
             text="" if self.sidebar_collapsed else f"  {label}",
             bg=SIDEBAR_BG,
             fg=SIDEBAR_TEXT,
-            font=(FF, 10),
+            font=(FF, 9),
             anchor="w",
         )
         if not self.sidebar_collapsed:
-            txt.pack(side="left", fill="x")
+            txt.pack(side="left", fill="both", expand=True)
 
         widgets = [frame, row, ico, txt]
         self.nav_frames[label] = widgets
@@ -5744,6 +5893,410 @@ class SchoolReportApp:
             initial_tab="teachers", nav_label="Teachers", show_tabs=False
         )
 
+    def _get_setup_summary(self):
+        classes = db.get_all_classes()
+        stream_count = 0
+        for class_row in classes:
+            try:
+                stream_count += len(db.get_streams_for_class(class_row.get("id", "")))
+            except Exception:
+                pass
+        return {
+            "classes": len(classes),
+            "streams": stream_count,
+            "students": len(db.get_all_students()),
+            "subjects": len(db.get_subjects_by_level()),
+            "teachers": len([u for u in db.get_all_users() if u.get("role") != "admin"])
+            if hasattr(db, "get_all_users")
+            else 0,
+        }
+
+    def _maybe_prompt_setup_wizard(self):
+        if self.user_role not in ("admin", ""):
+            return
+        if db.get_setting("setup_wizard_prompted", "").strip():
+            return
+        summary = self._get_setup_summary()
+        needs_setup = summary["students"] == 0 or summary["streams"] == 0
+        if not needs_setup:
+            db.set_setting("setup_wizard_prompted", "1")
+            return
+
+        def prompt():
+            try:
+                if messagebox.askyesno(
+                    "Setup Wizard",
+                    "This database has little or no school data yet.\n\n"
+                    "Open the setup wizard to create classes, streams, subjects, and sample data?",
+                    parent=self.root,
+                ):
+                    self.show_setup_wizard()
+                db.set_setting("setup_wizard_prompted", "1")
+            except Exception:
+                pass
+
+        try:
+            self.root.after(650, prompt)
+        except Exception:
+            pass
+
+    def show_setup_wizard(self):
+        """Guided school setup screen with manual and sample-data options."""
+        self.clear_frame()
+        self._set_nav("Setup Wizard")
+        self._page_header(
+            "Setup Wizard",
+            "Create database items step by step, or seed a small safe sample set.",
+        )
+
+        summary = self._get_setup_summary()
+
+        top = tk.Frame(self.content_frame, bg=CONTENT_BG)
+        top.pack(fill="x", pady=(0, 12))
+
+        for label, value, color in [
+            ("Classes", summary["classes"], BLUE),
+            ("Streams", summary["streams"], "#0f766e"),
+            ("Subjects", summary["subjects"], ORANGE),
+            ("Students", summary["students"], PURPLE),
+            ("Teachers", summary["teachers"], GREEN),
+        ]:
+            card = tk.Frame(top, bg="#eef2f7", padx=1, pady=1)
+            card.pack(side="left", padx=(0, 10))
+            inner = tk.Frame(card, bg="white", padx=16, pady=10, width=135)
+            inner.pack(fill="both", padx=1, pady=1)
+            inner.pack_propagate(False)
+            tk.Label(
+                inner,
+                text=str(value),
+                bg="white",
+                fg=color,
+                font=(FF, 18, "bold"),
+            ).pack(anchor="w")
+            tk.Label(
+                inner,
+                text=label,
+                bg="white",
+                fg=TEXT_SECONDARY,
+                font=(FF, 9, "bold"),
+            ).pack(anchor="w")
+
+        work = tk.Frame(self.content_frame, bg=CONTENT_BG)
+        work.pack(fill="both", expand=True)
+        work.columnconfigure(0, weight=1)
+        work.columnconfigure(1, weight=1)
+        work.rowconfigure(0, weight=1)
+
+        manual_outer = tk.Frame(work, bg="#dbe4d0", padx=1, pady=1)
+        manual_outer.grid(row=0, column=0, sticky="nsew", padx=(0, 8))
+        manual = tk.Frame(manual_outer, bg="#f8fbf4", padx=18, pady=16)
+        manual.pack(fill="both", expand=True, padx=1, pady=1)
+
+        tk.Label(
+            manual,
+            text="Guided Entry",
+            bg="#f8fbf4",
+            fg=TEXT_PRIMARY,
+            font=(FF, 14, "bold"),
+        ).pack(anchor="w")
+        tk.Label(
+            manual,
+            text="Add classes, then apply common streams such as Green, Blue, or Yellow.",
+            bg="#f8fbf4",
+            fg=TEXT_SECONDARY,
+            font=(FF, 9),
+            wraplength=470,
+            justify="left",
+        ).pack(anchor="w", pady=(4, 12))
+
+        tk.Label(
+            manual,
+            text="Classes to add (one per line):",
+            bg="#f8fbf4",
+            fg=TEXT_SECONDARY,
+            font=(FF, 10, "bold"),
+        ).pack(anchor="w")
+        class_text = tk.Text(manual, height=7, font=(FF, 10), wrap="word")
+        class_text.pack(fill="x", pady=(4, 10))
+        class_text.insert("1.0", "Grade 1\nGrade 2\nGrade 3")
+
+        row = tk.Frame(manual, bg="#f8fbf4")
+        row.pack(fill="x", pady=(0, 10))
+        tk.Label(
+            row, text="Level:", bg="#f8fbf4", fg=TEXT_SECONDARY, font=(FF, 10)
+        ).pack(side="left")
+        level_var = tk.StringVar(
+            value=self.current_level if self.current_level in LEVELS else LEVELS[0]
+        )
+        ttk.Combobox(
+            row,
+            textvariable=level_var,
+            values=LEVELS,
+            state="readonly",
+            style="App.TCombobox",
+            width=28,
+        ).pack(side="left", padx=(8, 0), ipady=3)
+
+        tk.Label(
+            manual,
+            text="Streams to add to all selected/existing classes:",
+            bg="#f8fbf4",
+            fg=TEXT_SECONDARY,
+            font=(FF, 10, "bold"),
+        ).pack(anchor="w")
+        streams_var = tk.StringVar(value="Green, Blue")
+        ttk.Entry(manual, textvariable=streams_var, style="App.TEntry").pack(
+            fill="x", pady=(4, 12), ipady=4
+        )
+
+        def add_classes_and_streams():
+            raw_classes = class_text.get("1.0", "end").splitlines()
+            class_names = []
+            for item in raw_classes:
+                name = item.strip()
+                if name and name not in class_names:
+                    class_names.append(name)
+            stream_names = [
+                s.strip() for s in re.split(r"[,;\n]+", streams_var.get()) if s.strip()
+            ]
+            if not class_names and not stream_names:
+                messagebox.showwarning(
+                    "Nothing To Add", "Enter at least one class or stream name."
+                )
+                return
+
+            added_classes = 0
+            added_streams = 0
+            skipped_streams = 0
+            target_classes = []
+            for class_name in class_names:
+                resolved = self._match_known_class_name(class_name) or class_name
+                existing = db.get_class_by_name(resolved)
+                if not existing:
+                    ok, _msg = db.add_class(
+                        resolved,
+                        level_var.get(),
+                        abbreviation=self._generate_short_label(resolved, "class"),
+                    )
+                    if ok:
+                        added_classes += 1
+                        existing = db.get_class_by_name(resolved)
+                if existing:
+                    target_classes.append(existing)
+            if not target_classes:
+                target_classes = db.get_all_classes()
+
+            for class_row in target_classes:
+                existing_keys = {
+                    self._normalize_key(row.get("name", ""))
+                    for row in db.get_streams_for_class(class_row.get("id", ""))
+                }
+                for stream_name in stream_names:
+                    if self._normalize_key(stream_name) in existing_keys:
+                        skipped_streams += 1
+                        continue
+                    ok, _msg = db.add_stream(stream_name, class_row.get("id", ""))
+                    if ok:
+                        added_streams += 1
+
+            refresh_dynamic_school_config()
+            messagebox.showinfo(
+                "Setup Updated",
+                f"Classes added: {added_classes}\n"
+                f"Streams added: {added_streams}\n"
+                f"Streams already existing: {skipped_streams}",
+            )
+            self.show_setup_wizard()
+
+        action_row = tk.Frame(manual, bg="#f8fbf4")
+        action_row.pack(fill="x", pady=(2, 10))
+        tk.Button(
+            action_row,
+            text="Add Classes & Streams",
+            bg=GREEN,
+            fg="white",
+            font=(FF, 10, "bold"),
+            padx=14,
+            pady=8,
+            command=add_classes_and_streams,
+        ).pack(side="left")
+        tk.Button(
+            action_row,
+            text="Bulk Stream Tool",
+            bg="#0f766e",
+            fg="white",
+            font=(FF, 10, "bold"),
+            padx=14,
+            pady=8,
+            command=lambda: self._open_bulk_stream_dialog(
+                on_save=self.show_setup_wizard
+            ),
+        ).pack(side="left", padx=(8, 0))
+
+        shortcut_row = tk.Frame(manual, bg="#f8fbf4")
+        shortcut_row.pack(fill="x", pady=(10, 0))
+        for text, color, command in [
+            ("Manage Subjects", ORANGE, self.show_settings_subjects),
+            ("Import Students", PURPLE, self.show_students),
+            ("Teachers", BLUE, self.show_settings_teachers),
+        ]:
+            tk.Button(
+                shortcut_row,
+                text=text,
+                bg=color,
+                fg="white",
+                font=(FF, 9, "bold"),
+                padx=12,
+                pady=7,
+                command=command,
+            ).pack(side="left", padx=(0, 8))
+
+        quick_outer = tk.Frame(work, bg="#d9e6f7", padx=1, pady=1)
+        quick_outer.grid(row=0, column=1, sticky="nsew", padx=(8, 0))
+        quick = tk.Frame(quick_outer, bg="#f7fbff", padx=18, pady=16)
+        quick.pack(fill="both", expand=True, padx=1, pady=1)
+
+        tk.Label(
+            quick,
+            text="Quick Setup",
+            bg="#f7fbff",
+            fg=TEXT_PRIMARY,
+            font=(FF, 14, "bold"),
+        ).pack(anchor="w")
+        tk.Label(
+            quick,
+            text="Seed a small working demo: streams, subject catalog, sample learners, and sample marks. Existing data is kept.",
+            bg="#f7fbff",
+            fg=TEXT_SECONDARY,
+            font=(FF, 9),
+            wraplength=470,
+            justify="left",
+        ).pack(anchor="w", pady=(4, 16))
+
+        sample_box = tk.Frame(quick, bg="white", padx=14, pady=14)
+        sample_box.pack(fill="x", pady=(0, 14))
+        for line in [
+            "Adds Green and Blue streams to existing classes.",
+            "Adds default subjects where missing.",
+            "Adds two sample learners to the first few classes.",
+            "Adds sample Term One End-Term marks for the current year.",
+        ]:
+            tk.Label(
+                sample_box,
+                text=f"- {line}",
+                bg="white",
+                fg=TEXT_SECONDARY,
+                font=(FF, 10),
+                anchor="w",
+            ).pack(fill="x", anchor="w", pady=2)
+
+        tk.Button(
+            quick,
+            text="Start With Sample Data",
+            bg=BLUE,
+            fg="white",
+            font=(FF, 12, "bold"),
+            padx=18,
+            pady=10,
+            command=self._run_quick_sample_setup,
+        ).pack(anchor="w", pady=(0, 10))
+        tk.Button(
+            quick,
+            text="Mark Setup Wizard Done",
+            bg="#64748b",
+            fg="white",
+            font=(FF, 10, "bold"),
+            padx=14,
+            pady=8,
+            command=lambda: (
+                db.set_setting("setup_wizard_prompted", "1"),
+                self.show_dashboard(),
+            ),
+        ).pack(anchor="w")
+
+    def _run_quick_sample_setup(self):
+        if not messagebox.askyesno(
+            "Start With Sample Data",
+            "Add sample setup data now?\n\nExisting classes, streams, students, and marks will be kept.",
+        ):
+            return
+
+        if not db.get_all_classes():
+            self._ensure_default_class_catalog()
+        self._ensure_default_subject_catalog()
+
+        classes = db.get_all_classes()
+        class_order = db.get_class_progression_order()
+        order_lookup = {name: index for index, name in enumerate(class_order)}
+        classes.sort(key=lambda row: (order_lookup.get(row.get("name", ""), 999), row.get("name", "")))
+
+        streams_added = 0
+        for class_row in classes:
+            existing_keys = {
+                self._normalize_key(row.get("name", ""))
+                for row in db.get_streams_for_class(class_row.get("id", ""))
+            }
+            for stream_name in ("Green", "Blue"):
+                if self._normalize_key(stream_name) in existing_keys:
+                    continue
+                ok, _msg = db.add_stream(stream_name, class_row.get("id", ""))
+                if ok:
+                    streams_added += 1
+
+        sample_classes = classes[: min(4, len(classes))]
+        students_added = 0
+        marks_saved = 0
+        year = str(datetime.now().year)
+        for class_index, class_row in enumerate(sample_classes, start=1):
+            class_name = class_row.get("name", "")
+            level = self._get_level_for_class(class_name)
+            subjects = self._get_subjects_for_level(level)[:4]
+            stream_name = "Green" if class_index % 2 else "Blue"
+            samples = [
+                ("Amina Sample", "Female"),
+                ("Brian Sample", "Male"),
+            ]
+            for student_index, (base_name, gender) in enumerate(samples, start=1):
+                admission_no = f"SMP-{class_index:02d}-{student_index:02d}"
+                existing = db.get_student_by_admission_no(admission_no, class_name)
+                if existing:
+                    student = existing
+                else:
+                    student = db.add_student(
+                        f"{base_name} {class_index}",
+                        class_name,
+                        gender,
+                        admission_no,
+                        "",
+                        "Sample Guardian",
+                        "",
+                        stream_name,
+                    )
+                    students_added += 1
+                if subjects:
+                    marks = {
+                        subject: min(96, 62 + class_index * 3 + student_index * 4 + i * 5)
+                        for i, subject in enumerate(subjects)
+                    }
+                    db.save_student_marks(
+                        student["id"], marks, "One", DEFAULT_EXAM_TYPE, year
+                    )
+                    self._merge_import_subjects_into_class_map(
+                        class_name, marks.keys()
+                    )
+                    marks_saved += len(marks)
+
+        refresh_dynamic_school_config()
+        db.set_setting("setup_wizard_prompted", "1")
+        messagebox.showinfo(
+            "Quick Setup Complete",
+            f"Streams added: {streams_added}\n"
+            f"Sample students added: {students_added}\n"
+            f"Sample marks saved: {marks_saved}\n\n"
+            "You can now open Students, Enter Marks, Results, or Report Cards.",
+        )
+        self.show_setup_wizard()
+
     def _build_classes_tab(self, parent, initial_scope="Both"):
         toolbar = tk.Frame(parent, bg=CONTENT_BG)
         toolbar.pack(fill="x", pady=10)
@@ -5767,6 +6320,16 @@ class SchoolReportApp:
             padx=12,
             pady=5,
             command=lambda: self._open_stream_dialog(on_save=refresh_tree),
+        ).pack(side="left", padx=5)
+        tk.Button(
+            toolbar,
+            text="+ Bulk Stream",
+            bg="#0f766e",
+            fg="white",
+            font=(FF, 10),
+            padx=12,
+            pady=5,
+            command=lambda: self._open_bulk_stream_dialog(on_save=refresh_tree),
         ).pack(side="left", padx=5)
         tk.Button(
             toolbar,
@@ -6388,6 +6951,161 @@ class SchoolReportApp:
     def _build_streams_tab(self, parent):
         """Unified classes + streams view focused on streams."""
         self._build_classes_tab(parent, initial_scope="Streams Only")
+
+    def _open_bulk_stream_dialog(self, on_save=None):
+        """Add the same stream name to multiple existing classes."""
+        class_rows = db.get_all_classes()
+        if not class_rows:
+            messagebox.showwarning("No Classes", "Please add classes first")
+            return
+
+        dialog = tk.Toplevel(self.root)
+        dialog.title("Bulk Add Stream")
+        dialog.geometry("560x620")
+        dialog.transient(self.root)
+        dialog.grab_set()
+        dialog.resizable(True, True)
+
+        body = tk.Frame(dialog, bg=CONTENT_BG, padx=20, pady=18)
+        body.pack(fill="both", expand=True)
+
+        tk.Label(
+            body,
+            text="Add one stream to many classes",
+            bg=CONTENT_BG,
+            fg=TEXT_PRIMARY,
+            font=(FF, 13, "bold"),
+        ).pack(anchor="w")
+        tk.Label(
+            body,
+            text="Example: type Green, select Grade 1 to Grade 9, then save.",
+            bg=CONTENT_BG,
+            fg=TEXT_SECONDARY,
+            font=(FF, 9),
+        ).pack(anchor="w", pady=(4, 14))
+
+        tk.Label(
+            body,
+            text="Stream name:",
+            bg=CONTENT_BG,
+            fg=TEXT_SECONDARY,
+            font=(FF, 10, "bold"),
+        ).pack(anchor="w")
+        stream_var = tk.StringVar()
+        stream_entry = ttk.Entry(body, textvariable=stream_var, style="App.TEntry")
+        stream_entry.pack(fill="x", pady=(4, 12), ipady=4)
+
+        tools = tk.Frame(body, bg=CONTENT_BG)
+        tools.pack(fill="x", pady=(0, 8))
+
+        list_outer = tk.Frame(body, bg=CARD_BG, padx=1, pady=1)
+        list_outer.pack(fill="both", expand=True)
+        list_frame = tk.Frame(list_outer, bg="white")
+        list_frame.pack(fill="both", expand=True, padx=1, pady=1)
+
+        class_list = tk.Listbox(
+            list_frame,
+            selectmode="extended",
+            font=(FF, 10),
+            activestyle="dotbox",
+            exportselection=False,
+        )
+        scrollbar = ttk.Scrollbar(
+            list_frame, orient="vertical", command=class_list.yview
+        )
+        class_list.configure(yscrollcommand=scrollbar.set)
+        class_list.pack(side="left", fill="both", expand=True, padx=(8, 0), pady=8)
+        scrollbar.pack(side="right", fill="y", pady=8, padx=(0, 8))
+
+        for row in class_rows:
+            class_list.insert("end", row.get("name", ""))
+
+        tk.Button(
+            tools,
+            text="Select All",
+            bg=BLUE,
+            fg="white",
+            font=(FF, 9, "bold"),
+            padx=10,
+            pady=4,
+            command=lambda: class_list.select_set(0, "end"),
+        ).pack(side="left")
+        tk.Button(
+            tools,
+            text="Clear",
+            bg="#64748b",
+            fg="white",
+            font=(FF, 9, "bold"),
+            padx=10,
+            pady=4,
+            command=lambda: class_list.selection_clear(0, "end"),
+        ).pack(side="left", padx=(8, 0))
+
+        def save_bulk_stream():
+            stream_name = stream_var.get().strip()
+            selected_indexes = list(class_list.curselection())
+            if not stream_name:
+                messagebox.showerror("Missing Stream", "Enter a stream name.")
+                return
+            if not selected_indexes:
+                messagebox.showerror("No Classes", "Select at least one class.")
+                return
+
+            added = 0
+            skipped = 0
+            errors = []
+            for index in selected_indexes:
+                class_row = class_rows[index]
+                class_id = class_row.get("id", "")
+                existing_streams = db.get_streams_for_class(class_id)
+                existing_keys = {
+                    self._normalize_key(row.get("name", ""))
+                    for row in existing_streams
+                }
+                if self._normalize_key(stream_name) in existing_keys:
+                    skipped += 1
+                    continue
+                success, msg = db.add_stream(stream_name, class_id)
+                if success:
+                    added += 1
+                else:
+                    errors.append(f"{class_row.get('name', '')}: {msg}")
+
+            refresh_dynamic_school_config()
+            if callable(on_save):
+                on_save()
+            dialog.destroy()
+            message = (
+                f"Stream '{stream_name}' added to {added} class(es).\n"
+                f"Already existed in {skipped} class(es)."
+            )
+            if errors:
+                message += "\n\nErrors:\n" + "\n".join(errors[:8])
+            messagebox.showinfo("Bulk Stream Complete", message)
+
+        buttons = tk.Frame(body, bg=CONTENT_BG)
+        buttons.pack(fill="x", pady=(14, 0))
+        tk.Button(
+            buttons,
+            text="Cancel",
+            bg=LEMON_SOFT,
+            fg=TEXT_PRIMARY,
+            font=(FF, 10, "bold"),
+            padx=18,
+            pady=8,
+            command=dialog.destroy,
+        ).pack(side="left")
+        tk.Button(
+            buttons,
+            text="Save Stream",
+            bg=GREEN,
+            fg="white",
+            font=(FF, 10, "bold"),
+            padx=18,
+            pady=8,
+            command=save_bulk_stream,
+        ).pack(side="right")
+        stream_entry.focus_set()
 
     def _open_stream_dialog(self, stream_row=None, on_save=None):
         """Dialog to add or edit a stream."""
@@ -10709,7 +11427,7 @@ class SchoolReportApp:
         ).pack(anchor="w")
         tk.Label(
             title_block,
-            text="Live academic pulse across learners, performance, and enrollment.",
+            text="Live academic pulse across learners, performance and enrollment.",
             bg=CONTENT_BG,
             fg=TEXT_SECONDARY,
             font=(FF, 10),
@@ -10979,374 +11697,7 @@ class SchoolReportApp:
             ).pack(fill="x")
 
         # ── MAIN ANALYTICS PANELS ────────────────────────────────────────────
-        add_section_label("Academic Signals", "Trend cards built from live exam and enrollment data")
-        charts_row = tk.Frame(self.content_frame, bg=CONTENT_BG)
-        charts_row.pack(fill="both", expand=True, pady=(2, 4))
-        charts_row.columnconfigure(0, weight=3)
-        charts_row.columnconfigure(1, weight=2)
-        charts_row.rowconfigure(0, weight=1)
-
-        def make_chart_panel(parent, title, theme="sky"):
-            bo, bi = _card_colors(theme)
-            outer = tk.Frame(parent, bg=bo, highlightthickness=1, highlightbackground=bo)
-            body = tk.Frame(outer, bg=bi, padx=14, pady=14)
-            body.pack(fill="both", expand=True, padx=1, pady=1)
-            hdr = tk.Frame(body, bg=bi)
-            hdr.pack(fill="x", pady=(0, 8))
-            theme_labels = {
-                "azure": "Performance",
-                "mint": "Breakdown",
-                "sky": "Admissions",
-                "peach": "Demographics",
-            }
-            tk.Label(
-                hdr, text=title, bg=bi, fg=TEXT_PRIMARY, font=(FF, 12, "bold")
-            ).pack(side="left")
-            tk.Label(
-                hdr,
-                text=theme_labels.get(theme, "Live"),
-                bg=_mix_hex(bo, "#ffffff", 0.2),
-                fg=TEXT_SECONDARY,
-                font=(FF, 8, "bold"),
-                padx=8,
-                pady=2,
-            ).pack(side="right")
-            meta_var = tk.StringVar(value="")
-            tk.Label(
-                body,
-                textvariable=meta_var,
-                bg=bi,
-                fg=TEXT_SECONDARY,
-                font=(FF, 8),
-                anchor="w",
-                justify="left",
-                wraplength=460,
-            ).pack(fill="x", pady=(0, 8))
-            plot_holder = tk.Frame(body, bg=bi, height=250)
-            plot_holder.pack(fill="both", expand=True)
-            plot_holder.pack_propagate(False)
-            return outer, plot_holder, bi, meta_var
-
-        def style_chart_axis(ax, panel_bg, rotation=0):
-            ax.set_facecolor(_mix_hex(panel_bg, "#ffffff", 0.56))
-            ax.grid(axis="y", color=_mix_hex(panel_bg, "#8b95a7", 0.78), linewidth=0.7)
-            ax.spines["top"].set_visible(False)
-            ax.spines["right"].set_visible(False)
-            ax.spines["left"].set_color(_mix_hex(panel_bg, "#5b6472", 0.5))
-            ax.spines["bottom"].set_color(_mix_hex(panel_bg, "#5b6472", 0.5))
-            ax.tick_params(axis="x", labelsize=8, colors=TEXT_SECONDARY, rotation=rotation)
-            ax.tick_params(axis="y", labelsize=8, colors=TEXT_SECONDARY)
-            ax.margins(x=0.05)
-
-        # LEFT PANEL: Performance trend + grade distribution
-        left_panel = tk.Frame(charts_row, bg=CONTENT_BG)
-        left_panel.grid(row=0, column=0, sticky="nsew", padx=(0, 4))
-        left_panel.columnconfigure(0, weight=1)
-        left_panel.rowconfigure(0, weight=1)
-        left_panel.rowconfigure(1, weight=1)
-
-        trend_panel, trend_holder, trend_bg, trend_meta_var = make_chart_panel(
-            left_panel, "Score Trend by Exam Session", "azure"
-        )
-        trend_panel.grid(row=0, column=0, sticky="nsew", pady=(0, 4))
-
-        grade_panel, grade_holder, grade_bg, grade_meta_var = make_chart_panel(
-            left_panel, "Grade Distribution (Latest Exam)", "mint"
-        )
-        grade_panel.grid(row=1, column=0, sticky="nsew")
-
-        # RIGHT PANEL: Enrollment + demographics
-        right_panel = tk.Frame(charts_row, bg=CONTENT_BG)
-        right_panel.grid(row=0, column=1, sticky="nsew", padx=(4, 0))
-        right_panel.columnconfigure(0, weight=1)
-        right_panel.rowconfigure(0, weight=3)
-        right_panel.rowconfigure(1, weight=2)
-
-        enroll_panel, enroll_holder, enroll_bg, enroll_meta_var = make_chart_panel(
-            right_panel, "Enrollment Movement", "sky"
-        )
-        enroll_panel.grid(row=0, column=0, sticky="nsew", pady=(0, 4))
-
-        gender_panel, gender_holder, gender_bg, gender_meta_var = make_chart_panel(
-            right_panel, "Student Gender Distribution", "peach"
-        )
-        gender_panel.grid(row=1, column=0, sticky="nsew")
-
-        # ── CHART 1: Performance trend (keeping existing logic) ──────────────
-        exam_points = {}
-        results_cache = {}
-        for class_name in dashboard_classes:
-            history_rows = db.get_class_exam_history(class_name) or []
-            for row in history_rows:
-                term = str(row.get("term", "") or "")
-                exam_type = str(row.get("exam_type", "") or DEFAULT_EXAM_TYPE)
-                academic_year = str(row.get("academic_year", "") or datetime.now().year)
-                created_at = str(row.get("created_at", "") or "").strip()
-                point_key = (academic_year, term, exam_type)
-                key_dt = datetime.min
-                if created_at:
-                    try:
-                        key_dt = datetime.fromisoformat(
-                            created_at.replace("Z", "+00:00")
-                        ).replace(tzinfo=None)
-                    except Exception:
-                        pass
-                cache_key = (class_name, academic_year, term, exam_type)
-                if cache_key not in results_cache:
-                    class_results = self._get_ranked_results(
-                        class_name, term, exam_type, academic_year
-                    )
-                    class_avg = (
-                        round(
-                            sum(r.get("average", 0) for r in class_results)
-                            / len(class_results),
-                            1,
-                        )
-                        if class_results
-                        else None
-                    )
-                    results_cache[cache_key] = class_avg
-                class_avg = results_cache[cache_key]
-                if class_avg is None:
-                    continue
-                if point_key not in exam_points:
-                    exam_points[point_key] = {"dt": key_dt, "values": []}
-                exam_points[point_key]["dt"] = max(exam_points[point_key]["dt"], key_dt)
-                exam_points[point_key]["values"].append(class_avg)
-
-        ordered_points = sorted(
-            [
-                (key, info["dt"], round(sum(info["values"]) / len(info["values"]), 1))
-                for key, info in exam_points.items()
-                if info["values"]
-            ],
-            key=lambda x: x[1],
-        )
-        if len(ordered_points) > 8:
-            ordered_points = ordered_points[-8:]
-
-        if ordered_points:
-            labels1 = [
-                f"{item[0][0]} T{self._format_term_number(item[0][1])}-{str(item[0][2]).split('-')[0][:3].upper()}"
-                for item in ordered_points
-            ]
-            y1 = [item[2] for item in ordered_points]
-        else:
-            labels1 = ["No Data"]
-            y1 = [float(stats.get("avg_score", 0) or 0)]
-
-        y_prev = [round((y1[i - 1] if i > 0 else y1[i]), 1) for i in range(len(y1))]
-
-        if (
-            ordered_points
-            and ordered_points[0][1] != datetime.min
-            and ordered_points[-1][1] != datetime.min
-        ):
-            trend_window = f"{ordered_points[0][1].strftime('%b %Y')} - {ordered_points[-1][1].strftime('%b %Y')}"
-        else:
-            trend_window = "No dated sessions"
-        trend_meta_var.set(
-            f"Scope: {len(dashboard_classes)} classes   |   Window: {trend_window}"
-        )
-
-        fig1, ax1 = plt.subplots(figsize=(6.4, 3.2))
-        fig1.patch.set_facecolor(trend_bg)
-        ax1.plot(
-            labels1,
-            y1,
-            color="#4361ee",
-            linewidth=2.4,
-            marker="o",
-            markersize=5,
-            label="Current",
-        )
-        ax1.plot(
-            labels1,
-            y_prev,
-            color="#9d9d9d",
-            linewidth=2.0,
-            marker="o",
-            markersize=4,
-            label="Previous",
-        )
-        style_chart_axis(ax1, trend_bg, rotation=0 if len(labels1) <= 4 else 18)
-        ax1.set_ylim(0, 100)
-        ax1.set_ylabel("Average (%)", fontsize=9, color=TEXT_SECONDARY)
-        ax1.legend(loc="upper left", fontsize=8, frameon=False, ncol=2, handlelength=1.8)
-        fig1.subplots_adjust(top=0.9, left=0.1, right=0.98, bottom=0.22)
-        self.dashboard_chart_1 = FigureCanvasTkAgg(fig1, master=trend_holder)
-        self.dashboard_chart_1.draw()
-        self.dashboard_chart_1.get_tk_widget().pack(fill="both", expand=True)
-        plt.close(fig1)
-
-        # ── CHART 2: Grade Distribution (bar chart) ───────────────────────────
-        grade_dist = db.get_grade_distribution()
-        grades_order = ["EE", "ME", "AE", "BE", "IE"]
-        grade_counts = [grade_dist["distribution"].get(g, 0) for g in grades_order]
-        grade_colors = [GRADE_COLORS[g] for g in grades_order]
-        grade_meta_var.set(
-            f"Showing {grade_dist['term']} / {grade_dist['exam_type']}   |   Total learners: {sum(grade_counts)}"
-        )
-
-        fig2, ax2 = plt.subplots(figsize=(6.1, 2.9))
-        fig2.patch.set_facecolor(grade_bg)
-        bars = ax2.bar(
-            grades_order,
-            grade_counts,
-            color=grade_colors,
-            edgecolor=grade_bg,
-            linewidth=1.5,
-        )
-        for bar, count in zip(bars, grade_counts):
-            ax2.text(
-                bar.get_x() + bar.get_width() / 2,
-                bar.get_height() + 0.3,
-                str(count),
-                ha="center",
-                va="bottom",
-                fontsize=8,
-                color=TEXT_SECONDARY,
-            )
-        ax2.set_xlabel("Grade", fontsize=9, color=TEXT_SECONDARY)
-        ax2.set_ylabel("Students", fontsize=9, color=TEXT_SECONDARY)
-        ax2.set_title(
-            f"Grades – {grade_dist['term']}/{grade_dist['exam_type']}",
-            fontsize=11,
-            color=TEXT_PRIMARY,
-            pad=6,
-        )
-        style_chart_axis(ax2, grade_bg)
-        ax2.set_ylim(0, max(grade_counts + [1]) + 2)
-        fig2.subplots_adjust(top=0.9, left=0.1, right=0.98, bottom=0.18)
-        self.dashboard_chart_2 = FigureCanvasTkAgg(fig2, master=grade_holder)
-        self.dashboard_chart_2.draw()
-        self.dashboard_chart_2.get_tk_widget().pack(fill="both", expand=True)
-        plt.close(fig2)
-
-        # ── CHART 3: Enrollment Movement ──────────────────────────────────────
-        month_map = {}
-        for student in all_students:
-            created_at = str(student.get("created_at", "") or "").strip()
-            if not created_at:
-                continue
-            dt = None
-            try:
-                dt = datetime.fromisoformat(created_at.replace("Z", "+00:00")).replace(
-                    tzinfo=None
-                )
-            except Exception:
-                for fmt in ("%Y-%m-%d %H:%M:%S", "%Y-%m-%d"):
-                    try:
-                        dt = datetime.strptime(created_at[:19], fmt)
-                        break
-                    except Exception:
-                        continue
-            if not dt:
-                continue
-            key = dt.strftime("%Y-%m")
-            month_map[key] = month_map.get(key, 0) + 1
-
-        ordered_months = sorted(month_map.items(), key=lambda x: x[0])
-        if len(ordered_months) > 8:
-            ordered_months = ordered_months[-8:]
-
-        if ordered_months:
-            labels3 = [
-                datetime.strptime(k, "%Y-%m").strftime("%b") for k, _ in ordered_months
-            ]
-            y_new = [v for _, v in ordered_months]
-            cumulative = 0
-            y_cum = []
-            for val in y_new:
-                cumulative += val
-                y_cum.append(cumulative)
-            window_label = f"{datetime.strptime(ordered_months[0][0], '%Y-%m').strftime('%b %Y')} - {datetime.strptime(ordered_months[-1][0], '%Y-%m').strftime('%b %Y')}"
-        else:
-            labels3 = [c[:3] for c in dashboard_classes[:7]] or ["No Data"]
-            y_new = [
-                len(db.get_students_by_class(c)) for c in dashboard_classes[:7]
-            ] or [0]
-            cumulative = 0
-            y_cum = []
-            for val in y_new:
-                cumulative += val
-                y_cum.append(cumulative)
-            window_label = "Class distribution fallback"
-        enroll_meta_var.set(
-            f"Scope: {len(all_students)} students   |   Window: {window_label}"
-        )
-
-        fig3, ax3 = plt.subplots(figsize=(5.8, 3.2))
-        fig3.patch.set_facecolor(enroll_bg)
-        ax3.plot(labels3, y_new, color="#2ecc71", linewidth=2.2, label="New")
-        ax3.fill_between(labels3, y_new, color="#2ecc71", alpha=0.2)
-        ax3.plot(labels3, y_cum, color="#7f8c8d", linewidth=2.2, label="Total")
-        ax3.fill_between(labels3, y_cum, color="#7f8c8d", alpha=0.12)
-        style_chart_axis(ax3, enroll_bg)
-        upper = max(y_new + y_cum + [5]) + 5
-        ax3.set_ylim(0, upper)
-        ax3.set_ylabel("Students", fontsize=9, color=TEXT_SECONDARY)
-        ax3.legend(loc="upper left", fontsize=8, frameon=False, ncol=2, handlelength=1.8)
-        fig3.subplots_adjust(top=0.9, left=0.1, right=0.98, bottom=0.18)
-        self.dashboard_chart_3 = FigureCanvasTkAgg(fig3, master=enroll_holder)
-        self.dashboard_chart_3.draw()
-        self.dashboard_chart_3.get_tk_widget().pack(fill="both", expand=True)
-        plt.close(fig3)
-
-        # ── CHART 4: Gender pie chart ─────────────────────────────────────────
-        if demo_stats["total"] > 0:
-            gender_meta_var.set(
-                f"Male: {demo_stats['male']}   |   Female: {demo_stats['female']}   |   Total: {demo_stats['total']}"
-            )
-            gender_fig, gender_ax = plt.subplots(figsize=(5.0, 2.7))
-            gender_fig.patch.set_facecolor(gender_bg)
-            labels_gender = ["Male", "Female"]
-            sizes = [demo_stats["male"], demo_stats["female"]]
-            colors_g = ["#3498db", "#e91e63"]
-            wedges, texts, autotexts = gender_ax.pie(
-                sizes,
-                labels=labels_gender,
-                colors=colors_g,
-                startangle=90,
-                autopct="%1.1f%%",
-                textprops={"fontsize": 8, "color": TEXT_PRIMARY},
-                wedgeprops={"linewidth": 1, "edgecolor": "white"},
-            )
-            gender_ax.axis("equal")
-            gender_fig.subplots_adjust(top=0.94, left=0.02, right=0.98, bottom=0.08)
-            self.dashboard_chart_4 = FigureCanvasTkAgg(gender_fig, master=gender_holder)
-            self.dashboard_chart_4.draw()
-            self.dashboard_chart_4.get_tk_widget().pack(fill="both", expand=True)
-            plt.close(gender_fig)
-        else:
-            gender_meta_var.set("No student data available for gender split.")
-            empty_label = tk.Label(
-                gender_holder,
-                text="No student data available",
-                bg=gender_bg,
-                fg=TEXT_SECONDARY,
-                font=(FF, 12),
-            )
-            empty_label.pack(expand=True)
-
-        # ── CLASS SIZE BAR CHART (in Gender panel as stacked?) ──────────────
-        # Display class size as horizontal bar in gender panel footer
-        if class_stats:
-            smallest_class = min(class_stats, key=lambda c: c["student_count"])
-            largest_class = max(class_stats, key=lambda c: c["student_count"])
-            avg_class_size = sum(c["student_count"] for c in class_stats) / len(
-                class_stats
-            )
-
-            stats_text = (
-                f"Avg class size: {avg_class_size:.1f} students  |  "
-                f"Smallest: {smallest_class['name']} ({smallest_class['student_count']})  |  "
-                f"Largest: {largest_class['name']} ({largest_class['student_count']})"
-            )
-            current_meta = str(gender_meta_var.get() or "").strip()
-            gender_meta_var.set(
-                f"{current_meta}\n{stats_text}" if current_meta else stats_text
-            )
+        # Academic signals dashboard section removed.
 
     # ==================== QUICK NAVIGATION SHORTCUTS =======================
 
@@ -13859,79 +14210,330 @@ class SchoolReportApp:
             card_frame, text=value, bg=color, fg="white", font=(FF, 24, "bold")
         ).pack(anchor="w", pady=(4, 0))
 
+    def _save_analytics_report_pdf(self, report_text, file_path):
+        """Save the analytics report text as a styled PDF."""
+        safe_text = report_text.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+        lines = [line.rstrip() for line in safe_text.splitlines()]
+
+        styles = getSampleStyleSheet()
+        title_style = ParagraphStyle(
+            "AnalyticsReportTitle",
+            parent=styles["Heading1"],
+            fontName="Helvetica-Bold",
+            fontSize=18,
+            textColor=colors.HexColor(TEXT_PRIMARY),
+            spaceAfter=10,
+        )
+        subtitle_style = ParagraphStyle(
+            "AnalyticsReportSubtitle",
+            parent=styles["Normal"],
+            fontName="Helvetica",
+            fontSize=10,
+            textColor=colors.HexColor(TEXT_SECONDARY),
+            leading=14,
+            spaceAfter=16,
+        )
+        section_style = ParagraphStyle(
+            "AnalyticsReportSection",
+            parent=styles["Heading2"],
+            fontName="Helvetica-Bold",
+            fontSize=12,
+            textColor=colors.HexColor("#1E88E5"),
+            leading=16,
+            spaceBefore=12,
+            spaceAfter=8,
+        )
+        body_style = ParagraphStyle(
+            "AnalyticsReportBody",
+            parent=styles["BodyText"],
+            fontName="Helvetica",
+            fontSize=10,
+            leading=14,
+            textColor=colors.HexColor(TEXT_PRIMARY),
+            spaceAfter=4,
+        )
+
+        section_headers = {
+            "DEVIATION METRICS",
+            "STATISTICAL TESTS",
+            "EXAM TYPE SUMMARY",
+            "SUBJECT DEVIATION MATRIX",
+            "ANOMALIES DETECTED",
+            "PATTERNS IDENTIFIED",
+            "RECOMMENDATIONS",
+        }
+
+        doc = SimpleDocTemplate(
+            file_path,
+            pagesize=portrait(A4),
+            rightMargin=36,
+            leftMargin=36,
+            topMargin=36,
+            bottomMargin=36,
+        )
+
+        elements = [
+            Paragraph("Exam Analytics Report", title_style),
+            Paragraph(
+                "Comprehensive comparison and statistical analysis of exam performance",
+                subtitle_style,
+            ),
+            Spacer(1, 12),
+        ]
+
+        for line in lines:
+            stripped = line.strip()
+            if not stripped:
+                elements.append(Spacer(1, 8))
+                continue
+            if stripped.upper() in section_headers:
+                elements.append(Paragraph(stripped, section_style))
+            else:
+                elements.append(Paragraph(stripped.replace("\n", "<br/>"), body_style))
+
+        doc.build(elements)
+
     def _generate_analytics_report(self):
-        """Generate and display a detailed analytics report."""
+        """Generate and display a detailed analytics report with styled layout."""
         if not hasattr(self, "current_comparison"):
             messagebox.showwarning("No Analysis", "Please run an analysis first.")
             return
 
         # Generate report
         report = exam_analytics.generate_comparison_report(self.current_comparison)
+        self._current_report_text = report  # Store for download
 
         # Create report window
         report_window = tk.Toplevel(self.root)
         report_window.title("Exam Analytics Report")
-        report_window.geometry("800x600")
-        report_window.configure(bg=CONTENT_BG)
+        report_window.geometry("1100x850")
+        report_window.configure(bg="#f3f4f6")  # Light gray background
 
-        # Title
-        tk.Label(
-            report_window,
-            text="Exam Analytics Report",
-            bg=CONTENT_BG,
-            fg=TEXT_PRIMARY,
-            font=(FF, 16, "bold"),
-        ).pack(pady=(20, 10))
+        # Main scrollable area
+        canvas_container = tk.Frame(report_window, bg="#f3f4f6")
+        canvas_container.pack(fill="both", expand=True, padx=20, pady=20)
 
-        # Report text
-        report_text = tk.Text(report_window, wrap="word", font=(FF, 10))
-        report_text.pack(fill="both", expand=True, padx=20, pady=10)
-        report_text.insert("1.0", report)
-        report_text.config(state="disabled")
-
-        # Scrollbar
-        scrollbar = ttk.Scrollbar(
-            report_window, orient="vertical", command=report_text.yview
+        canvas = tk.Canvas(canvas_container, bg="white", highlightthickness=0, relief="flat")
+        scrollbar = ttk.Scrollbar(canvas_container, orient="vertical", command=canvas.yview)
+        
+        # This frame represents the "paper"
+        report_paper = tk.Frame(canvas, bg="white", padx=40, pady=40)
+        
+        report_paper.bind(
+            "<Configure>",
+            lambda e: canvas.configure(scrollregion=canvas.bbox("all"))
         )
-        scrollbar.pack(side="right", fill="y", padx=(0, 20), pady=10)
-        report_text.config(yscrollcommand=scrollbar.set)
 
-        # Close button
+        canvas.create_window((0, 0), window=report_paper, anchor="nw", width=1040)
+        canvas.configure(yscrollcommand=scrollbar.set)
+
+        # Mouse wheel scrolling
+        def _on_mousewheel(event):
+            canvas.yview_scroll(int(-1*(event.delta/120)), "units")
+        canvas.bind_all("<MouseWheel>", _on_mousewheel)
+
+        # 1. Render School Letterhead
+        self._render_report_letterhead(report_paper, layout={"preview_header_width": 700})
+
+        # 2. Report Title
+        title_frame = tk.Frame(report_paper, bg="white")
+        title_frame.pack(fill="x", pady=(10, 20))
+        
+        tk.Label(
+            title_frame,
+            text="EXAM PERFORMANCE ANALYTICS REPORT",
+            bg="white",
+            fg="#1b5e20",  # Using school green
+            font=(FF, 16, "bold"),
+            justify="center",
+        ).pack()
+        
+        # Title underline
+        tk.Frame(report_paper, bg="#1b5e20", height=3).pack(fill="x", pady=(0, 25))
+
+        # 3. Meta Info Row (Analysis Details)
+        meta_info = tk.Frame(report_paper, bg="white")
+        meta_info.pack(fill="x", pady=(0, 20))
+        
+        # Get filters used
+        class_val = self.analytics_class_var.get()
+        term_val = self.analytics_term_var.get()
+        
+        info_labels = [
+            ("SCOPE:", class_val.upper()),
+            ("TERM:", term_val.upper()),
+            ("DATE:", datetime.now().strftime("%Y-%m-%d")),
+            ("SCORE:", f"{self.current_comparison.overall_similarity_score:.1f}/100")
+        ]
+        
+        for i, (lab, val) in enumerate(info_labels):
+            cell = tk.Frame(meta_info, bg="white")
+            cell.pack(side="left", expand=True)
+            tk.Label(cell, text=lab, bg="white", fg="#64748b", font=(FF, 9, "bold")).pack(side="left")
+            tk.Label(cell, text=val, bg="white", fg="#1e293b", font=(FF, 9)).pack(side="left", padx=(5, 0))
+
+        # 4. Parse and display report sections with paper-style formatting
+        lines = report.split("\n")
+        
+        # Section titles to detect
+        section_headers = {
+            "EXECUTIVE SUMMARY": {"icon": "📝", "color": "#334155"},
+            "DEVIATION METRICS": {"icon": "📈", "color": "#2563eb"},
+            "STATISTICAL TESTS": {"icon": "🧪", "color": "#d97706"},
+            "EXAM TYPE SUMMARY": {"icon": "📊", "color": "#059669"},
+            "SUBJECT DEVIATION MATRIX": {"icon": "🎯", "color": "#7c3aed"},
+            "ANOMALIES DETECTED": {"icon": "⚠", "color": "#dc2626"},
+            "PATTERNS IDENTIFIED": {"icon": "🔍", "color": "#0891b2"},
+            "RECOMMENDATIONS": {"icon": "💡", "color": "#ca8a04"},
+        }
+        
+        i = 0
+        while i < len(lines):
+            line = lines[i].strip()
+            
+            # Skip separator lines and empty lines at start
+            if not line or (all(c in "=-" for c in line) and len(line) > 10):
+                i += 1
+                continue
+            
+            # Check for section headers
+            section_key = next((s for s in section_headers.keys() if s in line.upper()), None)
+            
+            if section_key:
+                # Section Header Styling
+                sec_info = section_headers[section_key]
+                
+                sec_frame = tk.Frame(report_paper, bg="white")
+                sec_frame.pack(fill="x", pady=(15, 5))
+                
+                tk.Label(
+                    sec_frame,
+                    text=f"{sec_info['icon']} {section_key}",
+                    bg="white",
+                    fg=sec_info['color'],
+                    font=(FF, 12, "bold"),
+                ).pack(anchor="w")
+                
+                # Header underline
+                tk.Frame(report_paper, bg=sec_info['color'], height=1).pack(fill="x", pady=(0, 10))
+                
+                # Collect section content
+                i += 1
+                content_lines = []
+                while i < len(lines):
+                    next_line = lines[i].strip()
+                    if any(s in next_line.upper() for s in section_headers.keys()) and next_line:
+                        break
+                    if next_line and not all(c in "=-" for c in next_line):
+                        content_lines.append(lines[i])
+                    i += 1
+                
+                # Content Display
+                if content_lines:
+                    content_text = "\n".join(content_lines).strip()
+                    content_label = tk.Label(
+                        report_paper,
+                        text=content_text,
+                        bg="white",
+                        fg="#334155",
+                        font=(FF, 10),
+                        justify="left",
+                        wraplength=900,
+                        padx=10,
+                        pady=5,
+                    )
+                    content_label.pack(anchor="nw", fill="x")
+                continue
+            
+            i += 1
+
+        # 5. Footer / Signatures
+        tk.Frame(report_paper, bg="#e2e8f0", height=1).pack(fill="x", pady=(30, 20))
+        
+        sig_frame = tk.Frame(report_paper, bg="white")
+        sig_frame.pack(fill="x", pady=10)
+        
+        for sig_title in ["Director of Academics", "Principal / Head Teacher"]:
+            cell = tk.Frame(sig_frame, bg="white")
+            cell.pack(side="left", expand=True)
+            tk.Frame(cell, bg="#64748b", height=1, width=200).pack(pady=(20, 5))
+            tk.Label(cell, text=sig_title, bg="white", fg="#64748b", font=(FF, 9, "italic")).pack()
+
+        # Render Footer Image
+        self._render_report_footer_image(report_paper, layout={"preview_footer_width": 700})
+
+        canvas.pack(side="left", fill="both", expand=True)
+        scrollbar.pack(side="right", fill="y")
+
+        # Action Buttons
+        btn_frame = tk.Frame(report_window, bg="#f3f4f6", pady=15)
+        btn_frame.pack(fill="x", padx=20)
+        
+        def _download_report():
+            file_path = filedialog.asksaveasfilename(
+                defaultextension=".pdf",
+                filetypes=[("PDF Files", "*.pdf")],
+                initialfile="exam_analytics_report.pdf",
+                title="Save Analytics Report"
+            )
+            if file_path:
+                try:
+                    self._save_analytics_report_pdf(report, file_path)
+                    messagebox.showinfo("Success", "Report saved successfully.")
+                except Exception as e:
+                    messagebox.showerror("Error", f"Failed to save: {e}")
+
         tk.Button(
-            report_window,
-            text="Close",
-            bg=GREEN,
+            btn_frame,
+            text="⬇ Download Styled PDF",
+            bg="#2563eb",
             fg="white",
             font=(FF, 10, "bold"),
             padx=20,
             pady=8,
-            command=report_window.destroy,
-        ).pack(pady=20)
+            relief="flat",
+            command=_download_report
+        ).pack(side="left", padx=(0, 10))
+        
+        tk.Button(
+            btn_frame,
+            text="✕ Close Preview",
+            bg="#64748b",
+            fg="white",
+            font=(FF, 10, "bold"),
+            padx=20,
+            pady=8,
+            relief="flat",
+            command=report_window.destroy
+        ).pack(side="left")
 
     def _export_analytics_charts(self):
-        """Export analytics charts to files."""
+        """Export analytics report to PDF file."""
         if not hasattr(self, "current_comparison"):
             messagebox.showwarning("No Analysis", "Please run an analysis first.")
             return
 
-        # Ask for export directory
-        export_dir = filedialog.askdirectory(title="Select Export Directory")
-        if not export_dir:
+        # Ask for save location
+        file_path = filedialog.asksaveasfilename(
+            defaultextension=".pdf",
+            filetypes=[("PDF Files", "*.pdf"), ("All Files", "*.*")],
+            initialfile="exam_analytics_report.pdf",
+            title="Save Analytics Report PDF"
+        )
+        if not file_path:
             return
 
         try:
-            # Create dashboard charts
-            charts = exam_analytics.create_comparison_dashboard(
-                self.current_comparison, export_dir
-            )
+            # Generate report
+            report = exam_analytics.generate_comparison_report(self.current_comparison)
+            self._save_analytics_report_pdf(report, file_path)
 
             messagebox.showinfo(
                 "Export Complete",
-                f"Charts exported successfully to:\n{export_dir}\n\n"
-                f"Files created:\n" + "\n".join(charts.values()),
+                f"Analytics report exported successfully to:\n{file_path}"
             )
         except Exception as e:
-            messagebox.showerror("Export Error", f"Failed to export charts: {str(e)}")
+            messagebox.showerror("Export Error", f"Failed to export report PDF: {str(e)}")
 
     # ==================== STUDENTS ====================
     def show_students(self):
@@ -14681,7 +15283,15 @@ class SchoolReportApp:
 
                 def find_col(alias_key):
                     aliases = col_aliases[alias_key]
-                    return next((col for col in df.columns if col in aliases), None)
+                    return next(
+                        (
+                            col
+                            for col in df.columns
+                            if col in aliases
+                            or any(col.startswith(f"{alias} ") for alias in aliases)
+                        ),
+                        None,
+                    )
 
                 name_col = find_col("name")
                 if not name_col:
@@ -14710,9 +15320,13 @@ class SchoolReportApp:
                 )
                 return
 
-            current_classes = self.get_current_classes()
-            default_class = current_classes[0] if current_classes else "Grade 1"
-            default_class = self._match_known_class_name(default_class) or default_class
+            existing_class_names = [
+                row.get("name", "") for row in db.get_all_classes() if row.get("name")
+            ]
+            existing_class_keys = {
+                self._normalize_key(class_name): class_name
+                for class_name in existing_class_names
+            }
 
             def show_import_preview_dialog():
                 top = tk.Toplevel(self.root)
@@ -14756,7 +15370,7 @@ class SchoolReportApp:
                 stat_items = [
                     ("Sheets Ready", str(len(prepared_sheets)), "#EAF4EC", GREEN),
                     ("Rows Found", str(total_rows), "#EEF3FF", BLUE),
-                    ("Fallback Class", default_class, "#FFF6E8", ORANGE),
+                    ("Class Rule", "Existing classes only", "#FFF6E8", ORANGE),
                 ]
                 for label_text, value_text, chip_bg, chip_fg in stat_items:
                     chip = tk.Frame(stats, bg=chip_bg, padx=12, pady=8)
@@ -14827,7 +15441,7 @@ class SchoolReportApp:
                     mapped_class = (
                         import_target_class
                         or pack.get("sheet_default_class")
-                        or f"From '{pack.get('class_col') or 'class'}' column / fallback {default_class}"
+                        or f"From '{pack.get('class_col') or 'class'}' column"
                     )
                     if pack.get("sheet_default_stream"):
                         mapped = f"{mapped_class} [{pack['sheet_default_stream']}]"
@@ -14896,8 +15510,7 @@ class SchoolReportApp:
                 added=0,
                 updated=0,
                 generated=0,
-                subjects_added_count=0,
-                classes_added_count=0,
+                skipped=0,
                 sheets_processed=0,
                 total_sheet_count=0,
             ):
@@ -14915,14 +15528,10 @@ class SchoolReportApp:
                 detail_lines.append(
                     f"Added: {added}   Updated: {updated}   Generated adm: {generated}"
                 )
-                detail_lines.append(
-                    f"New subjects: {subjects_added_count}   New classes: {classes_added_count}"
-                )
+                if skipped:
+                    detail_lines.append(f"Skipped rows: {skipped}")
                 return "\n".join(detail_lines)
 
-            # Collect unique subjects and classes from Excel data
-            unique_subjects = set()
-            unique_classes = set()
             total_sheets = len(prepared_sheets)
 
             for sheet_index, sheet_pack in enumerate(prepared_sheets, start=1):
@@ -14942,49 +15551,14 @@ class SchoolReportApp:
                     ),
                 )
                 ensure_not_cancelled()
-                df = sheet_pack["df"]
-                subject_col = next(
-                    (col for col in df.columns if col in col_aliases["subject"]), None
-                )
-                class_col = sheet_pack["class_col"]
-
-                # Collect subjects
-                if subject_col:
-                    subjects_in_sheet = df[subject_col].dropna().unique()
-                    for subj in subjects_in_sheet:
-                        subj_clean = clean_value(subj)
-                        if subj_clean:
-                            unique_subjects.add(subj_clean)
-
-                # Collect classes
-                if class_col:
-                    classes_in_sheet = df[class_col].dropna().unique()
-                    for cls in classes_in_sheet:
-                        cls_clean = clean_value(cls)
-                        if cls_clean:
-                            unique_classes.add(cls_clean)
-                elif sheet_pack["sheet_default_class"]:
-                    unique_classes.add(sheet_pack["sheet_default_class"])
-
-            # Import classes without redundancy
-            subjects_added = 0
-            classes_added = 0
-
-            # Import classes
-            for class_name in unique_classes:
-                ensure_not_cancelled()
-                if not db.get_class_by_name(class_name):
-                    # Determine level from class name
-                    level = self._determine_class_level(class_name)
-                    success, _ = db.add_class(class_name, level)
-                    if success:
-                        classes_added += 1
 
             imported_count = 0
             updated_count = 0
             generated_count = 0
+            skipped_count = 0
             processed = 0
             class_import_summary = {}
+            skipped_reasons = {}
             for sheet_index, sheet_pack in enumerate(prepared_sheets, start=1):
                 sheet_name = sheet_pack["sheet_name"]
                 df = sheet_pack["df"]
@@ -15013,8 +15587,7 @@ class SchoolReportApp:
                             added=imported_count,
                             updated=updated_count,
                             generated=generated_count,
-                            subjects_added_count=subjects_added,
-                            classes_added_count=classes_added,
+                            skipped=skipped_count,
                             sheets_processed=sheet_index - 1,
                             total_sheet_count=total_sheets,
                         ),
@@ -15041,7 +15614,21 @@ class SchoolReportApp:
                     if not stream and sheet_default_stream:
                         stream = sheet_default_stream
                     if not cls:
-                        cls = default_class
+                        skipped_count += 1
+                        skipped_reasons["Missing class"] = (
+                            skipped_reasons.get("Missing class", 0) + 1
+                        )
+                        continue
+                    resolved_existing_class = existing_class_keys.get(
+                        self._normalize_key(cls)
+                    )
+                    if not resolved_existing_class:
+                        skipped_count += 1
+                        skipped_reasons[f"Unknown class: {cls}"] = (
+                            skipped_reasons.get(f"Unknown class: {cls}", 0) + 1
+                        )
+                        continue
+                    cls = resolved_existing_class
                     if gender not in ("Male", "Female"):
                         gender = "Male"
 
@@ -15097,8 +15684,7 @@ class SchoolReportApp:
                     added=imported_count,
                     updated=updated_count,
                     generated=generated_count,
-                    subjects_added_count=subjects_added,
-                    classes_added_count=classes_added,
+                    skipped=skipped_count,
                     sheets_processed=total_sheets,
                     total_sheet_count=total_sheets,
                 ),
@@ -15130,11 +15716,20 @@ class SchoolReportApp:
                 f"Done!  {imported_count} new student(s) added, "
                 f"{updated_count} updated.\n"
                 f"Generated admission numbers: {generated_count}\n"
-                f"New classes added: {classes_added}\n"
+                f"Skipped rows: {skipped_count}\n"
                 f"Sheets processed: {len(prepared_sheets)}\n"
                 f"Existing photos were preserved where no new photo was supplied."
                 f"\n\nClass breakdown:\n"
                 + "\n".join(breakdown_lines)
+                + (
+                    "\n\nSkipped row reasons:\n"
+                    + "\n".join(
+                        f"{reason}: {count}"
+                        for reason, count in list(skipped_reasons.items())[:10]
+                    )
+                    if skipped_reasons
+                    else ""
+                )
                 + f"{scope_note}",
             )
 
@@ -15326,28 +15921,29 @@ class SchoolReportApp:
                 return ("#D32F2F", "#FFFFFF", "#B71C1C", "#EF9A9A")
             return (OLIVE_PRIMARY, "#FFFFFF", OLIVE_DARK, "#C5D29A")
 
-        actions = tk.Frame(self.content_frame, bg=CONTENT_BG)
-        actions.pack(fill="x", padx=10, pady=(0, 6))
+        actions = self._toolbar_panel(pady=(0, 10), padx=10)
+        info_row = self._toolbar_row(actions, pady=(0, 8))
+        action_row = self._toolbar_row(actions, pady=0)
 
         tk.Label(
-            actions,
+            info_row,
             text="Need to load a workbook for the whole school? Import one multi-sheet results file here.",
             bg=CONTENT_BG,
             fg=TEXT_SECONDARY,
             font=(FF, 10),
-        ).pack(side="left")
+        ).pack(side="left", padx=(4, 0))
         self._toolbar_btn(
-            actions,
+            action_row,
             "\U0001f4e5  Import Whole School Results",
             self.import_whole_school_marks_excel,
             bg=PURPLE,
-        ).pack(side="right")
+        ).pack(side="left", padx=(4, 8))
         self._toolbar_btn(
-            actions,
+            action_row,
             "\U0001f4c4  Download Whole School Template",
             self.download_whole_school_marks_template,
             bg=ORANGE,
-        ).pack(side="right", padx=(0, 8))
+        ).pack(side="left", padx=4)
 
         # Create scrollable container for class cards
         canvas_outer = tk.Frame(self.content_frame, bg=CONTENT_BG)
@@ -15611,17 +16207,16 @@ class SchoolReportApp:
         back_btn.pack(side="left", padx=10)
 
         # controls
-        ctrl = tk.Frame(self.content_frame, bg=CONTENT_BG)
-        ctrl.pack(fill="x", pady=(0, 12))
+        ctrl = self._toolbar_panel(pady=(0, 12), padx=10)
+        filter_row = self._toolbar_row(ctrl, pady=(0, 8))
+        action_row = self._toolbar_row(ctrl, pady=0)
 
         def lbl(text):
-            tk.Label(
-                ctrl, text=text, bg=CONTENT_BG, fg=TEXT_SECONDARY, font=(FF, 10)
-            ).pack(side="left", padx=(10, 4))
+            self._toolbar_label(filter_row, text)
 
         lbl("Class:")
         self.marks_class_cb = ttk.Combobox(
-            ctrl,
+            filter_row,
             values=self.get_current_classes(),
             state="readonly",
             style="App.TCombobox",
@@ -15632,7 +16227,7 @@ class SchoolReportApp:
 
         lbl("Stream:")
         self.marks_stream_cb = ttk.Combobox(
-            ctrl,
+            filter_row,
             state="readonly",
             style="App.TCombobox",
             width=14,
@@ -15644,7 +16239,7 @@ class SchoolReportApp:
             str(datetime.now().year - i) for i in range(0, 6)
         ]
         self.marks_year_cb = ttk.Combobox(
-            ctrl,
+            filter_row,
             values=year_options,
             state="readonly",
             style="App.TCombobox",
@@ -15659,14 +16254,14 @@ class SchoolReportApp:
 
         lbl("Term:")
         self.marks_term_cb = ttk.Combobox(
-            ctrl, values=TERMS, state="readonly", style="App.TCombobox", width=10
+            filter_row, values=TERMS, state="readonly", style="App.TCombobox", width=10
         )
         self.marks_term_cb.set(TERMS[0])
         self.marks_term_cb.pack(side="left", ipady=4)
 
         lbl("Exam:")
         self.marks_exam_cb = ttk.Combobox(
-            ctrl, values=EXAM_TYPES, state="readonly", style="App.TCombobox", width=12
+            filter_row, values=EXAM_TYPES, state="readonly", style="App.TCombobox", width=12
         )
         self.marks_exam_cb.set(DEFAULT_EXAM_TYPE)
         self.marks_exam_cb.pack(side="left", ipady=4)
@@ -15688,17 +16283,17 @@ class SchoolReportApp:
             "<<ComboboxSelected>>", lambda e: self._load_marks_table()
         )
 
-        self._toolbar_btn(ctrl, "\U0001f4be  Save All Marks", self.save_marks).pack(
-            side="left", padx=16
+        self._toolbar_btn(action_row, "\U0001f4be  Save All Marks", self.save_marks).pack(
+            side="left", padx=(4, 8)
         )
         self._toolbar_btn(
-            ctrl, "\U0001f4cb  Template", self.download_marks_template, bg=ORANGE
+            action_row, "\U0001f4cb  Template", self.download_marks_template, bg=ORANGE
         ).pack(side="left", padx=4)
         self._toolbar_btn(
-            ctrl, "\U0001f4e5  Import Marks", self.import_marks_excel, bg=PURPLE
+            action_row, "\U0001f4e5  Import Marks", self.import_marks_excel, bg=PURPLE
         ).pack(side="left", padx=4)
         self._toolbar_btn(
-            ctrl,
+            action_row,
             "\U0001f5d1  Clear Term Marks",
             self._delete_all_marks_for_term,
             bg="#e74c3c",
@@ -16199,6 +16794,8 @@ class SchoolReportApp:
         term = self.marks_term_cb.get()
         exam_type = self.marks_exam_cb.get() or DEFAULT_EXAM_TYPE
         subjects = self._get_subjects_for_selected_class(cls, term, exam_type)
+        if not subjects:
+            subjects = self._get_subject_pool_for_class(cls)
         students = db.get_students_by_class(cls)
 
         year = self.marks_year_cb.get() if hasattr(self, "marks_year_cb") else str(datetime.now().year)
@@ -16285,6 +16882,20 @@ class SchoolReportApp:
                 cell.font = hdr_font
                 cell.alignment = ctr
                 cell.border = border
+
+            if not subjects:
+                sample_headers = ["English", "Mathematics", "Kiswahili"]
+                for i, subject in enumerate(sample_headers, start=3):
+                    fill = PatternFill(
+                        "solid", fgColor=subject_palette[(i - 3) % len(subject_palette)]
+                    )
+                    cell = ws.cell(row=2, column=i, value=subject.upper())
+                    cell.fill = fill
+                    cell.font = hdr_font
+                    cell.alignment = ctr
+                    cell.border = border
+                subjects = sample_headers
+                last_col = 2 + len(subjects)
 
             # Data rows
             start_row = 3
@@ -16782,7 +17393,7 @@ class SchoolReportApp:
                     ),
                 )
                 ensure_not_cancelled()
-                parsed = self._parse_assessment_sheet(ws)
+                parsed = self._parse_assessment_sheet(ws, class_name)
                 if parsed:
                     parsed_sheets.append(parsed)
                     # Collect subjects
@@ -16851,6 +17462,11 @@ class SchoolReportApp:
                         self._normalize_key(student["name"]): student
                         for student in existing_students
                     }
+                    admission_to_student = {
+                        str(student.get("admission_no", "") or "").strip().lower(): student
+                        for student in existing_students
+                        if str(student.get("admission_no", "") or "").strip()
+                    }
 
                     for item in parsed["students"]:
                         processed_students += 1
@@ -16878,7 +17494,12 @@ class SchoolReportApp:
                         )
                         ensure_not_cancelled()
                         name_key = self._normalize_key(item["name"])
-                        student = name_to_student.get(name_key)
+                        admission_key = (
+                            str(item.get("admission_no", "") or "").strip().lower()
+                        )
+                        student = admission_to_student.get(admission_key) or name_to_student.get(
+                            name_key
+                        )
                         if not student:
                             admission_no = self._generate_admission_no(
                                 sheet_class, item["name"]
@@ -16894,13 +17515,29 @@ class SchoolReportApp:
                                 stream_name,
                             )
                             name_to_student[name_key] = student
+                            admission_to_student[
+                                str(student.get("admission_no", "") or "").strip().lower()
+                            ] = student
                             total_created += 1
                             class_import_summary[sheet_class]["created"] += 1
 
+                        normalized_marks = {}
+                        for raw_subject, mark_value in item["marks"].items():
+                            subject_name = self._ensure_import_subject_record(
+                                raw_subject, sheet_class
+                            )
+                            if subject_name:
+                                normalized_marks[subject_name] = mark_value
+                        if not normalized_marks:
+                            skipped_students += 1
+                            continue
+                        self._merge_import_subjects_into_class_map(
+                            sheet_class, normalized_marks.keys()
+                        )
                         current_marks = db.get_student_marks(
                             student["id"], term, exam_type, academic_year
                         )
-                        current_marks.update(item["marks"])
+                        current_marks.update(normalized_marks)
                         db.save_student_marks(
                             student["id"], current_marks, term, exam_type, academic_year
                         )
@@ -16989,7 +17626,24 @@ class SchoolReportApp:
             subjects = self._get_subjects_for_selected_class(
                 class_name, term, exam_type
             )
-            df = pd.read_excel(file_path)
+            if not subjects:
+                subjects = self._get_subject_pool_for_class(class_name)
+            flat_ws = next(
+                (
+                    ws
+                    for ws in wb.worksheets
+                    if not self._get_sheet_context(ws.title, ws).get("is_summary")
+                ),
+                wb.active,
+            )
+            flat_header_row = self._find_flat_marks_header_row(
+                flat_ws, class_name, subjects
+            )
+            df = pd.read_excel(
+                file_path,
+                sheet_name=flat_ws.title,
+                header=max(0, flat_header_row - 1),
+            )
             total_rows = len(df.index)
             self._update_progress_dialog(
                 progress_dialog,
@@ -17011,7 +17665,9 @@ class SchoolReportApp:
             )
             ensure_not_cancelled()
 
-            df.columns = [str(c).strip().lower() for c in df.columns]
+            original_columns = [str(c).strip() for c in df.columns]
+            normalized_columns = [self._normalize_text(c) for c in original_columns]
+            df.columns = normalized_columns
 
             adm_aliases = {
                 "admission_no",
@@ -17052,10 +17708,16 @@ class SchoolReportApp:
                 return False
 
             subj_col_map = {}
-            for subj in subjects:
-                subj_lower = subj.strip().lower()
-                if subj_lower in df.columns:
-                    subj_col_map[subj] = subj_lower
+            for original, normalized in zip(original_columns, normalized_columns):
+                if not original or not normalized:
+                    continue
+                if normalized in adm_aliases or normalized in name_aliases:
+                    continue
+                matched_subject = self._match_subject_from_candidates(
+                    original, subjects, class_name
+                ) or self._map_sheet_subject(original, class_name)
+                if matched_subject and normalized in df.columns:
+                    subj_col_map[matched_subject] = normalized
 
             if not subj_col_map:
                 progress_dialog.destroy()
@@ -17067,8 +17729,12 @@ class SchoolReportApp:
                 return False
 
             students = db.get_students_by_class(class_name)
-            adm_to_sid = {s["admission_no"].strip(): s["id"] for s in students}
-            name_to_sid = {s["name"].strip().lower(): s["id"] for s in students}
+            adm_to_sid = {
+                str(s.get("admission_no", "") or "").strip().lower(): s["id"]
+                for s in students
+                if str(s.get("admission_no", "") or "").strip()
+            }
+            name_to_sid = {self._normalize_key(s["name"]): s["id"] for s in students}
 
             updated = 0
             skipped = 0
@@ -17099,11 +17765,13 @@ class SchoolReportApp:
                 ensure_not_cancelled()
 
                 def _clean(val):
+                    if isinstance(val, float) and val.is_integer():
+                        return str(int(val))
                     value = str(val).strip()
                     return "" if value.lower() == "nan" else value
 
-                adm = _clean(row[adm_col]) if adm_col else ""
-                name_key = _clean(row[name_col]).lower() if name_col else ""
+                adm = _clean(row[adm_col]).lower() if adm_col else ""
+                name_key = self._normalize_key(_clean(row[name_col])) if name_col else ""
 
                 sid = adm_to_sid.get(adm) or name_to_sid.get(name_key)
                 if not sid:
@@ -17122,8 +17790,25 @@ class SchoolReportApp:
                             pass
 
                 if marks:
+                    normalized_marks = {}
+                    for raw_subject, mark_value in marks.items():
+                        subject_name = self._ensure_import_subject_record(
+                            raw_subject, class_name
+                        )
+                        if subject_name:
+                            normalized_marks[subject_name] = mark_value
+                    if not normalized_marks:
+                        skipped += 1
+                        continue
+                    self._merge_import_subjects_into_class_map(
+                        class_name, normalized_marks.keys()
+                    )
+                    current_marks = db.get_student_marks(
+                        sid, term, exam_type, academic_year
+                    )
+                    current_marks.update(normalized_marks)
                     db.save_student_marks(
-                        sid, marks, term, exam_type, academic_year
+                        sid, current_marks, term, exam_type, academic_year
                     )
                     updated += 1
                 else:
@@ -17492,8 +18177,9 @@ class SchoolReportApp:
         self._set_nav("Results")
         self._page_header("Results", "View student performance and rankings")
 
-        ctrl = tk.Frame(self.content_frame, bg=CONTENT_BG)
-        ctrl.pack(fill="x", pady=(0, 12))
+        ctrl = self._toolbar_panel(pady=(0, 10), padx=10)
+        filter_row = self._toolbar_row(ctrl, pady=(0, 8))
+        action_row = self._toolbar_row(ctrl, pady=0)
 
         report_classes = list(self.get_current_classes())
         default_class = (
@@ -17506,13 +18192,11 @@ class SchoolReportApp:
             class_options.append("All")
 
         def lbl(t):
-            tk.Label(
-                ctrl, text=t, bg=CONTENT_BG, fg=TEXT_SECONDARY, font=(FF, 10)
-            ).pack(side="left", padx=(10, 4))
+            self._toolbar_label(filter_row, t)
 
         lbl("Class:")
         self.rep_cls_cb = ttk.Combobox(
-            ctrl,
+            filter_row,
             values=class_options,
             state="readonly",
             style="App.TCombobox",
@@ -17523,13 +18207,13 @@ class SchoolReportApp:
 
         lbl("Stream:")
         self.rep_stream_cb = ttk.Combobox(
-            ctrl, state="readonly", style="App.TCombobox", width=14
+            filter_row, state="readonly", style="App.TCombobox", width=14
         )
         self.rep_stream_cb.pack(side="left", ipady=4)
 
         lbl("Year:")
         self.rep_year_cb = ttk.Combobox(
-            ctrl,
+            filter_row,
             values=self._get_year_options(),
             state="readonly",
             style="App.TCombobox",
@@ -17540,14 +18224,18 @@ class SchoolReportApp:
 
         lbl("Term:")
         self.rep_term_cb = ttk.Combobox(
-            ctrl, values=TERMS, state="readonly", style="App.TCombobox", width=10
+            filter_row, values=TERMS, state="readonly", style="App.TCombobox", width=10
         )
         self.rep_term_cb.set(TERMS[0])
         self.rep_term_cb.pack(side="left", ipady=4)
 
         lbl("Exam:")
         self.rep_exam_cb = ttk.Combobox(
-            ctrl, values=EXAM_TYPES, state="readonly", style="App.TCombobox", width=12
+            filter_row,
+            values=EXAM_TYPES,
+            state="readonly",
+            style="App.TCombobox",
+            width=12,
         )
         self.rep_exam_cb.set(DEFAULT_EXAM_TYPE)
         self.rep_exam_cb.pack(side="left", ipady=4)
@@ -17561,27 +18249,29 @@ class SchoolReportApp:
         self.rep_exam_cb.bind("<<ComboboxSelected>>", lambda e: self.load_reports())
 
         self._toolbar_btn(
-            ctrl, "\u2193  Export CSV", self.export_csv, bg="#475569"
-        ).pack(side="left", padx=16)
+            action_row, "Export CSV", self.export_csv, bg="#475569"
+        ).pack(side="left", padx=(4, 8))
         self._toolbar_btn(
-            ctrl, "\U0001f5a8  Print PDF", self.print_results_pdf, bg="#7c3aed"
+            action_row, "Print PDF", self.print_results_pdf, bg="#7c3aed"
         ).pack(side="left", padx=4)
         self._toolbar_btn(
-            ctrl,
-            "\U0001f4ca  Spotlight Excel",
+            action_row,
+            "Spotlight Excel",
             self.export_spotlight_excel,
             bg="#1B5E20",
         ).pack(side="left", padx=4)
         self.rep_mode_badge = tk.Label(
-            ctrl,
+            action_row,
             text="Mode: -",
-            bg="#1d4ed8",
+            bg="#1B5E20",
             fg="white",
-            font=(FF, 9, "bold"),
-            padx=10,
-            pady=5,
+            font=(FF, 10, "bold"),
+            padx=14,
+            pady=7,
+            bd=2,
+            relief="raised",
         )
-        self.rep_mode_badge.pack(side="right", padx=(10, 8))
+        self.rep_mode_badge.pack(side="left", padx=(12, 4))
 
         # subject averages strip
         sa_bo, sa_bi = _card_colors("lilac")
@@ -21363,17 +22053,15 @@ class SchoolReportApp:
             "Performance Charts", "Visual analysis of class and subject performance"
         )
 
-        ctrl = tk.Frame(self.content_frame, bg=CONTENT_BG)
-        ctrl.pack(fill="x", pady=(0, 12))
+        ctrl = self._toolbar_panel(pady=(0, 12), padx=10)
+        filter_row = self._toolbar_row(ctrl, pady=0)
 
         def lbl(t):
-            tk.Label(
-                ctrl, text=t, bg=CONTENT_BG, fg=TEXT_SECONDARY, font=(FF, 10)
-            ).pack(side="left", padx=(10, 4))
+            self._toolbar_label(filter_row, t)
 
         lbl("Class:")
         self.ch_cls_cb = ttk.Combobox(
-            ctrl,
+            filter_row,
             values=["All"] + self.get_current_classes(),
             state="readonly",
             style="App.TCombobox",
@@ -21383,7 +22071,7 @@ class SchoolReportApp:
         self.ch_cls_cb.pack(side="left", ipady=4)
         lbl("Stream:")
         self.ch_stream_cb = ttk.Combobox(
-            ctrl,
+            filter_row,
             state="readonly",
             style="App.TCombobox",
             width=14,
@@ -21392,7 +22080,7 @@ class SchoolReportApp:
         self._refresh_chart_streams(reload_results=False)
         lbl("Year:")
         self.ch_year_cb = ttk.Combobox(
-            ctrl,
+            filter_row,
             values=self._get_year_options(),
             state="readonly",
             style="App.TCombobox",
@@ -21402,13 +22090,13 @@ class SchoolReportApp:
         self.ch_year_cb.pack(side="left", ipady=4)
         lbl("Term:")
         self.ch_term_cb = ttk.Combobox(
-            ctrl, values=TERMS, state="readonly", style="App.TCombobox", width=10
+            filter_row, values=TERMS, state="readonly", style="App.TCombobox", width=10
         )
         self.ch_term_cb.set(TERMS[0])
         self.ch_term_cb.pack(side="left", ipady=4)
         lbl("Exam:")
         self.ch_exam_cb = ttk.Combobox(
-            ctrl, values=EXAM_TYPES, state="readonly", style="App.TCombobox", width=12
+            filter_row, values=EXAM_TYPES, state="readonly", style="App.TCombobox", width=12
         )
         self.ch_exam_cb.set(DEFAULT_EXAM_TYPE)
         self.ch_exam_cb.pack(side="left", ipady=4)
@@ -21631,17 +22319,17 @@ class SchoolReportApp:
             "Report Cards", "Generate and print learner assessment report cards"
         )
 
-        ctrl = tk.Frame(self.content_frame, bg=CONTENT_BG)
-        ctrl.pack(fill="x", pady=(0, 12))
+        ctrl = self._toolbar_panel(pady=(0, 10), padx=10)
+        filter_row = self._toolbar_row(ctrl, pady=(0, 8))
+        student_row = self._toolbar_row(ctrl, pady=(0, 8))
+        action_row = self._toolbar_row(ctrl, pady=0)
 
-        def lbl(t):
-            tk.Label(
-                ctrl, text=t, bg=CONTENT_BG, fg=TEXT_SECONDARY, font=(FF, 10)
-            ).pack(side="left", padx=(10, 4))
+        def lbl(parent, t, left=10):
+            self._toolbar_label(parent, t, left=left)
 
-        lbl("Class:")
+        lbl(filter_row, "Class:")
         self.rc_cls_cb = ttk.Combobox(
-            ctrl,
+            filter_row,
             values=self.get_current_classes(),
             state="readonly",
             style="App.TCombobox",
@@ -21650,14 +22338,14 @@ class SchoolReportApp:
         rc_classes = self.get_current_classes()
         self.rc_cls_cb.set(rc_classes[0] if rc_classes else "")
         self.rc_cls_cb.pack(side="left", ipady=4)
-        lbl("Stream:")
+        lbl(filter_row, "Stream:")
         self.rc_stream_cb = ttk.Combobox(
-            ctrl, state="readonly", style="App.TCombobox", width=14
+            filter_row, state="readonly", style="App.TCombobox", width=14
         )
         self.rc_stream_cb.pack(side="left", ipady=4)
-        lbl("Year:")
+        lbl(filter_row, "Year:")
         self.rc_year_cb = ttk.Combobox(
-            ctrl,
+            filter_row,
             values=self._get_year_options(),
             state="readonly",
             style="App.TCombobox",
@@ -21665,21 +22353,25 @@ class SchoolReportApp:
         )
         self.rc_year_cb.set(str(datetime.now().year))
         self.rc_year_cb.pack(side="left", ipady=4)
-        lbl("Term:")
+        lbl(filter_row, "Term:")
         self.rc_term_cb = ttk.Combobox(
-            ctrl, values=TERMS, state="readonly", style="App.TCombobox", width=10
+            filter_row, values=TERMS, state="readonly", style="App.TCombobox", width=10
         )
         self.rc_term_cb.set(TERMS[0])
         self.rc_term_cb.pack(side="left", ipady=4)
-        lbl("Exam:")
+        lbl(filter_row, "Exam:")
         self.rc_exam_cb = ttk.Combobox(
-            ctrl, values=EXAM_TYPES, state="readonly", style="App.TCombobox", width=12
+            filter_row,
+            values=EXAM_TYPES,
+            state="readonly",
+            style="App.TCombobox",
+            width=12,
         )
         self.rc_exam_cb.set(DEFAULT_EXAM_TYPE)
         self.rc_exam_cb.pack(side="left", ipady=4)
-        lbl("Student:")
+        lbl(student_row, "Student:")
         self.rc_stu_cb = ttk.Combobox(
-            ctrl, state="readonly", style="App.TCombobox", width=22
+            student_row, state="readonly", style="App.TCombobox", width=36
         )
         self.rc_stu_cb.pack(side="left", ipady=4)
 
@@ -21692,24 +22384,18 @@ class SchoolReportApp:
         self.rc_exam_cb.bind("<<ComboboxSelected>>", lambda e: self._load_rc())
         self.rc_stu_cb.bind("<<ComboboxSelected>>", lambda e: self._display_rc())
 
-        self._toolbar_btn(ctrl, "\U0001f5a8  Print", self._print_rc).pack(
-            side="left", padx=14
-        )
-        self._toolbar_btn(
-            ctrl, "Email Result", self._send_result_email, bg=ORANGE
-        ).pack(side="left", padx=4)
-        self._toolbar_btn(
-            ctrl, "Email All", self._send_all_results_email, bg=PURPLE
-        ).pack(side="left", padx=4)
-        self._toolbar_btn(
-            ctrl, "Failed Emails", self._show_failed_email_logs, bg="#8B5CF6"
-        ).pack(side="left", padx=4)
-        self._toolbar_btn(
-            ctrl, "Email Settings", self._open_email_settings_dialog, bg="#475569"
-        ).pack(side="left", padx=4)
-        self._toolbar_btn(ctrl, "Print All", self._print_all_rc, bg="#475569").pack(
-            side="left", padx=4
-        )
+        report_actions = [
+            ("Print", self._print_rc, BLUE, 10),
+            ("Email Result", self._send_result_email, ORANGE, 13),
+            ("Print All", self._print_all_rc, "#475569", 10),
+            ("Email All", self._send_all_results_email, PURPLE, 10),
+            ("Failed Emails", self._show_failed_email_logs, "#8B5CF6", 13),
+            ("Email Settings", self._open_email_settings_dialog, "#475569", 14),
+        ]
+        for idx, (text, command, bg, width) in enumerate(report_actions):
+            btn = self._toolbar_btn(action_row, text, command, bg=bg)
+            btn.config(width=width)
+            btn.pack(side="left", padx=(4 if idx == 0 else 6, 4))
 
         self._report_email_settings_host = tk.Frame(self.content_frame, bg=CONTENT_BG)
         self._report_email_settings_host.pack(fill="x", pady=(0, 10))

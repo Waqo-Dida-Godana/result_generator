@@ -1159,81 +1159,115 @@ class ExamAnalytics:
         return self.db.get_available_exam_sessions()
     
     def generate_comparison_report(self, comparison: ExamComparison) -> str:
-        """Generate a text-based comparison report."""
+        """Generate an academically structured comparison report."""
+        metric_labels = {
+            DeviationMetric.SCORE_VARIANCE: "Score Variance",
+            DeviationMetric.PASS_RATE_FLUCTUATION: "Pass Rate Fluctuation",
+            DeviationMetric.DIFFICULTY_INDEX_SHIFT: "Difficulty Index Shift",
+            DeviationMetric.MEAN_SCORE_DEVIATION: "Mean Score Deviation",
+            DeviationMetric.STANDARD_DEVIATION: "Standard Deviation",
+            DeviationMetric.GRADE_DISTRIBUTION_SHIFT: "Grade Distribution Shift",
+            DeviationMetric.PERFORMANCE_CONSISTENCY: "Performance Consistency",
+        }
+
         report = []
         report.append("=" * 80)
         report.append("EXAM COMPARISON ANALYSIS REPORT")
         report.append("=" * 80)
-        report.append(f"\nAnalysis Date: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
-        report.append(f"Number of Exam Sessions: {len(comparison.exam_sessions)}")
-        report.append(f"Overall Similarity Score: {comparison.overall_similarity_score:.1f}/100")
-        
-        report.append("\n" + "-" * 80)
+        report.append(f"Analysis Date: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+        report.append(f"Exam sessions included: {len(comparison.exam_sessions)}")
+        report.append(
+            f"Overall similarity score: {comparison.overall_similarity_score:.1f}/100 "
+            "(higher values indicate greater consistency in assessment outcomes)."
+        )
+        report.append("")
+        report.append("EXECUTIVE SUMMARY")
+        report.append("-" * 80)
+        report.append(
+            "This report synthesizes the performance of the examined exam sessions by measuring the extent of "
+            "deviation across key academic indicators. It highlights systematic variation, reliability of pass rates, "
+            "difficulty shifts, and the degree to which student achievement is consistent across assessment events."
+        )
+        report.append("")
+
         report.append("DEVIATION METRICS")
         report.append("-" * 80)
-        
+
         for dev in comparison.deviations:
-            report.append(f"\n{dev.metric.value.upper().replace('_', ' ')}:")
-            report.append(f"  Value: {dev.value:.3f}")
-            report.append(f"  Severity: {dev.severity.upper()}")
-            report.append(f"  Interpretation: {dev.interpretation}")
+            metric_name = metric_labels.get(dev.metric, dev.metric.name.replace('_', ' ').title())
+            report.append(f"{metric_name}")
+            report.append(f"  • Measured value: {dev.value:.3f}")
+            report.append(f"  • Academic severity: {dev.severity.upper()}")
+            report.append(f"  • Evidence-based interpretation: {dev.interpretation}")
+            report.append("")
 
         if comparison.anova_results:
-            report.append("\n" + "-" * 80)
             report.append("STATISTICAL TESTS")
             report.append("-" * 80)
-            report.append(f"ANOVA: {comparison.anova_results.get('interpretation', 'N/A')}")
+            report.append("ANOVA INFERENCE")
+            report.append(f"  • {comparison.anova_results.get('interpretation', 'No inferential summary available.')}")
+            if comparison.anova_results.get('p_value') is not None:
+                report.append(f"  • p-value: {comparison.anova_results.get('p_value')}")
+            report.append("")
+
         if comparison.time_series_results:
-            report.append(f"Time Series: {comparison.time_series_results.get('interpretation', 'N/A')}")
+            report.append("TIME SERIES ANALYSIS")
+            report.append("-" * 80)
+            report.append(
+                f"  • {comparison.time_series_results.get('interpretation', 'No time-series interpretation available.')}")
+            report.append("")
 
         if comparison.exam_type_summaries:
-            report.append("\n" + "-" * 80)
             report.append("EXAM TYPE SUMMARY")
             report.append("-" * 80)
             for summary in comparison.exam_type_summaries:
                 report.append(
-                    f"{summary['exam_type']}: mean={summary['mean_score']:.1f}, "
-                    f"pass={summary['pass_rate']:.1f}%, difficulty={summary['difficulty_index']:.3f}, "
-                    f"sessions={summary['session_count']}, subjects={summary['subject_count']}"
+                    f"  • {summary['exam_type']}: mean score {summary['mean_score']:.1f}, "
+                    f"pass rate {summary['pass_rate']:.1f}%, difficulty index {summary['difficulty_index']:.3f}, "
+                    f"sessions {summary['session_count']}, subjects {summary['subject_count']}"
                 )
+            report.append("")
 
         if comparison.subject_deviation_rows:
-            report.append("\n" + "-" * 80)
             report.append("SUBJECT DEVIATION MATRIX")
             report.append("-" * 80)
             for row in comparison.subject_deviation_rows[:20]:
                 report.append(
-                    f"{row['subject']}: {row['baseline_exam_type']} {row['baseline_mean']:.1f} -> "
-                    f"{row['comparison_exam_type']} {row['comparison_mean']:.1f} "
-                    f"(dev {row['score_deviation']:+.1f}, pass {row['pass_rate_deviation']:+.1f}%, "
-                    f"difficulty {row['difficulty_shift']:+.3f})"
+                    f"  • {row['subject']}: baseline {row['baseline_exam_type']} mean {row['baseline_mean']:.1f} vs "
+                    f"comparison {row['comparison_exam_type']} mean {row['comparison_mean']:.1f}; "
+                    f"score deviation {row['score_deviation']:+.1f}, pass rate change {row['pass_rate_deviation']:+.1f}%, "
+                    f"difficulty shift {row['difficulty_shift']:+.3f}."
                 )
-        
+            report.append("")
+
         if comparison.anomalies:
-            report.append("\n" + "-" * 80)
             report.append("ANOMALIES DETECTED")
             report.append("-" * 80)
+            report.append("The following anomalies were observed in the assessment data:")
             for anomaly in comparison.anomalies:
-                report.append(f"• {anomaly}")
-        
+                report.append(f"  • {anomaly}")
+            report.append("")
+
         if comparison.patterns:
-            report.append("\n" + "-" * 80)
             report.append("PATTERNS IDENTIFIED")
             report.append("-" * 80)
+            report.append("Recurring patterns and trends identified in the analysis:")
             for pattern in comparison.patterns:
-                report.append(f"• {pattern}")
-        
+                report.append(f"  • {pattern}")
+            report.append("")
+
         if comparison.recommendations:
-            report.append("\n" + "-" * 80)
             report.append("RECOMMENDATIONS")
             report.append("-" * 80)
+            report.append("Evidence-based recommendations for academic review and intervention:")
             for i, rec in enumerate(comparison.recommendations, 1):
-                report.append(f"{i}. {rec}")
-        
-        report.append("\n" + "=" * 80)
+                report.append(f"  {i}. {rec}")
+            report.append("")
+
+        report.append("=" * 80)
         report.append("END OF REPORT")
         report.append("=" * 80)
-        
+
         return "\n".join(report)
 
 

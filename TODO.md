@@ -1,49 +1,48 @@
-Student Lists Print Functionality - Implementation Plan
-Generated: [Current Date/Time]
+**Exam Analytics PDF Report Generation - Implementation Plan**
 
-## Status: 🔄 In Progress (1/7 complete)
+**Status**: ✅ Step 1 Complete (1/7)
 
-✅ **1. Add helper queries to database.py** ✓
+## Approved Plan Summary
+Convert plain-text exam analytics report → professional PDF matching student_list_pdf style:
+- Letterhead header + school profile
+- Tables: metrics (color-coded severity), exam summaries, subject deviations  
+- Paragraphs: anomalies/patterns/recommendations
+- A4 portrait, print-ready
 
-✅ **Plan Approved** - Class/stream-specific lists with recent averages, button in Students UI.
+## Implementation Steps
 
-## Breakdown of Steps (Approved Plan)
+### ✅ 1. Create this TODO.md
+   - Track progress automatically
 
+### 2. **[ ]** main.py: Add `generate_exam_analytics_pdf(comparison, class_filter, file_path)`
+   - ReportLab PDF: header/tables/sections/footer
+   - Reuse letterhead, school_profile, TableStyle
+   - Save dialog if no file_path
 
+### 3. **[ ]** exam_analytics.py: Add `export_pdf(app, class_filter="", file_path=None)`
+   - Wrapper: `app.generate_exam_analytics_pdf(comparison)`
 
-### 2. [ ] Create student_list_pdf() function in main.py
-   - Mirror report card structure (header/footer/tables)
-   - Params: class_name, stream_name, include_averages=True
-   - A4 portrait, subjects summary table
+### 4. **[ ]** main.py: Exam Analytics UI - Add "Export PDF" button
+   - Call `exam_analytics.export_pdf(self, filters)`
+   - Progress dialog
 
-### 3. [ ] Add Students tab/page in main.py sidebar/UI
-   - Similar to Classes/Reports: filters (class/stream), search
-   - Treeview table of students
-   - "Print Student List" button → call student_list_pdf()
+### 5. **[ ]** Test PDF generation (Grade 7/One sample)
+   - Verify letterhead/tables/severity colors/print A4
 
-### 4. [ ] Integrate print button + save dialog
-   - tk.filedialog.asksaveasfilename("Student_List_[Class]_[Stream]_[Date].pdf")
-   - Progress dialog for PDF generation
+### 6. **[ ]** Edge cases
+   - Empty data/single exam/long deviations (>20 subjects)
 
-### 5. [ ] Test PDF generation (small class)
-   - Verify letterhead/header/footer renders
-   - Check table columns: Adm#, Name, Gender, Guardian, Email, Stream, Avg
+### 7. **[ ]** Final validation + completion
+   - Update TODO status → attempt_completion
 
-### 6. [ ] Test large lists (100+ students)
-   - Multi-page support
-   - Performance + memory
+## Dependencies
+**Edit**: main.py, exam_analytics.py  
+**No installs** (ReportLab/PIL ready)  
+**Test data**: Any class with multiple exams (e.g. Grade 7 Term One)
 
-### 7. [ ] Final validation + completion
-   - A4 print preview
-   - Match report card quality
-
-## Notes
-- Reuse existing ReportLab setup (styles/fonts/tables)
-- No new dependencies needed
-- Handle empty classes gracefully
-
-**Next**: Step 2 - PDF generator function in main.py
+**Next**: Step 2 - main.py PDF generator function
 
 ---
-*Updated automatically after each completed step.*
+
+*Auto-updated after each step.*
 

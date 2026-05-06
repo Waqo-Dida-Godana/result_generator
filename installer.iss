@@ -1,5 +1,5 @@
 [Setup]
-AppName=MOAS CBC Student Report Management System
+AppName=MOAS Report Management System
 AppVersion=1.1
 DefaultDirName={pf}\MOAS Report Generator
 DefaultGroupName=MOAS Report Generator
