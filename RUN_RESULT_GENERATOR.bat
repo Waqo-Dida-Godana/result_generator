@@ -1,11 +1,14 @@
 @echo off
 setlocal
-cd /d "%~dp0result_generator"
+cd /d "%~dp0"
 
 echo Starting MOAS Result Generator...
 
-if exist ".venv\Scripts\python.exe" (
-    echo Using virtual environment...
+if exist ".venv314\Scripts\python.exe" (
+    echo Using Python 3.14 virtual environment...
+    ".venv314\Scripts\python.exe" main.py
+) else if exist ".venv\Scripts\python.exe" (
+    echo Using default virtual environment...
     ".venv\Scripts\python.exe" main.py
 ) else (
     echo Using system python...

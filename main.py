@@ -472,7 +472,7 @@ def _load_levels_from_db():
 def _load_classes_by_level_from_db():
     rows = db.get_all_classes()
     if not rows:
-        return DEFAULT_CLASSES_BY_LEVEL
+        return {}
 
     classes_by_level = {}
     for row in rows:
@@ -1618,7 +1618,6 @@ class SchoolReportApp:
         except Exception as e:
             print(f"Could not set window icon: {e}")
 
-        self._ensure_default_class_catalog()
         self._ensure_default_grading_scales()
         refresh_dynamic_school_config()
         self.set_level(self.current_level)
@@ -2629,6 +2628,37 @@ class SchoolReportApp:
         text = self._normalize_text(value)
         return re.sub(r"[^a-z0-9]+", "", text)
 
+    def _stream_alias_keys(self, value):
+        key = self._normalize_key(value)
+        aliases = {key} if key else set()
+        color_aliases = {
+            "g": {"g", "green"},
+            "green": {"g", "green"},
+            "y": {"y", "yellow"},
+            "yellow": {"y", "yellow"},
+            "b": {"b", "blue"},
+            "blue": {"b", "blue"},
+            "r": {"r", "red"},
+            "red": {"r", "red"},
+        }
+        aliases.update(color_aliases.get(key, set()))
+        return aliases
+
+    def _stream_values_match(self, left, right):
+        left_aliases = self._stream_alias_keys(left)
+        right_aliases = self._stream_alias_keys(right)
+        return bool(left_aliases and right_aliases and left_aliases & right_aliases)
+
+    def _get_students_by_class_stream(self, class_name, stream_name=""):
+        stream_text = str(stream_name or "").strip()
+        if not stream_text or stream_text == "All Streams":
+            return db.get_students_by_class(class_name)
+        return [
+            student
+            for student in db.get_students_by_class(class_name)
+            if self._stream_values_match(student.get("stream", ""), stream_text)
+        ]
+
     def _get_known_class_names(self):
         class_names = []
         for classes in CLASSES_BY_LEVEL.values():
@@ -2707,6 +2737,7 @@ class SchoolReportApp:
 
         raw_norm = self._normalize_text(raw)
         raw_key = self._normalize_key(raw)
+        raw_aliases = self._stream_alias_keys(raw)
         streams = self._get_known_stream_names(class_name)
 
         for stream_name in streams:
@@ -2715,16 +2746,83 @@ class SchoolReportApp:
 
         for stream_name in streams:
             stream_key = self._normalize_key(stream_name)
+            stream_aliases = self._stream_alias_keys(stream_name)
             if raw_key and (
                 raw_key == stream_key or raw_key in stream_key or stream_key in raw_key
             ):
+                return stream_name
+            if raw_aliases and stream_aliases and raw_aliases & stream_aliases:
                 return stream_name
 
         if len(raw) <= 3 and raw.isalpha():
             return raw.upper()
         return raw.title()
 
+    def _is_non_stream_sheet_token(self, value):
+        return self._normalize_key(value) in {
+            "overall",
+            "summary",
+            "report",
+            "analysis",
+            "assessment",
+            "end",
+            "term",
+            "endterm",
+            "midterm",
+            "opener",
+            "template",
+            "marks",
+            "results",
+        }
+
+    def _split_sheet_class_stream_label(self, value):
+        """Split labels like 'Grade 4 Y' into ('Grade 4', 'Y')."""
+        raw = str(value or "").strip()
+        text_norm = self._normalize_text(raw)
+        if not text_norm:
+            return "", ""
+
+        known_classes = sorted(
+            self._get_known_class_names(),
+            key=lambda item: len(self._normalize_text(item)),
+            reverse=True,
+        )
+        for class_name in known_classes:
+            class_norm = self._normalize_text(class_name)
+            if not class_norm or text_norm == class_norm:
+                continue
+            if not text_norm.startswith(class_norm):
+                continue
+            remainder = re.sub(
+                r"^[\s\-_/:\[\]\(\)]+",
+                "",
+                text_norm[len(class_norm) :],
+            ).strip()
+            token_match = re.match(r"([a-z0-9]+)\b", remainder)
+            if not token_match:
+                continue
+            raw_stream = token_match.group(1)
+            if self._is_non_stream_sheet_token(raw_stream):
+                continue
+            return class_name, self._match_known_stream_name(raw_stream, class_name)
+
+        match = re.match(
+            r"^\s*((?:grade\s+[a-z]+\s*\(\s*\d+\s*\)|grade\s*\d+|g\s*\d+|pp\s*[12]|p\s*[12]|preprimary\s*[12]))[\s\-_/]+([a-z0-9]+)\s*$",
+            text_norm,
+        )
+        if not match:
+            return "", ""
+        class_name = self._match_known_class_name(match.group(1))
+        raw_stream = match.group(2)
+        if not class_name or self._is_non_stream_sheet_token(raw_stream):
+            return "", ""
+        return class_name, self._match_known_stream_name(raw_stream, class_name)
+
     def _extract_class_from_text(self, text):
+        class_name, _stream_name = self._split_sheet_class_stream_label(text)
+        if class_name:
+            return class_name
+
         text_norm = self._normalize_text(text)
         if not text_norm:
             return ""
@@ -2762,37 +2860,64 @@ class SchoolReportApp:
         return ""
 
     def _extract_stream_from_text(self, text, class_name=""):
+        split_class, split_stream = self._split_sheet_class_stream_label(text)
+        if split_stream and (not class_name or split_class == class_name):
+            return split_stream
+
         text_norm = self._normalize_text(text)
         if not text_norm:
             return ""
 
-        ignored_tokens = {"overall", "summary", "report", "analysis"}
+        ignored_tokens = {
+            "overall",
+            "summary",
+            "report",
+            "analysis",
+            "assessment",
+            "end",
+            "term",
+            "endterm",
+        }
 
         if class_name:
             class_norm = self._normalize_text(class_name)
+            if text_norm == class_norm:
+                return ""
             if class_norm and text_norm.startswith(class_norm):
                 remainder = re.sub(
                     r"^[\s\-_/:\[\]\(\)]+",
                     "",
                     text_norm[len(class_norm) :],
                 ).strip()
+                while class_norm and remainder.startswith(class_norm):
+                    remainder = re.sub(
+                        r"^[\s\-_/:\[\]\(\)]+",
+                        "",
+                        remainder[len(class_norm) :],
+                    ).strip()
                 if remainder:
                     token_match = re.match(r"([a-z0-9]+)", remainder)
                     if token_match:
                         raw_stream = token_match.group(1)
-                        if raw_stream not in ignored_tokens:
+                        if (
+                            raw_stream not in ignored_tokens
+                            and not self._is_non_stream_sheet_token(raw_stream)
+                        ):
                             return (
                                 self._match_known_stream_name(raw_stream, class_name)
                                 or raw_stream.title()
                             )
 
         match = re.search(
-            r"(?:grade\s*\d+|grade\s+[a-z]+\s*\(\d+\)|g\s*\d+|pp\s*[12]|p\s*[12]|preprimary\s*[12])\s*[-_/ ]*([a-z0-9]+)\b",
+            r"(?:grade\s*\d+|grade\s+[a-z]+\s*\(\d+\)|g\s*\d+|pp\s*[12]|p\s*[12]|preprimary\s*[12])[\s\-_/]+([a-z0-9]+)\b",
             text_norm,
         )
         if match:
             raw_stream = match.group(1)
-            if raw_stream not in ignored_tokens:
+            if (
+                raw_stream not in ignored_tokens
+                and not self._is_non_stream_sheet_token(raw_stream)
+            ):
                 return (
                     self._match_known_stream_name(raw_stream, class_name)
                     or raw_stream.title()
@@ -2820,8 +2945,14 @@ class SchoolReportApp:
             flag in combined_norm
             for flag in ("overall report", "overall", "summary", "analysis")
         )
-        class_name = self._extract_class_from_text(combined_text)
+        class_name = (
+            self._extract_class_from_text(sheet_name)
+            or self._extract_class_from_text(header_text)
+            or self._extract_class_from_text(combined_text)
+        )
         stream_name = self._extract_stream_from_text(sheet_name, class_name)
+        if not stream_name:
+            stream_name = self._extract_stream_from_text(header_text, class_name)
 
         return {
             "class_name": class_name,
@@ -2844,6 +2975,12 @@ class SchoolReportApp:
         return db.get_next_class_admission_no(resolved_class)
 
     def _ensure_import_class_setup(self, class_name, stream_name=""):
+        embedded_class, embedded_stream = self._split_sheet_class_stream_label(class_name)
+        if embedded_class:
+            class_name = embedded_class
+            if not str(stream_name or "").strip():
+                stream_name = embedded_stream
+
         resolved_class = (
             self._match_known_class_name(class_name) or str(class_name or "").strip()
         )
@@ -2978,6 +3115,20 @@ class SchoolReportApp:
         classes = (
             self._get_subjects_for_class(class_name, TERMS[0]) if class_name else []
         )
+        if not classes and class_name:
+            level = self._get_level_for_class(class_name)
+            fallback_catalog = DEFAULT_SUBJECT_CATALOG.get(level, [])
+            if isinstance(fallback_catalog, dict):
+                fallback_entries = list(fallback_catalog.get("core", [])) + list(
+                    fallback_catalog.get("optional", [])
+                )
+            else:
+                fallback_entries = list(fallback_catalog)
+            classes = [
+                str(entry[1] or "").strip()
+                for entry in fallback_entries
+                if len(entry) > 1 and str(entry[1] or "").strip()
+            ]
         class_lookup = {self._normalize_key(subject): subject for subject in classes}
         raw_key = self._normalize_key(raw)
         if raw_key in class_lookup:
@@ -3032,6 +3183,7 @@ class SchoolReportApp:
                 "Kiswahili Activities",
                 "Kiswahili / KSL",
             ],
+            "int": ["Integrated Science"],
             "intsci": ["Integrated Science"],
             "integratedscience": ["Integrated Science"],
             "sci": ["Science & Technology", "Integrated Science"],
@@ -3048,14 +3200,26 @@ class SchoolReportApp:
                 "Visual Arts",
                 "Performing Arts",
             ],
+            "crea": [
+                "Creative Activities",
+                "Creative Arts",
+                "Movement & Creative Activities",
+            ],
             "creativearts": [
                 "Creative Arts",
                 "Creative Activities",
                 "Movement & Creative Activities",
             ],
+            "art": [
+                "Creative Arts",
+                "Creative Activities",
+                "Visual Arts",
+                "Performing Arts",
+            ],
             "carts": ["Creative Arts", "Creative Activities"],
             "ca": ["Creative Arts", "Visual Arts", "Performing Arts"],
             "casports": ["Sports & Physical Education"],
+            "agr": ["Agriculture"],
             "agri": ["Agriculture"],
             "agrinut": ["Agriculture"],
             "sst": ["Social Studies"],
@@ -3066,8 +3230,10 @@ class SchoolReportApp:
                 "Christian Religious Education",
                 "Christian Religious Education (CRE)",
             ],
+            "pts": ["Pre-Technical Studies"],
             "pretech": ["Pre-Technical Studies"],
             "pretechnicalstudies": ["Pre-Technical Studies"],
+            "fre": ["French", "Foreign Languages (French, German, Arabic)"],
             "french": ["French", "Foreign Languages (French, German, Arabic)"],
         }
 
@@ -3119,6 +3285,18 @@ class SchoolReportApp:
             "reg_no",
             "regno",
         }
+        stream_aliases = {
+            "stream",
+            "streams",
+            "stream name",
+            "stream_name",
+            "str",
+            "strm",
+            "stm",
+            "class stream",
+            "group",
+            "house",
+        }
         excluded = {
             "no",
             "no.",
@@ -3138,6 +3316,22 @@ class SchoolReportApp:
             "psn",
             "position",
             "level",
+            "class",
+            "class name",
+            "class_name",
+            "grade",
+            "stream",
+            "streams",
+            "stream name",
+            "stream_name",
+            "str",
+            "strm",
+            "stm",
+            "class stream",
+            "group",
+            "house",
+            "gender",
+            "sex",
         }
 
         best_match = None
@@ -3164,6 +3358,14 @@ class SchoolReportApp:
                 (idx + 1 for idx, value in enumerate(values) if value in id_aliases),
                 None,
             )
+            stream_col_idx = next(
+                (
+                    idx + 1
+                    for idx, value in enumerate(values)
+                    if value in stream_aliases
+                ),
+                None,
+            )
             subject_hits = 0
             for col_idx, cell in enumerate(raw_values, start=1):
                 if col_idx == name_col_idx:
@@ -3186,6 +3388,7 @@ class SchoolReportApp:
                         "row": row_idx,
                         "name_col": name_col_idx,
                         "id_col": id_col_idx,
+                        "stream_col": stream_col_idx,
                         "score": score,
                     }
 
@@ -3228,6 +3431,22 @@ class SchoolReportApp:
             "avg",
             "position",
             "psn",
+            "class",
+            "class name",
+            "class_name",
+            "grade",
+            "stream",
+            "streams",
+            "stream name",
+            "stream_name",
+            "str",
+            "strm",
+            "stm",
+            "class stream",
+            "group",
+            "house",
+            "gender",
+            "sex",
         }
 
         best_match = None
@@ -3283,6 +3502,7 @@ class SchoolReportApp:
         header_row = header_info["row"]
         learner_col_idx = header_info["name_col"]
         id_col_idx = header_info.get("id_col")
+        stream_col_idx = header_info.get("stream_col")
         stream_name = sheet_context.get("stream_name", "")
 
         excluded = {
@@ -3312,6 +3532,22 @@ class SchoolReportApp:
             "psn",
             "position",
             "level",
+            "class",
+            "class name",
+            "class_name",
+            "grade",
+            "stream",
+            "streams",
+            "stream name",
+            "stream_name",
+            "str",
+            "strm",
+            "stm",
+            "class stream",
+            "group",
+            "house",
+            "gender",
+            "sex",
         }
         header_values = [
             cell
@@ -3325,7 +3561,13 @@ class SchoolReportApp:
         subject_columns = []
         for col_idx, cell in enumerate(header_values, start=1):
             label = self._normalize_text(cell)
-            if col_idx == learner_col_idx or not label or label in excluded:
+            if (
+                col_idx == learner_col_idx
+                or col_idx == id_col_idx
+                or col_idx == stream_col_idx
+                or not label
+                or label in excluded
+            ):
                 continue
             mapped_subject = self._map_sheet_subject(cell, class_name)
             if mapped_subject:
@@ -3348,6 +3590,16 @@ class SchoolReportApp:
                 if id_col_idx and len(row) >= id_col_idx
                 else ""
             )
+            row_stream = (
+                str(row[stream_col_idx - 1] or "").strip()
+                if stream_col_idx and len(row) >= stream_col_idx
+                else ""
+            )
+            row_stream = (
+                self._match_known_stream_name(row_stream, class_name)
+                if row_stream
+                else stream_name
+            )
 
             marks = {}
             for col_idx, subject in subject_columns:
@@ -3361,7 +3613,12 @@ class SchoolReportApp:
 
             if marks:
                 students.append(
-                    {"name": learner, "admission_no": admission_no, "marks": marks}
+                    {
+                        "name": learner,
+                        "admission_no": admission_no,
+                        "stream_name": row_stream,
+                        "marks": marks,
+                    }
                 )
 
         if not students:
@@ -3374,25 +3631,35 @@ class SchoolReportApp:
             "students": students,
         }
 
-    def _open_progress_dialog(self, title, message, details="", allow_cancel=False):
-        dialog = tk.Toplevel(self.root)
-        dialog.title(title)
-        width, height = 720, 340
-        dialog.configure(bg=CONTENT_BG)
-        dialog.transient(self.root)
-        dialog.grab_set()
-        dialog.resizable(False, False)
-        dialog._cancel_requested = False
+    def _open_progress_dialog(
+        self, title, message, details="", allow_cancel=False, inline=False
+    ):
+        if inline:
+            self.clear_frame()
+            self._set_nav("Enter Marks")
+            self._page_header(title, "Live import progress")
+            dialog = tk.Frame(self.content_frame, bg=CONTENT_BG)
+            dialog.pack(fill="both", expand=True, padx=10, pady=(0, 10))
+        else:
+            dialog = tk.Toplevel(self.root)
+            dialog.title(title)
+            width, height = 720, 340
+            dialog.configure(bg=CONTENT_BG)
+            dialog.transient(self.root)
+            dialog.grab_set()
+            dialog.resizable(False, False)
 
-        self.root.update_idletasks()
-        x = self.root.winfo_rootx() + max(0, (self.root.winfo_width() - width) // 2)
-        y = self.root.winfo_rooty() + max(0, (self.root.winfo_height() - height) // 2)
-        dialog.geometry(f"{width}x{height}+{x}+{y}")
-        dialog.minsize(width, height)
+            self.root.update_idletasks()
+            x = self.root.winfo_rootx() + max(0, (self.root.winfo_width() - width) // 2)
+            y = self.root.winfo_rooty() + max(0, (self.root.winfo_height() - height) // 2)
+            dialog.geometry(f"{width}x{height}+{x}+{y}")
+            dialog.minsize(width, height)
+        dialog._cancel_requested = False
+        dialog._inline_progress = bool(inline)
 
         pr_bo, pr_bi = _card_colors("azure")
         outer = tk.Frame(dialog, bg=pr_bo)
-        outer.pack(fill="both", expand=True, padx=18, pady=18)
+        outer.pack(fill="both", expand=True, padx=18 if not inline else 0, pady=18 if not inline else 0)
         card = tk.Frame(outer, bg=pr_bi, padx=28, pady=26)
         card.pack(fill="both", expand=True, padx=1, pady=1)
 
@@ -3485,10 +3752,11 @@ class SchoolReportApp:
             )
             cancel_button.pack(side="right")
             dialog._progress_cancel_button = cancel_button
-            dialog.protocol(
-                "WM_DELETE_WINDOW", lambda: self._request_progress_cancel(dialog)
-            )
-        else:
+            if not inline:
+                dialog.protocol(
+                    "WM_DELETE_WINDOW", lambda: self._request_progress_cancel(dialog)
+                )
+        elif not inline:
             dialog.protocol("WM_DELETE_WINDOW", lambda: None)
 
         dialog.update_idletasks()
@@ -3540,10 +3808,11 @@ class SchoolReportApp:
             return
         if getattr(dialog, "_cancel_requested", False):
             return
+        parent = self.root if getattr(dialog, "_inline_progress", False) else dialog
         if not messagebox.askyesno(
             "Cancel Import",
             "Stop this import now?\n\nAny rows already imported before cancellation will remain saved.",
-            parent=dialog,
+            parent=parent,
         ):
             return
         dialog._cancel_requested = True
@@ -5279,7 +5548,7 @@ class SchoolReportApp:
             if selected_stream and selected_stream != "All Streams":
                 stream_students = [
                     s
-                    for s in db.get_students_by_class_and_stream(
+                    for s in self._get_students_by_class_stream(
                         class_name, selected_stream
                     )
                     if not self._is_summary_student_name(s.get("name"))
@@ -5718,7 +5987,7 @@ class SchoolReportApp:
             if stream_filter:
                 stream_students = [
                     s
-                    for s in db.get_students_by_class_and_stream(
+                    for s in self._get_students_by_class_stream(
                         class_name, stream_filter
                     )
                     if not self._is_summary_student_name(s.get("name"))
@@ -6222,7 +6491,11 @@ class SchoolReportApp:
             return
 
         if not db.get_all_classes():
-            self._ensure_default_class_catalog()
+            messagebox.showwarning(
+                "No Classes",
+                "Add classes manually or import them before starting sample setup.",
+            )
+            return
         self._ensure_default_subject_catalog()
 
         classes = db.get_all_classes()
@@ -6542,7 +6815,7 @@ class SchoolReportApp:
             subjects = set()
             students = [
                 s
-                for s in db.get_students_by_class_and_stream(class_name, stream_name)
+                for s in self._get_students_by_class_stream(class_name, stream_name)
                 if not _is_summary(s)
             ]
             for student in students:
@@ -6650,7 +6923,7 @@ class SchoolReportApp:
                     stream_name = stream.get("name", "")
                     stream_students = [
                         s
-                        for s in db.get_students_by_class_and_stream(
+                        for s in self._get_students_by_class_stream(
                             class_name, stream_name
                         )
                         if not _is_summary(s)
@@ -12511,7 +12784,7 @@ class SchoolReportApp:
         """Load students for a specific class"""
         rows = []
         if stream_name and stream_name != "All Streams":
-            students = db.get_students_by_class_and_stream(class_name, stream_name)
+            students = self._get_students_by_class_stream(class_name, stream_name)
         else:
             students = db.get_students_by_class(class_name)
         for s in students:
@@ -14550,7 +14823,7 @@ class SchoolReportApp:
         title,
         adm="",
         name="",
-        cls=CLASSES[0],
+        cls="",
         gender="Male",
         photo_path="",
         guardian_name="",
@@ -16098,7 +16371,7 @@ class SchoolReportApp:
                         stream_name = stream.get("name", "").strip()
                         if stream_name:
                             # Get student count for this stream
-                            stream_students = db.get_students_by_class_and_stream(
+                            stream_students = self._get_students_by_class_stream(
                                 class_name, stream_name
                             )
                             stream_count = len(
@@ -16480,7 +16753,7 @@ class SchoolReportApp:
         if stream:
             students = [
                 s
-                for s in db.get_students_by_class_and_stream(cls, stream)
+                for s in self._get_students_by_class_stream(cls, stream)
                 if not self._is_summary_student_name(s.get("name"))
             ]
         else:
@@ -16788,15 +17061,376 @@ class SchoolReportApp:
 
     # ── Marks import / template helpers ──────────────────────────────────────
 
+    def _number_word(self, value):
+        words = {
+            1: "ONE",
+            2: "TWO",
+            3: "THREE",
+            4: "FOUR",
+            5: "FIVE",
+            6: "SIX",
+            7: "SEVEN",
+            8: "EIGHT",
+            9: "NINE",
+            10: "TEN",
+        }
+        try:
+            return words.get(int(value), str(value).upper())
+        except (TypeError, ValueError):
+            return str(value or "").upper()
+
+    def _term_word(self, term):
+        text = str(term or "").strip()
+        term_lookup = {"one": 1, "two": 2, "three": 3}
+        return self._number_word(term_lookup.get(text.lower(), text or "One"))
+
+    def _stream_display_name(self, stream_name):
+        stream_text = str(stream_name or "").strip()
+        lookup = {
+            "g": "GREEN",
+            "green": "GREEN",
+            "y": "YELLOW",
+            "yellow": "YELLOW",
+            "b": "BLUE",
+            "blue": "BLUE",
+            "r": "RED",
+            "red": "RED",
+        }
+        return lookup.get(self._normalize_key(stream_text), stream_text.upper())
+
+    def _assessment_class_title(self, class_name, stream_name, term, year):
+        cls = self._match_known_class_name(class_name) or str(class_name or "").strip()
+        stream = self._stream_display_name(stream_name)
+        term_word = self._term_word(term)
+        year_text = str(year or datetime.now().year)
+
+        pp_match = re.search(r"\bpp\s*([12])\b", self._normalize_key(cls))
+        if pp_match:
+            title = f"PRE-PRIMARY {self._number_word(pp_match.group(1))}"
+            if pp_match.group(1) == "2":
+                title = f"{title} ({pp_match.group(1)})"
+        else:
+            grade_match = re.search(r"(\d+)", cls)
+            if grade_match:
+                grade_no = int(grade_match.group(1))
+                title = f"GRADE {self._number_word(grade_no)}"
+                title += f"({grade_no})" if grade_no >= 4 else f" ({grade_no})"
+            else:
+                title = cls.upper()
+
+        if stream:
+            title = f"{title} {stream}"
+        return f"{title} END-TERM {term_word} ASSESSMENT REPORT {year_text}"
+
+    def _assessment_subject_headers_for_class(self, class_name, term, exam_type):
+        reference_headers = self._reference_assessment_subject_headers(class_name)
+        if reference_headers:
+            return reference_headers
+
+        subjects = self._get_subject_pool_for_class(class_name)
+        if not subjects:
+            subjects = self._get_subjects_for_selected_class(class_name, term, exam_type)
+        if not subjects:
+            level = self._get_level_for_class(class_name)
+            fallback_catalog = DEFAULT_SUBJECT_CATALOG.get(level, [])
+            if isinstance(fallback_catalog, dict):
+                entries = list(fallback_catalog.get("core", [])) + list(
+                    fallback_catalog.get("optional", [])
+                )
+            else:
+                entries = list(fallback_catalog)
+            fallback_headers = []
+            seen_codes = set()
+            for entry in entries:
+                if len(entry) < 2:
+                    continue
+                code = str(entry[0] or "").strip().upper()
+                name = str(entry[1] or "").strip()
+                if code and code not in seen_codes:
+                    fallback_headers.append((name, code))
+                    seen_codes.add(code)
+            if fallback_headers:
+                return fallback_headers
+        headers = []
+        seen = set()
+        for subject in subjects:
+            meta = self._get_subject_meta(subject, class_name)
+            header = str(meta.get("code", "") or "").strip().upper()
+            if not header:
+                header = str(short_subject_name(subject) or subject).replace("\n", " ")
+                header = re.sub(r"\s+", " ", header).strip().upper()
+            if header and header not in seen:
+                headers.append((subject, header))
+                seen.add(header)
+        return headers
+
+    def _reference_assessment_subject_headers(self, class_name):
+        cls_key = self._normalize_key(class_name)
+        code_subjects = []
+
+        if cls_key in {"pp1", "pp2"}:
+            code_subjects = [
+                ("LANG", "Language Activities"),
+                ("MATH", "Mathematical Activities"),
+                ("ENVI", "Environmental Activities"),
+                ("CRE", "Religious Activities"),
+                ("CREA", "Creative Activities"),
+            ]
+        else:
+            grade_match = re.search(r"grade(\d+)", cls_key)
+            grade_no = int(grade_match.group(1)) if grade_match else None
+            if grade_no == 1:
+                code_subjects = [
+                    ("LANG", "Language Activities"),
+                    ("MAT", "Mathematical Activities"),
+                    ("KIS", "Kiswahili Activities"),
+                    ("ENVI", "Environmental Activities"),
+                    ("CRE", "Religious Education Activities"),
+                    ("ART", "Creative Activities"),
+                    ("FRE", "French"),
+                ]
+            elif grade_no in (2, 3):
+                code_subjects = [
+                    ("LANG", "Language Activities"),
+                    ("MAT", "Mathematical Activities"),
+                    ("KIS", "Kiswahili Activities"),
+                    ("ENVI", "Environmental Activities"),
+                    ("CRE", "Religious Education Activities"),
+                    ("ART", "Creative Activities"),
+                    ("FRE", "French"),
+                ]
+            elif grade_no in (4, 5, 6):
+                code_subjects = [
+                    ("ENG", "English"),
+                    ("MAT", "Mathematics"),
+                    ("KIS", "Kiswahili / KSL"),
+                    ("SCI", "Science & Technology"),
+                    ("AGR", "Agriculture"),
+                    ("SST", "Social Studies"),
+                    ("CRE", "Christian Religious Education"),
+                    ("ART", "Creative Arts"),
+                    ("FRE", "French"),
+                ]
+            elif grade_no == 7:
+                code_subjects = [
+                    ("MAT", "Mathematics"),
+                    ("ENG", "English"),
+                    ("KIS", "Kiswahili / KSL"),
+                    ("INT", "Integrated Science"),
+                    ("AGR", "Agriculture"),
+                    ("SST", "Social Studies"),
+                    ("CRE", "Christian Religious Education"),
+                    ("PTS", "Pre-Technical Studies"),
+                    ("C/A", "Creative Arts & Sports"),
+                    ("FRENCH", "French"),
+                ]
+            elif grade_no == 8:
+                code_subjects = [
+                    ("MAT", "Mathematics"),
+                    ("ENG", "English"),
+                    ("KIS", "Kiswahili / KSL"),
+                    ("INT", "Integrated Science"),
+                    ("AGR", "Agriculture"),
+                    ("SST", "Social Studies"),
+                    ("CRE", "Christian Religious Education"),
+                    ("ART", "Creative Arts"),
+                    ("PTS", "Pre-Technical Studies"),
+                    ("FRE", "French"),
+                ]
+            elif grade_no == 9:
+                code_subjects = [
+                    ("MAT", "Mathematics"),
+                    ("ENG", "English"),
+                    ("KIS", "Kiswahili / KSL"),
+                    ("INT", "Integrated Science"),
+                    ("AGR", "Agriculture"),
+                    ("SST", "Social Studies"),
+                    ("CRE", "Christian Religious Education"),
+                    ("ART", "Creative Arts"),
+                    ("PTS", "Pre-Technical Studies"),
+                ]
+
+        return [(subject, code) for code, subject in code_subjects]
+
+    def _write_assessment_report_sheet(
+        self,
+        workbook,
+        sheet_title,
+        class_name,
+        stream_name,
+        students,
+        subjects,
+        term,
+        exam_type,
+        year,
+        include_existing_marks=False,
+    ):
+        from openpyxl.styles import PatternFill, Font, Alignment, Border, Side
+        from openpyxl.utils import get_column_letter
+
+        sheet = workbook.create_sheet(
+            title=self._safe_excel_sheet_name(sheet_title, class_name)
+        )
+        sheet.sheet_view.showGridLines = False
+
+        subject_count = max(1, len(subjects))
+        first_subject_col = 3
+        total_col = first_subject_col + (subject_count * 2)
+        avg_col = total_col + 1
+        grade_col = avg_col + 1
+        psn_col = grade_col + 1
+        last_col = psn_col
+        last_row = max(56, 5 + max(len(students), 30))
+
+        green_fill = PatternFill("solid", fgColor="00B050")
+        light_green_fill = PatternFill("solid", fgColor="E2F0D9")
+        white_fill = PatternFill("solid", fgColor="FFFFFF")
+        yellow_fill = PatternFill("solid", fgColor="FFF2CC")
+        header_font = Font(bold=True, color="000000", name="Calibri", size=11)
+        title_font = Font(bold=True, color="000000", name="Calibri", size=13)
+        body_font = Font(name="Calibri", size=10)
+        center = Alignment(horizontal="center", vertical="center")
+        left = Alignment(horizontal="left", vertical="center")
+        thin = Side(style="thin", color="000000")
+        border = Border(left=thin, right=thin, top=thin, bottom=thin)
+
+        for row_idx in range(1, 4):
+            sheet.merge_cells(
+                start_row=row_idx, start_column=1, end_row=row_idx, end_column=last_col
+            )
+            cell = sheet.cell(row=row_idx, column=1)
+            cell.fill = green_fill
+            cell.font = title_font
+            cell.alignment = center
+            cell.border = border
+
+        school_title = (
+            SCHOOL_PROFILE.get("school_app_title")
+            or SCHOOL_PROFILE.get("school_name")
+            or DEFAULT_SCHOOL_PROFILE["school_app_title"]
+        )
+        sheet.cell(row=1, column=1, value=str(school_title).upper())
+        sheet.cell(
+            row=2,
+            column=1,
+            value=self._assessment_class_title(class_name, stream_name, term, year),
+        )
+        sheet.cell(row=3, column=1, value=str(exam_type or "END-TERM ASSESSMENT").upper())
+
+        sheet.cell(row=4, column=1, value="NO.")
+        sheet.cell(row=4, column=2, value="NAME")
+        sheet.cell(row=5, column=1, value="")
+        sheet.cell(row=5, column=2, value="")
+
+        score_columns = []
+        for index, (_subject, header) in enumerate(subjects, start=0):
+            score_col = first_subject_col + (index * 2)
+            level_col = score_col + 1
+            score_columns.append(score_col)
+            sheet.cell(row=4, column=score_col, value=header)
+            sheet.cell(row=5, column=score_col, value=100)
+            sheet.cell(row=5, column=level_col, value="LEVEL")
+
+        sheet.cell(row=4, column=total_col, value="TOTAL")
+        sheet.cell(row=4, column=avg_col, value="AVERAGE")
+        sheet.cell(row=4, column=grade_col, value="GRADE")
+        sheet.cell(row=4, column=psn_col, value="PSN")
+        sheet.cell(row=5, column=total_col, value=subject_count * 100)
+        sheet.cell(row=5, column=avg_col, value=1)
+
+        for row_idx in range(4, last_row + 1):
+            row_fill = light_green_fill if row_idx % 2 == 0 else white_fill
+            for col_idx in range(1, last_col + 1):
+                cell = sheet.cell(row=row_idx, column=col_idx)
+                cell.border = border
+                cell.font = header_font if row_idx in (4, 5) else body_font
+                cell.alignment = left if col_idx == 2 else center
+                cell.fill = green_fill if row_idx in (4, 5) else row_fill
+        for col_idx in (total_col, avg_col, grade_col, psn_col):
+            sheet.cell(row=4, column=col_idx).fill = yellow_fill
+            sheet.cell(row=5, column=col_idx).fill = yellow_fill
+
+        data_start = 6
+        data_end = max(data_start, data_start + len(students) - 1)
+        for row_offset, student in enumerate(students, start=0):
+            row_idx = data_start + row_offset
+            sheet.cell(row=row_idx, column=1, value=row_offset + 1)
+            sheet.cell(row=row_idx, column=2, value=str(student.get("name", "")).upper())
+            existing = (
+                db.get_student_marks(student["id"], term, exam_type, year)
+                if include_existing_marks and student.get("id")
+                else {}
+            )
+            for index, (subject, _header) in enumerate(subjects, start=0):
+                score_col = first_subject_col + (index * 2)
+                level_col = score_col + 1
+                value = existing.get(subject, "")
+                sheet.cell(row=row_idx, column=score_col, value=value)
+                score_letter = get_column_letter(score_col)
+                sheet.cell(
+                    row=row_idx,
+                    column=level_col,
+                    value=(
+                        f'=IF({score_letter}{row_idx}>=90,"EE",'
+                        f'IF({score_letter}{row_idx}>=70,"ME",'
+                        f'IF({score_letter}{row_idx}>=50,"AE","BE")))'
+                    ),
+                )
+            if score_columns:
+                first_score = get_column_letter(score_columns[0])
+                last_score = get_column_letter(score_columns[-1])
+                total_letter = get_column_letter(total_col)
+                avg_letter = get_column_letter(avg_col)
+                sheet.cell(
+                    row=row_idx,
+                    column=total_col,
+                    value=f"=SUM({first_score}{row_idx}:{last_score}{row_idx})",
+                )
+                sheet.cell(
+                    row=row_idx,
+                    column=avg_col,
+                    value=f"={total_letter}{row_idx}/{subject_count}",
+                )
+                sheet.cell(
+                    row=row_idx,
+                    column=grade_col,
+                    value=(
+                        f'=IF({avg_letter}{row_idx}>=90,"EE",'
+                        f'IF({avg_letter}{row_idx}>=70,"ME",'
+                        f'IF({avg_letter}{row_idx}>=50,"AE","BE")))'
+                    ),
+                )
+                sheet.cell(
+                    row=row_idx,
+                    column=psn_col,
+                    value=f"=RANK({avg_letter}{row_idx},${avg_letter}${data_start}:${avg_letter}${data_end},0)",
+                )
+
+        sheet.column_dimensions["A"].width = 7
+        sheet.column_dimensions["B"].width = 28
+        for col_idx in range(3, last_col + 1):
+            sheet.column_dimensions[get_column_letter(col_idx)].width = (
+                11 if col_idx in score_columns else 9
+            )
+        sheet.row_dimensions[1].height = 22
+        sheet.row_dimensions[2].height = 22
+        sheet.row_dimensions[3].height = 20
+        sheet.freeze_panes = "C6"
+        sheet.auto_filter.ref = f"A4:{get_column_letter(last_col)}{last_row}"
+        return sheet
+
     def download_marks_template(self):
-        """Export a clean, colorful marks template (Student + subjects)."""
+        """Export a marks template in the imported assessment-report structure."""
         cls = self.marks_class_cb.get()
         term = self.marks_term_cb.get()
         exam_type = self.marks_exam_cb.get() or DEFAULT_EXAM_TYPE
-        subjects = self._get_subjects_for_selected_class(cls, term, exam_type)
-        if not subjects:
-            subjects = self._get_subject_pool_for_class(cls)
-        students = db.get_students_by_class(cls)
+        selected_stream = self._get_selected_marks_stream()
+        subjects = self._assessment_subject_headers_for_class(cls, term, exam_type)
+        students = (
+            self._get_students_by_class_stream(cls, selected_stream)
+            if selected_stream
+            else db.get_students_by_class(cls)
+        )
 
         year = self.marks_year_cb.get() if hasattr(self, "marks_year_cb") else str(datetime.now().year)
         file_path = filedialog.asksaveasfilename(
@@ -16810,253 +17444,60 @@ class SchoolReportApp:
 
         try:
             import openpyxl
-            from openpyxl.styles import PatternFill, Font, Alignment, Border, Side
-            from openpyxl.utils import get_column_letter
 
             wb = openpyxl.Workbook()
-            ws = wb.active
-            ws.title = cls.upper().replace(" ", "_")
-            ws.sheet_view.showGridLines = False
-
-            # Header theme inspired by your Enter Marks table
-            base_fill = PatternFill(
-                "solid", fgColor="6F7C4A"
-            )  # olive for student column
-            data_fill = PatternFill("solid", fgColor="F8FAFC")
-            zebra_fill = PatternFill("solid", fgColor="EEF3EF")
-            meta_fill = PatternFill("solid", fgColor="EEF3EF")
-            hdr_font = Font(bold=True, color="FFFFFF", name="Calibri", size=11)
-            data_font = Font(name="Calibri", size=10)
-            ctr = Alignment(horizontal="center", vertical="center")
-            left = Alignment(horizontal="left", vertical="center")
-            thin = Side(style="thin", color="000000")
-            border = Border(left=thin, right=thin, top=thin, bottom=thin)
-
-            # Meta row (for human readability only)
-            last_col = 2 + len(subjects)
-            ws.merge_cells(
-                start_row=1, start_column=1, end_row=1, end_column=max(2, last_col)
+            wb.remove(wb.active)
+            sheet_title = f"{cls} {selected_stream}".strip()
+            self._write_assessment_report_sheet(
+                wb,
+                sheet_title,
+                cls,
+                selected_stream,
+                students,
+                subjects,
+                term,
+                exam_type,
+                year,
+                include_existing_marks=True,
             )
-            meta = ws.cell(
-                row=1,
-                column=1,
-                value=f"{cls} | Year {year} | Term {term} | {exam_type} | Fill marks 0-100 (blanks are allowed)",
-            )
-            meta.fill = meta_fill
-            meta.font = Font(bold=True, color="2F3B1A", name="Calibri", size=10)
-            meta.alignment = left
-            meta.border = border
-
-            # Row 2 headers: optional admission_no + student + subjects
-            ws.cell(row=2, column=1, value="admission_no").fill = base_fill
-            ws.cell(row=2, column=1).font = hdr_font
-            ws.cell(row=2, column=1).alignment = ctr
-            ws.cell(row=2, column=1).border = border
-
-            ws.cell(row=2, column=2, value="Student").fill = base_fill
-            ws.cell(row=2, column=2).font = hdr_font
-            ws.cell(row=2, column=2).alignment = left
-            ws.cell(row=2, column=2).border = border
-
-            subject_palette = [
-                "F57C00",  # orange
-                "E65100",  # deep orange
-                "D81B60",  # pink
-                "6D4C41",  # brown
-                "FB8C00",  # amber
-                "8E24AA",  # purple
-                "3949AB",  # indigo
-                "FF8F00",  # amber dark
-                "9E9D24",  # olive
-                "2E7D32",  # green
-                "1E88E5",  # blue
-                "C62828",  # red
-            ]
-
-            for i, subject in enumerate(subjects, start=3):
-                fill = PatternFill(
-                    "solid", fgColor=subject_palette[(i - 3) % len(subject_palette)]
-                )
-                cell = ws.cell(row=2, column=i, value=str(subject).strip().upper())
-                cell.fill = fill
-                cell.font = hdr_font
-                cell.alignment = ctr
-                cell.border = border
-
-            if not subjects:
-                sample_headers = ["English", "Mathematics", "Kiswahili"]
-                for i, subject in enumerate(sample_headers, start=3):
-                    fill = PatternFill(
-                        "solid", fgColor=subject_palette[(i - 3) % len(subject_palette)]
-                    )
-                    cell = ws.cell(row=2, column=i, value=subject.upper())
-                    cell.fill = fill
-                    cell.font = hdr_font
-                    cell.alignment = ctr
-                    cell.border = border
-                subjects = sample_headers
-                last_col = 2 + len(subjects)
-
-            # Data rows
-            start_row = 3
-            for row_offset, student in enumerate(students):
-                ri = start_row + row_offset
-                existing = db.get_student_marks(student["id"], term, exam_type, year)
-                row_fill = zebra_fill if row_offset % 2 else data_fill
-
-                adm = (student.get("admission_no") or "").strip()
-                ws.cell(row=ri, column=1, value=adm)
-                ws.cell(row=ri, column=2, value=student.get("name", ""))
-
-                for col_idx in range(1, last_col + 1):
-                    cell = ws.cell(row=ri, column=col_idx)
-                    cell.fill = row_fill
-                    cell.font = data_font
-                    cell.border = border
-                    cell.alignment = left if col_idx == 2 else ctr
-
-                for col_idx, subject in enumerate(subjects, start=3):
-                    mark_val = existing.get(subject, "")
-                    ws.cell(
-                        row=ri, column=col_idx, value=mark_val if mark_val != "" else ""
-                    )
-                    ws.cell(row=ri, column=col_idx).alignment = ctr
-
-            ws.column_dimensions["A"].width = 18
-            ws.column_dimensions["B"].width = 34
-            for col_idx in range(3, last_col + 1):
-                ws.column_dimensions[get_column_letter(col_idx)].width = 11
-            ws.freeze_panes = "C3"
 
             wb.save(file_path)
             messagebox.showinfo(
                 "Template Saved",
                 f"Template saved to:\n{file_path}\n\n"
-                "Format: admission_no (optional), Student, then subject columns.\n"
-                "You can leave any mark cell blank and import will skip blanks.",
+                "Format matches the assessment report workbook: NO., NAME, subject columns, totals and averages.\n"
+                "Fill the subject mark columns; formulas and summary columns are ignored during import.",
             )
         except Exception as exc:
             messagebox.showerror("Error", f"Could not create template:\n{exc}")
 
     def _write_whole_school_results_template(self, file_path):
         import openpyxl
-        from openpyxl.styles import PatternFill, Font, Alignment, Border, Side
-        from openpyxl.utils import get_column_letter
 
         workbook = openpyxl.Workbook()
-        instructions_sheet = workbook.active
-        instructions_sheet.title = "SUMMARY - Instructions"
-        instructions_sheet.sheet_view.showGridLines = False
+        workbook.remove(workbook.active)
 
-        olive_fill = PatternFill("solid", fgColor="6F7C4A")
-        soft_fill = PatternFill("solid", fgColor="EEF3EF")
-        header_fill = PatternFill("solid", fgColor="D9E4D0")
-        white_fill = PatternFill("solid", fgColor="FFFFFF")
-        white_font = Font(bold=True, color="FFFFFF", name="Calibri", size=12)
-        dark_font = Font(bold=True, color="2F3B1A", name="Calibri", size=11)
-        normal_font = Font(name="Calibri", size=10)
-        center = Alignment(horizontal="center", vertical="center", wrap_text=True)
-        left = Alignment(horizontal="left", vertical="center", wrap_text=True)
-        thin = Side(style="thin", color="AAB58A")
-        border = Border(left=thin, right=thin, top=thin, bottom=thin)
-        subject_palette = [
-            "F57C00",
-            "E65100",
-            "D81B60",
-            "6D4C41",
-            "FB8C00",
-            "8E24AA",
-            "3949AB",
-            "FF8F00",
-            "9E9D24",
-            "2E7D32",
-            "1E88E5",
-            "C62828",
-        ]
-
-        instructions_sheet.merge_cells("A1:H1")
-        title_cell = instructions_sheet["A1"]
-        title_cell.value = "WHOLE SCHOOL RESULTS IMPORT TEMPLATE"
-        title_cell.fill = olive_fill
-        title_cell.font = Font(bold=True, color="FFFFFF", name="Calibri", size=14)
-        title_cell.alignment = center
-
-        instruction_rows = [
-            (
-                "What this file is for",
-                'Use this workbook with the "Import Whole School Results" button. Each class is on its own sheet.',
-            ),
-            (
-                "Term and exam",
-                "Choose the correct term and exam type in the app before importing this workbook.",
-            ),
-            (
-                "Sheet names",
-                "Keep class sheet names as they are: PP1, PP2, Grade 1 ... Grade 9.",
-            ),
-            (
-                "Required columns",
-                "Keep the header row with No, Admission No, Learner Name, then subject columns.",
-            ),
-            (
-                "Marks format",
-                "Enter marks from 0 to 100. Leave cells blank where a learner has no mark.",
-            ),
-            (
-                "Streams",
-                'If you use streams, you may rename a sheet like "Grade 4 Blue". The class will still be detected.',
-            ),
-            (
-                "Summary sheets",
-                "Any sheet with words like SUMMARY or ANALYSIS is skipped automatically during import.",
-            ),
-            (
-                "Important",
-                "Do not delete the Learner Name column. The importer uses it to identify each learner row.",
-            ),
-        ]
-
-        for row_idx, (label, text) in enumerate(instruction_rows, start=3):
-            for col_idx in range(1, 9):
-                cell = instructions_sheet.cell(row=row_idx, column=col_idx)
-                cell.border = border
-                cell.alignment = left
-                cell.font = normal_font
-            label_cell = instructions_sheet.cell(row=row_idx, column=1, value=label)
-            label_cell.fill = header_fill
-            label_cell.font = dark_font
-            text_cell = instructions_sheet.cell(row=row_idx, column=2, value=text)
-            text_cell.font = normal_font
-
-        note_row = 14
-        instructions_sheet.merge_cells(
-            start_row=note_row, start_column=1, end_row=note_row, end_column=8
+        year = (
+            self.marks_year_cb.get()
+            if hasattr(self, "marks_year_cb")
+            else str(datetime.now().year)
         )
-        note_cell = instructions_sheet.cell(
-            row=note_row,
-            column=1,
-            value="Class sheets below are ready for direct data entry. Fill learner rows only; blank rows are safe.",
+        term = (
+            self.marks_term_cb.get()
+            if hasattr(self, "marks_term_cb")
+            else "One"
         )
-        note_cell.fill = soft_fill
-        note_cell.font = dark_font
-        note_cell.alignment = left
-        note_cell.border = border
-
-        for col, width in {
-            "A": 24,
-            "B": 70,
-            "C": 14,
-            "D": 14,
-            "E": 14,
-            "F": 14,
-            "G": 14,
-            "H": 14,
-        }.items():
-            instructions_sheet.column_dimensions[col].width = width
+        exam_type = (
+            self.marks_exam_cb.get()
+            if hasattr(self, "marks_exam_cb")
+            else DEFAULT_EXAM_TYPE
+        ) or DEFAULT_EXAM_TYPE
 
         for level_name, class_names in CLASSES_BY_LEVEL.items():
             for class_name in class_names:
-                subjects = self._get_whole_school_template_subject_headers(class_name)
+                subjects = self._assessment_subject_headers_for_class(
+                    class_name, term, exam_type
+                )
                 stream_names = self._get_known_stream_names(class_name)
                 sheet_targets = (
                     [(class_name, stream_name) for stream_name in stream_names]
@@ -17070,81 +17511,23 @@ class SchoolReportApp:
                         if stream_name
                         else class_name
                     )
-                    sheet = workbook.create_sheet(
-                        title=self._safe_excel_sheet_name(sheet_title_text, class_name)
-                    )
-                    sheet.sheet_view.showGridLines = False
-                    headers = ["No", "Admission No", "Learner Name"] + list(subjects)
-                    total_cols = len(headers)
-
-                    sheet.merge_cells(
-                        start_row=1, start_column=1, end_row=1, end_column=total_cols
-                    )
-                    sheet_title = sheet.cell(
-                        row=1,
-                        column=1,
-                        value=f"{sheet_title_text} | Whole School Import Template",
-                    )
-                    sheet_title.fill = olive_fill
-                    sheet_title.font = Font(
-                        bold=True, color="FFFFFF", name="Calibri", size=13
-                    )
-                    sheet_title.alignment = center
-                    sheet_title.border = border
-
-                    sheet.merge_cells(
-                        start_row=2, start_column=1, end_row=2, end_column=total_cols
-                    )
-                    subtitle_text = (
-                        f"Fill learner marks below for stream {stream_name}. Keep the header row unchanged. Blanks are allowed."
+                    students = (
+                        self._get_students_by_class_stream(class_name, stream_name)
                         if stream_name
-                        else "Fill learner marks below. Keep the header row unchanged. Blanks are allowed."
+                        else db.get_students_by_class(class_name)
                     )
-                    subtitle = sheet.cell(
-                        row=2,
-                        column=1,
-                        value=subtitle_text,
+                    self._write_assessment_report_sheet(
+                        workbook,
+                        sheet_title_text,
+                        class_name,
+                        stream_name,
+                        students,
+                        subjects,
+                        term,
+                        exam_type,
+                        year,
+                        include_existing_marks=False,
                     )
-                    subtitle.fill = soft_fill
-                    subtitle.font = Font(
-                        bold=True, color="2F3B1A", name="Calibri", size=10
-                    )
-                    subtitle.alignment = left
-                    subtitle.border = border
-
-                    for col_idx, header in enumerate(headers, start=1):
-                        cell = sheet.cell(row=4, column=col_idx, value=header)
-                        cell.border = border
-                        cell.alignment = left if col_idx == 3 else center
-                        if col_idx <= 3:
-                            cell.fill = olive_fill
-                            cell.font = white_font
-                        else:
-                            cell.fill = PatternFill(
-                                "solid",
-                                fgColor=subject_palette[
-                                    (col_idx - 4) % len(subject_palette)
-                                ],
-                            )
-                            cell.font = white_font
-
-                    for row_idx in range(5, 45):
-                        row_fill = soft_fill if row_idx % 2 == 0 else white_fill
-                        for col_idx in range(1, total_cols + 1):
-                            cell = sheet.cell(row=row_idx, column=col_idx)
-                            cell.fill = row_fill
-                            cell.font = normal_font
-                            cell.border = border
-                            cell.alignment = left if col_idx == 3 else center
-                        sheet.cell(row=row_idx, column=1, value=row_idx - 4)
-
-                    sheet.column_dimensions["A"].width = 8
-                    sheet.column_dimensions["B"].width = 16
-                    sheet.column_dimensions["C"].width = 30
-                    for col_idx in range(4, total_cols + 1):
-                        sheet.column_dimensions[get_column_letter(col_idx)].width = 15
-                    sheet.freeze_panes = "D5"
-                    sheet.auto_filter.ref = f"A4:{get_column_letter(total_cols)}44"
 
         workbook.save(file_path)
 
@@ -17188,123 +17571,238 @@ class SchoolReportApp:
             )
 
     def import_whole_school_marks_excel(self):
-        """Import a multi-sheet workbook that contains results for many classes."""
-        dlg = tk.Toplevel(self.root)
-        dlg.title("Import Whole School Results")
-        dlg.geometry("430x250")
-        dlg.configure(bg=CONTENT_BG)
-        dlg.transient(self.root)
-        dlg.grab_set()
-        dlg.resizable(False, False)
-
-        card_bo, card_bi = _card_colors("mint")
-        outer = tk.Frame(dlg, bg=card_bo)
-        outer.place(relx=0.5, rely=0.5, anchor="center")
-        card = tk.Frame(outer, bg=card_bi, padx=24, pady=20)
-        card.pack(padx=1, pady=1)
-
-        tk.Label(
-            card,
-            text="Import Whole School Results",
-            bg=card_bi,
-            fg=TEXT_PRIMARY,
-            font=(FF, 12, "bold"),
-        ).pack(anchor="w")
-        tk.Label(
-            card,
-            text="Choose the term and exam, then import a workbook where each class has its own sheet. Summary sheets are skipped automatically.",
-            bg=card_bi,
-            fg=TEXT_SECONDARY,
-            font=(FF, 9),
-            justify="left",
-            wraplength=360,
-        ).pack(anchor="w", pady=(6, 14))
+        """Show an in-app page for importing a multi-sheet results workbook."""
+        self.clear_frame()
+        self._set_nav("Enter Marks")
+        self._page_header(
+            "Import Whole School Results",
+            "Choose the exam context, then import a workbook with one sheet per class or stream.",
+        )
 
         term_var = tk.StringVar(value=TERMS[0])
         exam_var = tk.StringVar(value=DEFAULT_EXAM_TYPE)
         year_var = tk.StringVar(value=str(datetime.now().year))
-
-        row = tk.Frame(card, bg=card_bi)
-        row.pack(fill="x", pady=(0, 10))
-        tk.Label(row, text="Term:", bg=card_bi, fg=TEXT_SECONDARY, font=(FF, 10)).pack(
-            side="left"
+        selected_file_var = tk.StringVar(value="No workbook selected")
+        status_var = tk.StringVar(
+            value="Sheet names like Grade 4 G and Grade 4 Y will import into Grade 4 streams G and Y."
         )
-        ttk.Combobox(
-            row,
-            textvariable=term_var,
-            values=TERMS,
-            state="readonly",
+
+        shell = tk.Frame(self.content_frame, bg=CONTENT_BG)
+        shell.pack(fill="both", expand=True, padx=10, pady=(0, 10))
+        shell.grid_columnconfigure(0, weight=1)
+        shell.grid_columnconfigure(1, weight=1)
+        shell.grid_rowconfigure(0, weight=1)
+
+        form_border, form_bg = _card_colors("mint")
+        form_outer = tk.Frame(shell, bg=form_border, padx=2, pady=2)
+        form_outer.grid(row=0, column=0, sticky="nsew", padx=(0, 8), pady=4)
+        form = tk.Frame(form_outer, bg=form_bg, padx=22, pady=20)
+        form.pack(fill="both", expand=True)
+
+        tk.Label(
+            form,
+            text="Workbook Details",
+            bg=form_bg,
+            fg=TEXT_PRIMARY,
+            font=(FF, 16, "bold"),
+        ).pack(anchor="w")
+        tk.Label(
+            form,
+            text="These settings are applied to every imported mark in the workbook.",
+            bg=form_bg,
+            fg=TEXT_SECONDARY,
+            font=(FF, 10),
+            wraplength=520,
+            justify="left",
+        ).pack(anchor="w", pady=(4, 18))
+
+        fields = tk.Frame(form, bg=form_bg)
+        fields.pack(fill="x")
+        for col in range(3):
+            fields.grid_columnconfigure(col, weight=1)
+
+        def field(parent, col, label, variable, values, width=16):
+            box = tk.Frame(parent, bg=form_bg)
+            box.grid(row=0, column=col, sticky="ew", padx=(0 if col == 0 else 10, 0))
+            tk.Label(
+                box,
+                text=label,
+                bg=form_bg,
+                fg=TEXT_SECONDARY,
+                font=(FF, 9, "bold"),
+            ).pack(anchor="w", pady=(0, 4))
+            combo = ttk.Combobox(
+                box,
+                textvariable=variable,
+                values=values,
+                state="readonly",
+                width=width,
+                style="App.TCombobox",
+            )
+            combo.pack(fill="x", ipady=4)
+            return combo
+
+        field(fields, 0, "Term", term_var, TERMS)
+        field(fields, 1, "Exam", exam_var, EXAM_TYPES or [DEFAULT_EXAM_TYPE])
+        field(
+            fields,
+            2,
+            "Year",
+            year_var,
+            [str(datetime.now().year - i) for i in range(0, 6)],
             width=12,
-            style="App.TCombobox",
-        ).pack(side="left", padx=(8, 14), ipady=3)
-        tk.Label(row, text="Exam:", bg=card_bi, fg=TEXT_SECONDARY, font=(FF, 10)).pack(
-            side="left"
         )
-        ttk.Combobox(
-            row,
-            textvariable=exam_var,
-            values=EXAM_TYPES,
-            state="readonly",
-            width=12,
-            style="App.TCombobox",
-        ).pack(side="left", padx=(8, 14), ipady=3)
-        tk.Label(row, text="Year:", bg=card_bi, fg=TEXT_SECONDARY, font=(FF, 10)).pack(
-            side="left"
-        )
-        ttk.Combobox(
-            row,
-            textvariable=year_var,
-            values=[str(datetime.now().year - i) for i in range(0, 6)],
-            state="readonly",
-            width=10,
-            style="App.TCombobox",
-        ).pack(side="left", padx=(8, 0), ipady=3)
 
-        result = {"ok": False}
+        selected_box = tk.Frame(form, bg="#ffffff", padx=14, pady=12)
+        selected_box.pack(fill="x", pady=(20, 12))
+        tk.Label(
+            selected_box,
+            text="Selected Workbook",
+            bg="#ffffff",
+            fg=TEXT_SECONDARY,
+            font=(FF, 9, "bold"),
+        ).pack(anchor="w")
+        tk.Label(
+            selected_box,
+            textvariable=selected_file_var,
+            bg="#ffffff",
+            fg=TEXT_PRIMARY,
+            font=(FF, 10),
+            wraplength=520,
+            justify="left",
+        ).pack(anchor="w", pady=(4, 0))
 
-        def proceed():
-            dlg.destroy()
+        tk.Label(
+            form,
+            textvariable=status_var,
+            bg=form_bg,
+            fg=TEXT_SECONDARY,
+            font=(FF, 10),
+            wraplength=560,
+            justify="left",
+        ).pack(anchor="w", pady=(0, 16))
+
+        selected_path = {"value": ""}
+
+        def choose_workbook():
             file_path = filedialog.askopenfilename(
                 title="Select Whole School Results File",
                 filetypes=[("Excel files", "*.xlsx *.xls")],
             )
             if not file_path:
+                status_var.set("No file selected. Choose a workbook when you are ready.")
                 return
-            result["ok"] = self._import_marks_workbook(
+            selected_path["value"] = file_path
+            selected_file_var.set(file_path)
+            status_var.set("Workbook selected. Review the term, exam, and year, then start import.")
+
+        def start_import():
+            file_path = selected_path["value"]
+            if not file_path:
+                choose_workbook()
+                file_path = selected_path["value"]
+            if not file_path:
+                return
+            status_var.set("Import running...")
+            self.root.update_idletasks()
+            ok = self._import_marks_workbook(
                 file_path,
                 term_var.get(),
                 exam_var.get(),
                 academic_year=year_var.get() or str(datetime.now().year),
+                inline_progress=True,
             )
+            if ok:
+                self.show_marks_entry()
+            else:
+                self.import_whole_school_marks_excel()
 
-        btn_row = tk.Frame(card, bg=card_bi)
-        btn_row.pack(fill="x", pady=(8, 0))
+        actions = tk.Frame(form, bg=form_bg)
+        actions.pack(fill="x", pady=(2, 0))
         tk.Button(
-            btn_row,
-            text="Cancel",
+            actions,
+            text="Back",
             bg=LEMON_SOFT,
             fg=TEXT_PRIMARY,
             font=(FF, 10, "bold"),
             relief="flat",
             padx=16,
-            pady=8,
-            command=dlg.destroy,
+            pady=9,
+            command=self.show_marks_entry,
         ).pack(side="left")
         tk.Button(
-            btn_row,
+            actions,
             text="Choose Workbook",
-            bg=PURPLE,
+            bg=OLIVE_PRIMARY,
             fg="white",
             font=(FF, 10, "bold"),
             relief="flat",
             padx=16,
-            pady=8,
-            command=proceed,
+            pady=9,
+            command=choose_workbook,
+        ).pack(side="left", padx=(10, 0))
+        tk.Button(
+            actions,
+            text="Start Import",
+            bg=PURPLE,
+            fg="white",
+            font=(FF, 10, "bold"),
+            relief="flat",
+            padx=18,
+            pady=9,
+            command=start_import,
         ).pack(side="right")
 
-        self.root.wait_window(dlg)
-        if result["ok"]:
-            self.show_marks_entry()
+        guide_border, guide_bg = _card_colors("sky")
+        guide_outer = tk.Frame(shell, bg=guide_border, padx=2, pady=2)
+        guide_outer.grid(row=0, column=1, sticky="nsew", padx=(8, 0), pady=4)
+        guide = tk.Frame(guide_outer, bg=guide_bg, padx=22, pady=20)
+        guide.pack(fill="both", expand=True)
+
+        tk.Label(
+            guide,
+            text="Import Rules",
+            bg=guide_bg,
+            fg=TEXT_PRIMARY,
+            font=(FF, 16, "bold"),
+        ).pack(anchor="w")
+        rules = [
+            ("Sheet names", "Use class names directly, or add a stream suffix: Grade 4 G, Grade 4 Y."),
+            ("Streams", "G/Green and Y/Yellow are matched to the existing class streams."),
+            ("Summary sheets", "Sheets named summary, analysis, or overall report are skipped."),
+            ("Learners", "Existing learners are matched by admission number, then by name and stream."),
+        ]
+        for heading, body in rules:
+            item = tk.Frame(guide, bg=guide_bg)
+            item.pack(fill="x", pady=(14, 0))
+            tk.Label(
+                item,
+                text=heading,
+                bg=guide_bg,
+                fg=OLIVE_PRIMARY,
+                font=(FF, 10, "bold"),
+            ).pack(anchor="w")
+            tk.Label(
+                item,
+                text=body,
+                bg=guide_bg,
+                fg=TEXT_SECONDARY,
+                font=(FF, 10),
+                wraplength=500,
+                justify="left",
+            ).pack(anchor="w", pady=(2, 0))
+
+        tk.Button(
+            guide,
+            text="Download Blank Template",
+            bg=ORANGE,
+            fg="white",
+            font=(FF, 10, "bold"),
+            relief="flat",
+            padx=16,
+            pady=9,
+            command=self.download_whole_school_marks_template,
+        ).pack(anchor="w", pady=(24, 0))
 
     def _import_marks_workbook(
         self,
@@ -17313,6 +17811,7 @@ class SchoolReportApp:
         exam_type,
         class_name="",
         academic_year: str = None,
+        inline_progress: bool = False,
     ):
         """Import marks from either a class workbook or a whole-school workbook."""
         academic_year = academic_year or str(datetime.now().year)
@@ -17326,6 +17825,7 @@ class SchoolReportApp:
                     "Importing Marks",
                     "Scanning workbook sheets...",
                     allow_cancel=True,
+                    inline=inline_progress,
                 )
             )
 
@@ -17450,14 +17950,7 @@ class SchoolReportApp:
                     class_import_summary[sheet_class]["sheets"].add(
                         parsed.get("sheet_name", target_label)
                     )
-                    if stream_name:
-                        existing_students = db.get_students_by_class_and_stream(
-                            sheet_class, stream_name
-                        )
-                        if not existing_students:
-                            existing_students = db.get_students_by_class(sheet_class)
-                    else:
-                        existing_students = db.get_students_by_class(sheet_class)
+                    existing_students = db.get_students_by_class(sheet_class)
                     name_to_student = {
                         self._normalize_key(student["name"]): student
                         for student in existing_students
@@ -17497,9 +17990,44 @@ class SchoolReportApp:
                         admission_key = (
                             str(item.get("admission_no", "") or "").strip().lower()
                         )
-                        student = admission_to_student.get(admission_key) or name_to_student.get(
-                            name_key
+                        item_stream = (
+                            self._match_known_stream_name(
+                                item.get("stream_name", ""), sheet_class
+                            )
+                            if item.get("stream_name")
+                            else stream_name
                         )
+                        student = admission_to_student.get(admission_key)
+                        if (
+                            student
+                            and item_stream
+                            and not self._stream_values_match(
+                                student.get("stream", ""), item_stream
+                            )
+                            and self._normalize_key(student.get("name", ""))
+                            != name_key
+                        ):
+                            student = None
+                        if not student:
+                            same_name_students = [
+                                candidate
+                                for candidate in existing_students
+                                if self._normalize_key(candidate.get("name", ""))
+                                == name_key
+                            ]
+                            if item_stream:
+                                student = next(
+                                    (
+                                        candidate
+                                        for candidate in same_name_students
+                                        if self._stream_values_match(
+                                            candidate.get("stream", ""), item_stream
+                                        )
+                                    ),
+                                    None,
+                                )
+                            if not student and same_name_students:
+                                student = same_name_students[0]
                         if not student:
                             admission_no = self._generate_admission_no(
                                 sheet_class, item["name"]
@@ -17512,14 +18040,30 @@ class SchoolReportApp:
                                 "",
                                 "",
                                 "",
-                                stream_name,
+                                item_stream,
                             )
+                            existing_students.append(student)
                             name_to_student[name_key] = student
                             admission_to_student[
                                 str(student.get("admission_no", "") or "").strip().lower()
                             ] = student
                             total_created += 1
                             class_import_summary[sheet_class]["created"] += 1
+                        elif item_stream and not self._stream_values_match(
+                            student.get("stream", ""), item_stream
+                        ):
+                            db.update_student(
+                                student["id"],
+                                student.get("name", item["name"]).strip(),
+                                sheet_class,
+                                student.get("gender", "Male") or "Male",
+                                student.get("admission_no", ""),
+                                "",
+                                student.get("guardian_name", ""),
+                                student.get("parent_email", ""),
+                                item_stream,
+                            )
+                            student["stream"] = item_stream
 
                         normalized_marks = {}
                         for raw_subject, mark_value in item["marks"].items():
@@ -17691,9 +18235,23 @@ class SchoolReportApp:
                 "pupil",
                 "student",
             }
+            stream_aliases = {
+                "stream",
+                "streams",
+                "stream_name",
+                "stream name",
+                "str",
+                "strm",
+                "stm",
+                "class stream",
+                "group",
+                "house",
+            }
+            class_aliases = {"class", "class_name", "class name", "grade"}
 
             adm_col = next((c for c in df.columns if c in adm_aliases), None)
             name_col = next((c for c in df.columns if c in name_aliases), None)
+            stream_col = next((c for c in df.columns if c in stream_aliases), None)
 
             if not adm_col and not name_col:
                 progress_dialog.destroy()
@@ -17711,7 +18269,12 @@ class SchoolReportApp:
             for original, normalized in zip(original_columns, normalized_columns):
                 if not original or not normalized:
                     continue
-                if normalized in adm_aliases or normalized in name_aliases:
+                if (
+                    normalized in adm_aliases
+                    or normalized in name_aliases
+                    or normalized in stream_aliases
+                    or normalized in class_aliases
+                ):
                     continue
                 matched_subject = self._match_subject_from_candidates(
                     original, subjects, class_name
@@ -17728,13 +18291,19 @@ class SchoolReportApp:
                 )
                 return False
 
+            selected_stream = self._get_selected_marks_stream() if class_name else ""
             students = db.get_students_by_class(class_name)
             adm_to_sid = {
                 str(s.get("admission_no", "") or "").strip().lower(): s["id"]
                 for s in students
                 if str(s.get("admission_no", "") or "").strip()
             }
-            name_to_sid = {self._normalize_key(s["name"]): s["id"] for s in students}
+            id_to_student = {s["id"]: s for s in students if s.get("id")}
+            name_to_students = {}
+            for student in students:
+                name_to_students.setdefault(
+                    self._normalize_key(student.get("name", "")), []
+                ).append(student)
 
             updated = 0
             skipped = 0
@@ -17772,13 +18341,66 @@ class SchoolReportApp:
 
                 adm = _clean(row[adm_col]).lower() if adm_col else ""
                 name_key = self._normalize_key(_clean(row[name_col])) if name_col else ""
+                row_stream = _clean(row[stream_col]) if stream_col else selected_stream
+                row_stream = (
+                    self._match_known_stream_name(row_stream, class_name)
+                    if row_stream
+                    else ""
+                )
 
-                sid = adm_to_sid.get(adm) or name_to_sid.get(name_key)
+                sid = adm_to_sid.get(adm)
+                matched_by_admission = id_to_student.get(sid) if sid else None
+                if (
+                    matched_by_admission
+                    and row_stream
+                    and not self._stream_values_match(
+                        matched_by_admission.get("stream", ""), row_stream
+                    )
+                    and self._normalize_key(matched_by_admission.get("name", ""))
+                    != name_key
+                ):
+                    sid = None
+                if not sid:
+                    same_name_students = name_to_students.get(name_key, [])
+                    if row_stream:
+                        matched_student = next(
+                            (
+                                student
+                                for student in same_name_students
+                                if self._stream_values_match(
+                                    student.get("stream", ""), row_stream
+                                )
+                            ),
+                            None,
+                        )
+                        sid = matched_student["id"] if matched_student else None
+                    if not sid and same_name_students:
+                        sid = same_name_students[0]["id"]
                 if not sid:
                     label = adm or name_key
                     if label:
                         not_found.append(label)
                     continue
+                matched_student = id_to_student.get(sid)
+                if (
+                    matched_student
+                    and row_stream
+                    and not self._stream_values_match(
+                        matched_student.get("stream", ""), row_stream
+                    )
+                ):
+                    db.update_student(
+                        sid,
+                        matched_student.get("name", ""),
+                        class_name,
+                        matched_student.get("gender", "Male") or "Male",
+                        matched_student.get("admission_no", ""),
+                        "",
+                        matched_student.get("guardian_name", ""),
+                        matched_student.get("parent_email", ""),
+                        row_stream,
+                    )
+                    matched_student["stream"] = row_stream
 
                 marks = {}
                 for subj, col in subj_col_map.items():
@@ -17940,14 +18562,7 @@ class SchoolReportApp:
                         f"{class_name} [{stream_name}]" if stream_name else class_name
                     )
                     affected_targets.append(target_label)
-                    if stream_name:
-                        existing_students = db.get_students_by_class_and_stream(
-                            class_name, stream_name
-                        )
-                        if not existing_students:
-                            existing_students = db.get_students_by_class(class_name)
-                    else:
-                        existing_students = db.get_students_by_class(class_name)
+                    existing_students = db.get_students_by_class(class_name)
                     name_to_student = {
                         self._normalize_key(student["name"]): student
                         for student in existing_students
@@ -17965,7 +18580,32 @@ class SchoolReportApp:
                             f"Importing {item['name'].strip()} into {class_name} ({processed_students}/{total_students})",
                         )
                         name_key = self._normalize_key(item["name"])
-                        student = name_to_student.get(name_key)
+                        item_stream = (
+                            self._match_known_stream_name(
+                                item.get("stream_name", ""), class_name
+                            )
+                            if item.get("stream_name")
+                            else stream_name
+                        )
+                        same_name_students = [
+                            candidate
+                            for candidate in existing_students
+                            if self._normalize_key(candidate.get("name", "")) == name_key
+                        ]
+                        student = None
+                        if item_stream:
+                            student = next(
+                                (
+                                    candidate
+                                    for candidate in same_name_students
+                                    if self._stream_values_match(
+                                        candidate.get("stream", ""), item_stream
+                                    )
+                                ),
+                                None,
+                            )
+                        if not student and same_name_students:
+                            student = same_name_students[0]
                         if not student:
                             admission_no = self._generate_admission_no(
                                 class_name, item["name"]
@@ -17978,10 +18618,26 @@ class SchoolReportApp:
                                 "",
                                 "",
                                 "",
-                                stream_name,
+                                item_stream,
                             )
+                            existing_students.append(student)
                             name_to_student[name_key] = student
                             total_created += 1
+                        elif item_stream and not self._stream_values_match(
+                            student.get("stream", ""), item_stream
+                        ):
+                            db.update_student(
+                                student["id"],
+                                student.get("name", item["name"]).strip(),
+                                class_name,
+                                student.get("gender", "Male") or "Male",
+                                student.get("admission_no", ""),
+                                "",
+                                student.get("guardian_name", ""),
+                                student.get("parent_email", ""),
+                                item_stream,
+                            )
+                            student["stream"] = item_stream
 
                         current_marks = db.get_student_marks(
                             student["id"], term, exam_type
@@ -19330,7 +19986,7 @@ class SchoolReportApp:
     def generate_student_list_pdf(self, class_name, stream_name, file_path):
         """Generate a printable student list PDF with report-style letterhead."""
         try:
-            students = db.get_students_by_class_and_stream(class_name, stream_name)
+            students = self._get_students_by_class_stream(class_name, stream_name)
             if not students:
                 messagebox.showwarning(
                     "No Data", f"No students found for {class_name} {stream_name}"
@@ -24013,7 +24669,6 @@ class SchoolReportApp:
             tk.Frame(cell, bg=line_color, height=1).pack(fill="x", pady=(2, 0))
 
         self._render_report_footer_image(parent, layout)
-
     def _render_standard_report_card(
         self, parent, result, total_students, term, exam_type, context
     ):
@@ -24082,7 +24737,6 @@ class SchoolReportApp:
         tk.Frame(parent, bg=title_color, height=3).pack(
             fill="x", padx=layout["preview_title_padx"], pady=(0, 14)
         )
-
         meta = tk.Frame(parent, bg="white")
         meta.pack(fill="x", pady=(0, 4))
         meta.columnconfigure(0, weight=1)
@@ -24411,7 +25065,6 @@ class SchoolReportApp:
                     fg="#2f2f2f",
                     font=(FF, layout["table_row_font"]),
                 ).pack(anchor="w")
-
         date_row = tk.Frame(footer_card, bg="white")
         date_row.pack(fill="x")
         for idx, (label, value) in enumerate(
@@ -24442,7 +25095,6 @@ class SchoolReportApp:
         context = self._get_report_card_context(result, term, exam_type)
         cls_level = context["class_level"]
         is_pp = context["is_pp"]
-
         def get_grade(m):
             return self._get_grade_code_for_class(m, s.get("class", ""))
 
@@ -25085,7 +25737,6 @@ class SchoolReportApp:
             result, len(results), term, exam_type, file_path
         ):
             messagebox.showinfo("Done", f"Report card PDF saved to {file_path}")
-
     def _print_all_rc(self):
         cls = self.rc_cls_cb.get()
         term = self.rc_term_cb.get()
@@ -25116,7 +25767,6 @@ class SchoolReportApp:
             messagebox.showinfo(
                 "Done", f"{saved} report card PDF(s) saved to {output_dir}"
             )
-
 
 # ====================== ENTRY POINT ========================
 def main():
@@ -25154,7 +25804,6 @@ def main():
         except Exception:
             pass
         sys.exit(0)
-
 
 if __name__ == "__main__":
     main()
